@@ -1,0 +1,61 @@
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Runtime config (contains credentials)
+config/
+
+# Runtime data (SQLite DB)
+data/
+
+# Daemon logs
+logs/
+
+# Test artifacts
+.test-config/
+test-config-temp/
+
+# Environment files
+.env
+.env.*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# External binaries
+spacemolt
+
+# Claude Code
+.claude/
+.superpowers/
+
+# Sandbox/environment artifacts
+.bash_profile
+.bashrc
+.zshrc
+.zprofile
+.profile
+.gitconfig
+.gitmodules
+.ripgreprc
+.mcp.json
+HEAD
+objects
+refs
+/hooks
+config
+
+.spacemolt-session.json
+
+# ID migration mapping (downloaded separately, not committed)
+id-migrations.json
+
+# Scratch dir for assembling the public release tree
+.public-build/
