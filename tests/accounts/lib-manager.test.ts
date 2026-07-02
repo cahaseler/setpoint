@@ -45,20 +45,35 @@ describe("LibAccountManager", () => {
 		expect(client.lastFilter).toBeDefined();
 	});
 
-	test("wires onStateChange per account with the account's player_id", async () => {
+	test("wires onStateChange per account, passing playerId and the account", async () => {
 		const { client, accounts } = setup([player("Alpha", "pid-a"), player("Beta", "pid-b")]);
-		const events: Array<{ playerId: string; changed: string[] }> = [];
+		const events: Array<{ playerId: string; changed: string[]; accountId: string | undefined }> =
+			[];
 		const mgr = new LibAccountManager(
 			client,
 			{ clerkApiKey: "k" },
 			{
-				onStateChange: (playerId, changed) => events.push({ playerId, changed }),
+				onStateChange: (playerId, changed, account) =>
+					events.push({ playerId, changed, accountId: account.id }),
 			},
 		);
 		await mgr.connect();
 
 		accounts.get("Beta")?.emitStateChange(["location", "ship"]);
-		expect(events).toEqual([{ playerId: "pid-b", changed: ["location", "ship"] }]);
+		expect(events).toEqual([
+			{ playerId: "pid-b", changed: ["location", "ship"], accountId: "Beta" },
+		]);
+	});
+
+	test("connect() skips accounts with no player_id", async () => {
+		const players = [player("Ghost", "")]; // FakeAccount(playerId="") -> player.id === "" is falsy
+		const accounts = new Map<string, FakeAccount>();
+		accounts.set("Ghost", new FakeAccount("", "Ghost"));
+		const client = new FakeClient(players, accounts);
+		const mgr = new LibAccountManager(client, { clerkApiKey: "k" });
+		await mgr.connect();
+		expect(mgr.size).toBe(0);
+		expect(mgr.getByUsername("ghost")).toBeUndefined();
 	});
 
 	test("disconnect(playerId) closes and removes the account", async () => {
@@ -71,6 +86,18 @@ describe("LibAccountManager", () => {
 		expect(mgr.getByPlayerId("pid-a")).toBeUndefined();
 		expect(mgr.getByUsername("alpha")).toBeUndefined();
 		expect(accounts.get("Alpha")?.closed).toBe(true);
+	});
+
+	test("disconnect(playerId) evicts from the lib client and clears indexes", async () => {
+		const { client, accounts } = setup([player("Alpha", "pid-a")]);
+		const mgr = new LibAccountManager(client, { clerkApiKey: "k" });
+		await mgr.connect();
+		await mgr.disconnect("pid-a");
+		expect(mgr.size).toBe(0);
+		expect(mgr.getByPlayerId("pid-a")).toBeUndefined();
+		expect(mgr.getByUsername("alpha")).toBeUndefined();
+		expect(accounts.get("Alpha")?.closed).toBe(true);
+		expect(client.account("Alpha")).toBeUndefined(); // removed from the client registry
 	});
 
 	test("disconnectAll closes every account", async () => {

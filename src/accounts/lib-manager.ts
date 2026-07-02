@@ -1,3 +1,4 @@
+import type { StateSection } from "@spacemolt/lib";
 import { createLogger } from "../util/logger.js";
 import { type LibConfig, buildOwnedFilter } from "./lib-config.js";
 import type { AccountClientLike, LibAccountLike } from "./lib-types.js";
@@ -5,8 +6,8 @@ import type { AccountClientLike, LibAccountLike } from "./lib-types.js";
 const log = createLogger("lib-account-mgr");
 
 export interface LibAccountManagerOptions {
-	/** Called on every account state change, keyed by player_id. Phase 2 wires the SQLite projector here. */
-	onStateChange?: (playerId: string, changed: string[]) => void;
+	/** Called on every account state change: (playerId, changed sections, the account). Phase 2 wires the SQLite projector here. */
+	onStateChange?: (playerId: string, changed: StateSection[], account: LibAccountLike) => void;
 }
 
 /**
@@ -34,12 +35,12 @@ export class LibAccountManager {
 				continue;
 			}
 			this.byPlayerId.set(playerId, account);
-			if (typeof account.username === "string") {
-				this.usernameToPlayerId.set(account.username.toLowerCase(), playerId);
+			if (typeof account.id === "string") {
+				this.usernameToPlayerId.set(account.id.toLowerCase(), playerId);
 			}
 			const onChange = this.opts.onStateChange;
 			if (onChange) {
-				account.onStateChange((changed) => onChange(playerId, changed));
+				account.onStateChange((changed) => onChange(playerId, changed, account));
 			}
 		}
 		log.info(`Connected ${this.byPlayerId.size} account(s)`);
@@ -72,7 +73,14 @@ export class LibAccountManager {
 		if (!account) {
 			return;
 		}
-		account.close();
+		// Evict from the lib client registry too (closes + drops), so the manager
+		// and the client can't diverge into a stale-closed-account leak. Fall back
+		// to a direct close if the account has no id.
+		if (typeof account.id === "string") {
+			await this.client.remove(account.id);
+		} else {
+			account.close();
+		}
 		this.byPlayerId.delete(playerId);
 		for (const [username, pid] of this.usernameToPlayerId) {
 			if (pid === playerId) {

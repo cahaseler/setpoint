@@ -1,21 +1,32 @@
-import type { ClerkPlayer } from "@spacemolt/lib";
+import type { ClerkPlayer, GameState, StateSection } from "@spacemolt/lib";
 import type { AccountClientLike, LibAccountLike } from "../../src/accounts/lib-types.js";
 
 export class FakeAccount implements LibAccountLike {
 	closed = false;
-	private listener: ((changed: string[]) => void) | null = null;
+	private _state: GameState;
+	private listener: ((changed: StateSection[]) => void) | null = null;
 	constructor(
 		private readonly playerId: string,
-		readonly username: string,
-	) {}
+		readonly id: string,
+		initialState: GameState = {},
+	) {
+		this._state = initialState;
+	}
 	get player(): { id: string } {
 		return { id: this.playerId };
 	}
-	onStateChange(listener: (changed: string[]) => void): void {
-		this.listener = listener;
+	get state(): Readonly<GameState> {
+		return this._state;
 	}
-	emitStateChange(changed: string[]): void {
+	/** Test helper: replace state and emit the given changed sections. */
+	emitStateChange(changed: StateSection[], nextState?: GameState): void {
+		if (nextState) {
+			this._state = nextState;
+		}
 		this.listener?.(changed);
+	}
+	onStateChange(listener: (changed: StateSection[]) => void): void {
+		this.listener = listener;
 	}
 	close(): void {
 		this.closed = true;

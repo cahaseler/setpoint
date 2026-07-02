@@ -1,11 +1,13 @@
-import type { ClerkPlayer } from "@spacemolt/lib";
+import type { ClerkPlayer, GameState, StateSection } from "@spacemolt/lib";
 
 /** The subset of a lib `Account` the account layer depends on. */
 export interface LibAccountLike {
 	readonly player?: { id: string };
-	/** Clerk username / store id. Requires a `get username()` accessor on the real Account (Task 5). */
-	readonly username?: string;
-	onStateChange(listener: (changed: string[]) => void): void;
+	/** Store key / username this account is managed under (Account.id). */
+	readonly id?: string;
+	/** Live push-fed state cache. Treat as read-only. */
+	readonly state: Readonly<GameState>;
+	onStateChange(listener: (changed: StateSection[]) => void): void;
 	close(): void;
 }
 
