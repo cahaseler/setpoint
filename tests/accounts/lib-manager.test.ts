@@ -1,0 +1,85 @@
+import { describe, expect, test } from "bun:test";
+import type { ClerkPlayer } from "@spacemolt/lib";
+import { LibAccountManager } from "../../src/accounts/lib-manager.js";
+import { FakeAccount, FakeClient } from "./fakes.js";
+
+const player = (username: string, id: string, over: Partial<ClerkPlayer> = {}): ClerkPlayer => ({
+	id,
+	username,
+	empire: "solarian",
+	hidden: false,
+	...over,
+});
+
+function setup(players: ClerkPlayer[]): { client: FakeClient; accounts: Map<string, FakeAccount> } {
+	const accounts = new Map<string, FakeAccount>();
+	for (const p of players) {
+		accounts.set(p.username, new FakeAccount(p.id, p.username));
+	}
+	return { client: new FakeClient(players, accounts), accounts };
+}
+
+describe("LibAccountManager", () => {
+	test("connect() connects owned players and indexes by player_id and username", async () => {
+		const { client } = setup([player("Alpha", "pid-a"), player("Beta", "pid-b")]);
+		const mgr = new LibAccountManager(client, { clerkApiKey: "k" });
+		await mgr.connect();
+
+		expect(mgr.size).toBe(2);
+		expect(mgr.getByPlayerId("pid-a")).toBeDefined();
+		expect(mgr.getByUsername("beta")).toBeDefined(); // case-insensitive
+		expect(mgr.getByUsername("Beta")).toBe(mgr.getByPlayerId("pid-b"));
+	});
+
+	test("connect() passes the config filter to connectOwned", async () => {
+		const { client } = setup([player("Alpha", "pid-a"), player("Beta", "pid-b")]);
+		const mgr = new LibAccountManager(client, {
+			clerkApiKey: "k",
+			filter: { usernames: ["Alpha"] },
+		});
+		await mgr.connect();
+
+		expect(mgr.size).toBe(1);
+		expect(mgr.getByUsername("alpha")).toBeDefined();
+		expect(mgr.getByUsername("beta")).toBeUndefined();
+		expect(client.lastFilter).toBeDefined();
+	});
+
+	test("wires onStateChange per account with the account's player_id", async () => {
+		const { client, accounts } = setup([player("Alpha", "pid-a")]);
+		const events: Array<{ playerId: string; changed: string[] }> = [];
+		const mgr = new LibAccountManager(
+			client,
+			{ clerkApiKey: "k" },
+			{
+				onStateChange: (playerId, changed) => events.push({ playerId, changed }),
+			},
+		);
+		await mgr.connect();
+
+		accounts.get("Alpha")?.emitStateChange(["location", "ship"]);
+		expect(events).toEqual([{ playerId: "pid-a", changed: ["location", "ship"] }]);
+	});
+
+	test("disconnect(playerId) closes and removes the account", async () => {
+		const { client, accounts } = setup([player("Alpha", "pid-a")]);
+		const mgr = new LibAccountManager(client, { clerkApiKey: "k" });
+		await mgr.connect();
+
+		await mgr.disconnect("pid-a");
+		expect(mgr.size).toBe(0);
+		expect(mgr.getByPlayerId("pid-a")).toBeUndefined();
+		expect(accounts.get("Alpha")?.closed).toBe(true);
+	});
+
+	test("disconnectAll closes every account", async () => {
+		const { client, accounts } = setup([player("Alpha", "pid-a"), player("Beta", "pid-b")]);
+		const mgr = new LibAccountManager(client, { clerkApiKey: "k" });
+		await mgr.connect();
+
+		mgr.disconnectAll();
+		expect(mgr.size).toBe(0);
+		expect(accounts.get("Alpha")?.closed).toBe(true);
+		expect(accounts.get("Beta")?.closed).toBe(true);
+	});
+});
