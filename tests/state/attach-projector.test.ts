@@ -37,4 +37,26 @@ describe("makeProjectingOnStateChange (integration)", () => {
 
 		expect(store.getSection("pid-a", "location")).toEqual({ system_id: "sol", poi_id: "belt-1" });
 	});
+
+	test("projects each account's seeded state at connect (backfill, no emit)", async () => {
+		const store = new StateStore(createMemoryDatabase());
+		const projector = new StateProjector(store);
+		const accounts = new Map<string, FakeAccount>();
+		// FakeAccount's 3rd ctor arg is initial state — seeded BEFORE connect, like the real lib.
+		accounts.set(
+			"Alpha",
+			new FakeAccount("pid-a", "Alpha", { location: { system_id: "sol" } } as unknown as GameState),
+		);
+		const client = new FakeClient([player("Alpha", "pid-a")], accounts);
+		const mgr = new LibAccountManager(
+			client,
+			{ clerkApiKey: "k" },
+			{
+				onStateChange: makeProjectingOnStateChange(projector),
+			},
+		);
+		await mgr.connect();
+		// No emitStateChange — the seed must have been projected at connect time.
+		expect(store.getSection("pid-a", "location")).toEqual({ system_id: "sol" });
+	});
 });

@@ -1,4 +1,4 @@
-import type { StateSection } from "@spacemolt/lib";
+import { STATE_SECTIONS, type StateSection } from "@spacemolt/lib";
 import { createLogger } from "../util/logger.js";
 import { type LibConfig, buildOwnedFilter } from "./lib-config.js";
 import type { AccountClientLike, LibAccountLike } from "./lib-types.js";
@@ -41,6 +41,12 @@ export class LibAccountManager {
 			const onChange = this.opts.onStateChange;
 			if (onChange) {
 				account.onStateChange((changed) => onChange(playerId, changed, account));
+				// Backfill: the lib seeds full state during connect(), before our listener
+				// was attached (onStateChange has no replay). Fire once with the current
+				// state so the projection reflects freshly-connected accounts. The projector
+				// filters undefined sections and applyUpdate skips null/undefined, so passing
+				// the full section list is safe and idempotent.
+				onChange(playerId, [...STATE_SECTIONS], account);
 			}
 		}
 		log.info(`Connected ${this.byPlayerId.size} account(s)`);

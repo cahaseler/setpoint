@@ -59,6 +59,10 @@ describe("LibAccountManager", () => {
 		);
 		await mgr.connect();
 
+		// connect() also fires onChange once per account as a state backfill
+		// (see tests/state/attach-projector.test.ts); clear those before
+		// asserting on the emit this test cares about.
+		events.length = 0;
 		accounts.get("Beta")?.emitStateChange(["location", "ship"]);
 		expect(events).toEqual([
 			{ playerId: "pid-b", changed: ["location", "ship"], accountId: "Beta" },
