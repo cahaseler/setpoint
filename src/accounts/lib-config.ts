@@ -1,5 +1,5 @@
-import { ConfigError } from "./config.js";
 import type { ClerkPlayer } from "@spacemolt/lib";
+import { ConfigError } from "./config.js";
 
 /** Selects which owned players to connect. All clauses AND together. */
 export interface OwnedPlayerFilter {
@@ -67,9 +67,7 @@ export function parseLibConfig(
  * Hidden players are excluded unless `includeHidden`. Allowlists are
  * case-insensitive; all clauses AND together.
  */
-export function buildOwnedFilter(
-	filter?: OwnedPlayerFilter,
-): (player: ClerkPlayer) => boolean {
+export function buildOwnedFilter(filter?: OwnedPlayerFilter): (player: ClerkPlayer) => boolean {
 	const usernames = filter?.usernames?.map((u) => u.toLowerCase());
 	const empires = filter?.empires?.map((e) => e.toLowerCase());
 	const includeHidden = filter?.includeHidden ?? false;

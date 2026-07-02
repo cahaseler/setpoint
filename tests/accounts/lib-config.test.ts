@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { ConfigError } from "../../src/accounts/config.js";
-import { parseLibConfig, buildOwnedFilter } from "../../src/accounts/lib-config.js";
 import type { ClerkPlayer } from "@spacemolt/lib";
+import { ConfigError } from "../../src/accounts/config.js";
+import { buildOwnedFilter, parseLibConfig } from "../../src/accounts/lib-config.js";
 
 describe("parseLibConfig", () => {
 	test("reads clerkApiKey from env", () => {
