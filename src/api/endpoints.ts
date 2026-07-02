@@ -36,6 +36,10 @@ type FactionIntelStatusResponse = components["schemas"]["FactionIntelStatusRespo
 type FactionQueryIntelResponse = components["schemas"]["FactionQueryIntelResponse"];
 type GetWrecksResponse = components["schemas"]["GetWrecksResponse"];
 type LootWreckResponse = components["schemas"]["LootWreckResponse"];
+type TowWreckResponse = components["schemas"]["TowWreckResponse"];
+type ScrapWreckResponse = components["schemas"]["ScrapWreckResponse"];
+type SellWreckResponse = components["schemas"]["SellWreckResponse"];
+type ReleaseTowResponse = components["schemas"]["ReleaseTowResponse"];
 
 // Direct buy/sell response types (spacemolt tool group)
 type BuyResponse = components["schemas"]["BuyResponse"];
@@ -703,6 +707,26 @@ export class GameEndpoints {
 
 	async lootWreck(wreckId: string): Promise<ApiResponse<LootWreckResponse>> {
 		return this.session.execute<LootWreckResponse>("spacemolt_salvage", "loot", { id: wreckId });
+	}
+
+	/** Attach a tow line to a wreck. Requires a tow-rig utility module fitted. */
+	async towWreck(wreckId: string): Promise<ApiResponse<TowWreckResponse>> {
+		return this.session.execute<TowWreckResponse>("spacemolt_salvage", "tow", { id: wreckId });
+	}
+
+	/** Scrap the currently-towed wreck for salvage materials (docked at a salvage yard, skill 2+). */
+	async scrapTowedWreck(): Promise<ApiResponse<ScrapWreckResponse>> {
+		return this.session.execute<ScrapWreckResponse>("spacemolt_salvage", "scrap");
+	}
+
+	/** Sell the currently-towed wreck to the salvage yard for credits. */
+	async sellTowedWreck(): Promise<ApiResponse<SellWreckResponse>> {
+		return this.session.execute<SellWreckResponse>("spacemolt_salvage", "sell");
+	}
+
+	/** Drop the towed wreck at the current POI (cleanup on unrecoverable failure). */
+	async releaseTow(): Promise<ApiResponse<ReleaseTowResponse>> {
+		return this.session.execute<ReleaseTowResponse>("spacemolt_salvage", "release");
 	}
 
 	// --- Gifting (spacemolt_storage deposit to player) ---

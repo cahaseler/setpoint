@@ -175,6 +175,53 @@ describe("NavigateToSystem", () => {
 		expect(jumps).toEqual(["target"]);
 	});
 
+	test("fuelReserve: a trip that fits the tank still fails when reserve does not", async () => {
+		// estimated 80 fits in 100, but with a 30-unit reserve the ship would arrive
+		// nearly dry — the pre-flight must fail before departing.
+		const state = makeState("sol");
+		const jumps: string[] = [];
+		const endpoints = createMockEndpoints({
+			findRoute: async () =>
+				makeRoute(["sol", "target"], { estimatedFuel: 80, fuelAvailable: 100 }),
+			jump: async (systemId: unknown) => {
+				jumps.push(systemId as string);
+				return mockApiResponse({});
+			},
+		});
+		const ctx: GoalContext = { endpoints, state };
+
+		const goal = new NavigateToSystem("target", 30);
+		const result = await goal.execute(ctx);
+
+		expect(result.success).toBe(false);
+		expect(result.ticksUsed).toBe(0);
+		expect(result.message).toContain("Insufficient fuel");
+		expect(result.message).toContain("need 110");
+		expect(result.message).toContain("(incl. 30 reserve)");
+		expect(result.message).toContain("have 100");
+		expect(jumps).toHaveLength(0);
+	});
+
+	test("fuelReserve: proceeds when fuel covers the trip plus the reserve", async () => {
+		const state = makeState("sol");
+		const jumps: string[] = [];
+		const endpoints = createMockEndpoints({
+			findRoute: async () =>
+				makeRoute(["sol", "target"], { estimatedFuel: 80, fuelAvailable: 120 }),
+			jump: async (systemId: unknown) => {
+				jumps.push(systemId as string);
+				return mockApiResponse({});
+			},
+		});
+		const ctx: GoalContext = { endpoints, state };
+
+		const goal = new NavigateToSystem("target", 30);
+		const result = await goal.execute(ctx);
+
+		expect(result.success).toBe(true);
+		expect(jumps).toEqual(["target"]);
+	});
+
 	test("single hop: jumps directly to target", async () => {
 		const state = makeState("sol");
 
@@ -215,6 +262,33 @@ describe("NavigateToSystem", () => {
 		expect(result.success).toBe(true);
 		expect(result.ticksUsed).toBe(3);
 		expect(jumps).toEqual(["alpha", "beta", "target"]);
+	});
+
+	test("forces a live state sync after jumps (jumps carry no state, so the store lags)", async () => {
+		// After jumps complete, the post-nav refresh must FORCE a live read — a
+		// TTL-fresh cache would otherwise leave the store at the pre-nav position,
+		// stranding the next goal on a stale location.
+		const state = makeState("sol");
+		const refreshCalls: Array<{ force?: boolean } | undefined> = [];
+		const endpoints = createMockEndpoints({
+			findRoute: async () => makeRoute(["sol", "target"]),
+			jump: async () => mockApiResponse({}),
+		});
+		const ctx: GoalContext = {
+			endpoints,
+			state,
+			refreshState: async (opts?: { force?: boolean }) => {
+				refreshCalls.push(opts);
+				return makeState("sol");
+			},
+		};
+
+		const goal = new NavigateToSystem("target");
+		const result = await goal.execute(ctx);
+
+		expect(result.success).toBe(true);
+		// The post-jump sync (the refresh that runs because ticks were used) forces live.
+		expect(refreshCalls.some((c) => c?.force === true)).toBe(true);
 	});
 
 	test("stale location: refreshes state before routing, uses fresh location to skip first hop", async () => {

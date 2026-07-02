@@ -130,3 +130,35 @@ describe("createDatabase", () => {
 		db.close();
 	});
 });
+
+describe("jobs per-account index", () => {
+	test("creates an index on jobs(account_id, submitted_at)", () => {
+		const db = createMemoryDatabase();
+
+		const index = db
+			.query<{ name: string }, []>(
+				"SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'jobs' AND name = 'idx_jobs_account_submitted'",
+			)
+			.get();
+
+		expect(index).toBeDefined();
+		db.close();
+	});
+
+	test("the per-account recent-jobs query uses the index, not a full scan", () => {
+		const db = createMemoryDatabase();
+
+		const plan = db
+			.query<{ detail: string }, [string, number]>(
+				"EXPLAIN QUERY PLAN SELECT * FROM jobs WHERE account_id = ? ORDER BY submitted_at DESC LIMIT ?",
+			)
+			.all("acct", 5);
+
+		const detail = plan.map((p) => p.detail).join(" ");
+		expect(detail).toContain("idx_jobs_account_submitted");
+		expect(detail).not.toContain("SCAN jobs");
+		expect(detail).not.toContain("TEMP B-TREE");
+
+		db.close();
+	});
+});

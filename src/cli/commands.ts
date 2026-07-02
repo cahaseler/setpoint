@@ -237,6 +237,13 @@ const commands: Command[] = [
 		description: "Roaming salvage loop detailed reference",
 	},
 	{
+		pattern: "help tow-salvage",
+		positionals: [],
+		handler: handleHelpTowSalvage,
+		usage: "smctl help tow-salvage",
+		description: "Tow-salvage loop detailed reference",
+	},
+	{
 		pattern: "help fuel-rescue",
 		positionals: [],
 		handler: handleHelpFuelRescue,
@@ -249,7 +256,7 @@ const commands: Command[] = [
 		handler: handleHelpGeneral,
 		usage: "smctl help [topic]",
 		description:
-			"Show help (topics: goals, loops, mining, trading, hauling, storage-transfer, exploration, salvage, guard, roaming-salvage, fuel-rescue)",
+			"Show help (topics: goals, loops, mining, trading, hauling, storage-transfer, exploration, salvage, guard, roaming-salvage, tow-salvage, fuel-rescue)",
 	},
 ];
 
@@ -641,6 +648,10 @@ async function handleHelpRoamingSalvage(ctx: CommandContext, _args: string[]): P
 	ctx.output.raw(getRoamingSalvageHelpText());
 }
 
+async function handleHelpTowSalvage(ctx: CommandContext, _args: string[]): Promise<void> {
+	ctx.output.raw(getTowSalvageHelpText());
+}
+
 async function handleHelpFuelRescue(ctx: CommandContext, _args: string[]): Promise<void> {
 	ctx.output.raw(getFuelRescueHelpText());
 }
@@ -651,8 +662,11 @@ function getGoalHelpText(): string {
 		"  --async: submit in background, returns {job_id}. Poll with: smctl job status <job_id>",
 		"",
 		"Navigation:",
-		"  navigate-to-system    targetSystemId (string)",
-		"  navigate-via-route    route: string[] (explicit system sequence, no re-planning)",
+		"  navigate-to-system    targetSystemId (string), fuelReserve? (number)",
+		"                        Does NOT refuel en route — fails before departing if the trip",
+		"                        exceeds current fuel. fuelReserve keeps a buffer so the ship",
+		"                        arrives with fuel to spare (e.g. for the return trip).",
+		"  navigate-via-route    route: string[] (explicit system sequence, no re-planning), fuelReserve? (number)",
 		"  go-to-poi             targetPoiId (string)",
 		"  dock-at               targetBaseId (string)",
 		"  ensure-undocked       (no options)",
@@ -719,6 +733,7 @@ function getLoopHelpText(): string {
 		"  enhanced-mining   Mine, jettison junk, mine more → sell/deposit → repeat",
 		"  salvage           Loot wrecks at a POI → sell/deposit at station → repeat",
 		"  roaming-salvage   Sweep empire systems for wrecks → deposit when full → repeat",
+		"  tow-salvage       Tow wrecks to a yard, loot to storage, then scrap/sell the husks",
 		"  trading           Buy under max price → sell at min price → repeat",
 		"  hauling           Load at source → unload at destination → repeat",
 		"  storage-transfer  Transfer all personal storage items to faction storage → stop when empty",
@@ -733,12 +748,13 @@ function getLoopHelpText(): string {
 		"Run 'smctl help <type>' for detailed schemas and examples:",
 		"  smctl help mining",
 		"  smctl help salvage",
+		"  smctl help roaming-salvage",
+		"  smctl help tow-salvage",
 		"  smctl help trading",
 		"  smctl help hauling",
 		"  smctl help storage-transfer",
 		"  smctl help exploration",
 		"  smctl help guard",
-		"  smctl help roaming-salvage",
 	].join("\n");
 }
 
@@ -848,6 +864,10 @@ function getTradingHelpText(): string {
 		"  items[].minSellPrice     Min price to sell at (number, required)",
 		"  items[].maxQuantity      Max quantity per trip (number, optional)",
 		"  refuel                   Refuel at each station (boolean, default: true)",
+		"  minFuelReserve           Fuel buffer beyond each leg's estimated cost (number, default: 0)",
+		"                           A leg fails before departing unless the ship would arrive with",
+		"                           at least this much fuel to spare. Guards against stranding when",
+		"                           the next station is far — navigation never refuels en route.",
 		"  maxIterations            Stop after N iterations (number, optional)",
 		"",
 		"Example:",
@@ -895,6 +915,9 @@ function getHaulingHelpText(): string {
 		"  destination.items[].itemId     Item to sell (string, for market type)",
 		"  destination.items[].minPrice   Min sell price (number, for market type)",
 		"  refuel                         Refuel at each station (boolean, default: true)",
+		"  minFuelReserve                 Fuel buffer beyond each leg's estimated cost (number, default: 0)",
+		"                                 A leg fails before departing unless the ship would arrive with",
+		"                                 at least this much fuel to spare. Navigation never refuels en route.",
 		"  maxIterations                  Stop after N iterations (number, optional)",
 		"",
 		"Example — storage to faction storage:",
@@ -1136,5 +1159,45 @@ function getRoamingSalvageHelpText(): string {
 		'  smctl loop start <id> --json \'{"type":"roaming-salvage","options":{',
 		'    "homeSystemId":"sol","homeStationPoiId":"sol-station","homeBaseId":"sol-base",',
 		'    "depositTarget":"faction","allowLawless":true}}\'',
+	].join("\n");
+}
+
+function getTowSalvageHelpText(): string {
+	return [
+		"Tow-Salvage Loop",
+		"",
+		"Tows wrecks from a wreck field to a salvage yard, drains each wreck's cargo to",
+		"storage, then scraps or sells the empty hulk. Repeats until no wrecks remain",
+		"(fixed mode) or until stopped.",
+		"",
+		"Requires a tow rig module and (for scrap disposition) the scrap skill.",
+		"The loop halts permanently if either permanent precondition is unmet.",
+		"",
+		"Required options:",
+		"  mode            Wreck-finding strategy: fixed (string, required)",
+		"                  fixed — tow from a specific wreck field POI",
+		"  disposition     What to do with the empty husk: scrap | sell (string, required)",
+		"  yardSystemId    System containing the salvage yard (string, required)",
+		"  yardPoiId       POI ID of the salvage yard (string, required)",
+		"  yardBaseId      Base ID to dock at in the yard (string, required)",
+		"  wreckSystemId   System containing the wreck field (string, required)",
+		"  wreckPoiId      POI ID of the wreck field (string, required)",
+		"",
+		"Optional options:",
+		'  storageTarget   Where to deposit looted cargo: "personal" | "faction" (default: personal)',
+		"  maxIterations   Stop after N completed wrecks (number, optional)",
+		"",
+		"Example (scrap husks, deposit loot to personal storage):",
+		'  smctl loop start <id> --json \'{"type":"tow-salvage","options":{',
+		'    "mode":"fixed","disposition":"scrap",',
+		'    "yardSystemId":"sol","yardPoiId":"yard-poi","yardBaseId":"yard-base",',
+		'    "wreckSystemId":"sol","wreckPoiId":"belt-1"}}\'',
+		"",
+		"  # Sell husks, deposit loot to faction storage",
+		'  smctl loop start <id> --json \'{"type":"tow-salvage","options":{',
+		'    "mode":"fixed","disposition":"sell",',
+		'    "yardSystemId":"sol","yardPoiId":"yard-poi","yardBaseId":"yard-base",',
+		'    "wreckSystemId":"sol","wreckPoiId":"belt-1",',
+		'    "storageTarget":"faction"}}\'',
 	].join("\n");
 }

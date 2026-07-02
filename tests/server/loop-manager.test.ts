@@ -104,6 +104,71 @@ describe("buildGoalContext", () => {
 		expect(account.endpoints.getState).toHaveBeenCalledTimes(1);
 	});
 
+	test("refreshState does a live getState when the cached state is stale (beyond TTL)", async () => {
+		// Reproduces the silent-no-op bug: the store says the ship is already at the
+		// target (zaniah), but that snapshot is stale — the ship actually moved away
+		// (e.g. a mobile station relocated it) without a mutation the daemon observed.
+		// A stale cache must NOT be trusted; refreshState must read live.
+		const stale = makeState({
+			location: { system_id: "zaniah", in_transit: false } as StoredGameState["location"],
+			updatedAt: new Date(Date.now() - 10 * 60_000).toISOString(), // 10 minutes old
+		});
+		const live = makeState({
+			location: { system_id: "frontier", in_transit: false } as StoredGameState["location"],
+		});
+		let refreshed = false;
+		const store = {
+			...makeStore(null),
+			getState: mock(() => (refreshed ? live : stale)),
+		};
+		const account = makeAccount();
+		const getStateMock = mock(() => {
+			refreshed = true;
+			return Promise.resolve({} as ReturnType<GameEndpoints["getState"]>);
+		});
+		account.endpoints = { getState: getStateMock } as unknown as GameEndpoints;
+		const ctx = buildGoalContext(account, store as never);
+
+		const refresh = ctx.refreshState;
+		if (!refresh) throw new Error("refreshState should be defined");
+		const result = await refresh();
+
+		// Stale cache → live read, returning the ship's true position.
+		expect(getStateMock).toHaveBeenCalledTimes(1);
+		expect(result).toBe(live);
+		expect(result.location?.system_id).toBe("frontier");
+	});
+
+	test("refreshState({ force: true }) does a live getState even when the cache is fresh", async () => {
+		// force bypasses the freshness shortcut — used after multi-hop jumps, whose
+		// responses carry no state, so the fresh-looking store still lags reality.
+		const stale = makeState({
+			location: { system_id: "sol", in_transit: false } as StoredGameState["location"],
+		});
+		const live = makeState({
+			location: { system_id: "target", in_transit: false } as StoredGameState["location"],
+		});
+		let refreshed = false;
+		const store = {
+			...makeStore(null),
+			getState: mock(() => (refreshed ? live : stale)),
+		};
+		const account = makeAccount();
+		const getStateMock = mock(() => {
+			refreshed = true;
+			return Promise.resolve({} as ReturnType<GameEndpoints["getState"]>);
+		});
+		account.endpoints = { getState: getStateMock } as unknown as GameEndpoints;
+		const ctx = buildGoalContext(account, store as never);
+
+		const refresh = ctx.refreshState;
+		if (!refresh) throw new Error("refreshState should be defined");
+		const result = await refresh({ force: true });
+
+		expect(getStateMock).toHaveBeenCalledTimes(1);
+		expect(result).toBe(live);
+	});
+
 	test("refreshState hits getState and waits when the cached state is mid-transit", async () => {
 		const inTransit = makeState({
 			location: { in_transit: true } as StoredGameState["location"],

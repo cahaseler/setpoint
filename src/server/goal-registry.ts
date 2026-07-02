@@ -99,8 +99,20 @@ function requireItemArray(
 
 const registry: ReadonlyMap<string, GoalFactory> = new Map<string, GoalFactory>([
 	// --- Primitives ---
-	["navigate-to-system", (opts) => new NavigateToSystem(requireString(opts, "targetSystemId"))],
-	["navigate-via-route", (opts) => new NavigateViaRoute(requireStringArray(opts, "route"))],
+	[
+		"navigate-to-system",
+		(opts) => {
+			const fuelReserve = typeof opts["fuelReserve"] === "number" ? opts["fuelReserve"] : undefined;
+			return new NavigateToSystem(requireString(opts, "targetSystemId"), fuelReserve);
+		},
+	],
+	[
+		"navigate-via-route",
+		(opts) => {
+			const fuelReserve = typeof opts["fuelReserve"] === "number" ? opts["fuelReserve"] : undefined;
+			return new NavigateViaRoute(requireStringArray(opts, "route"), fuelReserve);
+		},
+	],
 	["go-to-poi", (opts) => new GoToPoi(requireString(opts, "targetPoiId"))],
 	["dock-at", (opts) => new DockAt(requireString(opts, "targetBaseId"))],
 	["ensure-undocked", () => new EnsureUndocked()],

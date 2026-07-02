@@ -18,13 +18,34 @@ import { runSalvageLoop } from "../dispatcher/loops/salvage-loop.js";
 import type { SalvageLoopOptions } from "../dispatcher/loops/salvage-loop.js";
 import { runStorageTransferLoop } from "../dispatcher/loops/storage-transfer-loop.js";
 import type { StorageTransferLoopOptions } from "../dispatcher/loops/storage-transfer-loop.js";
+import { runTowSalvageLoop } from "../dispatcher/loops/tow-salvage-loop.js";
+import type { TowSalvageLoopOptions } from "../dispatcher/loops/tow-salvage-loop.js";
 import { runTradingLoop } from "../dispatcher/loops/trading-loop.js";
 import type { TradingLoopOptions } from "../dispatcher/loops/trading-loop.js";
-import type { StateStore } from "../state/store.js";
+import type { StateStore, StoredGameState } from "../state/store.js";
 import { errorMessage } from "../util/errors.js";
 import { createLogger } from "../util/logger.js";
 
 const log = createLogger("loop-mgr");
+
+/**
+ * How long a mutation-derived store snapshot is trusted before refreshState
+ * forces a live get_state. The store is authoritative for changes the daemon
+ * itself makes (every mutation carries post-action state), but it cannot see
+ * changes from outside our mutations — a mobile station relocating a docked
+ * ship, another tool, or game-side events. Within an active goal/loop, back-to-
+ * back mutations keep the store warm so this rarely triggers; the live read
+ * fires only on cold start, an idle account, or genuine external drift, which
+ * is exactly when trusting the cache would silently act on a stale position.
+ */
+const STATE_FRESHNESS_TTL_MS = 30_000;
+
+/** Whether a store snapshot is recent enough to trust without a live get_state. */
+function isStateFresh(state: StoredGameState, ttlMs: number): boolean {
+	const updatedMs = Date.parse(state.updatedAt);
+	if (Number.isNaN(updatedMs)) return false;
+	return Date.now() - updatedMs < ttlMs;
+}
 
 /**
  * Recursively walk a parsed JSON value and replace any string that appears in
@@ -256,6 +277,19 @@ export interface GuardLoopApiOptions {
 	maxIterations?: number;
 }
 
+/** Options for starting a tow-salvage loop via the API. */
+export interface TowSalvageLoopApiOptions {
+	mode: "fixed";
+	yardSystemId: string;
+	yardPoiId: string;
+	yardBaseId: string;
+	wreckSystemId: string;
+	wreckPoiId: string;
+	disposition?: "scrap" | "sell";
+	storageTarget?: "personal" | "faction";
+	maxIterations?: number;
+}
+
 /**
  * Build a GoalContext wired to a real account and state store.
  *
@@ -291,7 +325,7 @@ export function buildGoalContext(
 			}
 			return fresh;
 		},
-		refreshState: async () => {
+		refreshState: async (opts?: { force?: boolean }) => {
 			const cached = store.getState(account.config.player_id);
 
 			// Trust the mutation-derived store. Every mutation response carries the
@@ -300,9 +334,17 @@ export function buildGoalContext(
 			// track exactly), so the store is fresh after every action without a live
 			// get_state. Calling get_state would also risk clobbering fresh mutation-
 			// state with the game's intermittently-stale get_state snapshot. Hit the
-			// wire only when we actually need it: cold start (no state yet) or mid-
-			// transit (only a fresh read tells us when a jump/travel lands).
-			if (cached && !cached.location?.in_transit) {
+			// wire only when we actually need it: cold start (no state yet), mid-
+			// transit (only a fresh read tells us when a jump/travel lands), or a
+			// stale snapshot (older than the TTL — the store may have drifted from the
+			// ship's true position via changes we never saw, so a precondition check
+			// must not trust it and silently no-op).
+			if (
+				!opts?.force &&
+				cached &&
+				!cached.location?.in_transit &&
+				isStateFresh(cached, STATE_FRESHNESS_TTL_MS)
+			) {
 				return cached;
 			}
 
@@ -1027,6 +1069,62 @@ export class LoopManager {
 			startedAt: activeLoop.startedAt,
 			running: true,
 		};
+	}
+
+	/**
+	 * Start a tow-salvage loop for an account.
+	 *
+	 * Tows wrecks from a fixed wreck POI to a salvage yard for processing.
+	 * Throws if a loop is already running on this account.
+	 */
+	startTowSalvageLoop(
+		playerId: string,
+		options: TowSalvageLoopApiOptions,
+		account: ManagedAccount,
+		store: StateStore,
+	): LoopStatus {
+		if (this.isRunning(playerId)) {
+			throw new Error("A loop is already running on this account. Stop it first.");
+		}
+		this.loops.delete(playerId);
+
+		const controller = new AbortController();
+		const ctx = buildGoalContext(account, store);
+		const stepRef: StepRef = { last: undefined };
+
+		const loopOptions: TowSalvageLoopOptions = {
+			mode: "fixed",
+			yardSystemId: options.yardSystemId,
+			yardPoiId: options.yardPoiId,
+			yardBaseId: options.yardBaseId,
+			wreckSystemId: options.wreckSystemId,
+			wreckPoiId: options.wreckPoiId,
+			...(options.disposition !== undefined ? { disposition: options.disposition } : {}),
+			...(options.storageTarget !== undefined ? { storageTarget: options.storageTarget } : {}),
+			loopOptions: {
+				signal: controller.signal,
+				onIterationComplete: (_iter, result) => {
+					stepRef.last = result.message;
+				},
+				...(options.maxIterations !== undefined ? { maxIterations: options.maxIterations } : {}),
+			},
+		};
+
+		log.info(
+			`[${playerId}] Starting tow-salvage loop: wreck=${options.wreckPoiId} → yard=${options.yardBaseId}`,
+		);
+
+		const activeLoop: ActiveLoop = {
+			type: "tow-salvage",
+			controller,
+			promise: runTowSalvageLoop(loopOptions, ctx),
+			startedAt: new Date().toISOString(),
+			stepRef,
+			options: options as unknown as Record<string, unknown>,
+			liveOptions: loopOptions as unknown as Record<string, unknown>,
+		};
+		this.trackLoop(playerId, activeLoop, "TowSalvage");
+		return { type: "tow-salvage", startedAt: activeLoop.startedAt, running: true };
 	}
 
 	/** Track completion of an active loop and store the result. */

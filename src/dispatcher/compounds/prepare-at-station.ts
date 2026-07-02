@@ -35,6 +35,12 @@ export interface PrepareAtStationOptions {
 	 * Must end at systemId. Jump failures fail the goal without re-planning.
 	 */
 	route?: string[];
+	/**
+	 * Fuel units the navigation step must keep in reserve beyond the route's
+	 * estimated jump cost, so the ship arrives with a buffer (e.g. for the
+	 * in-system hop to the station POI) rather than dry. Defaults to 0.
+	 */
+	fuelReserve?: number;
 }
 
 /**
@@ -71,8 +77,11 @@ export class PrepareAtStation implements Goal {
 			};
 		}
 
+		const fuelReserve = this.options.fuelReserve ?? 0;
 		const steps: Goal[] = [
-			route ? new NavigateViaRoute(route) : new NavigateToSystem(this.options.systemId),
+			route
+				? new NavigateViaRoute(route, fuelReserve)
+				: new NavigateToSystem(this.options.systemId, fuelReserve),
 			new GoToPoi(this.options.poiId),
 			new DockAt(this.options.baseId),
 		];

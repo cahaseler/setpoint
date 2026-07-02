@@ -138,6 +138,29 @@ describe("NavigateViaRoute", () => {
 		expect(jumpCalls).toBe(0);
 	});
 
+	test("fuelReserve: fails before the first jump when reserve pushes cost over available", async () => {
+		// 2 hops × 10 = 20 fits in 25, but a 10-unit reserve needs 30 — must fail.
+		let jumpCalls = 0;
+		const endpoints = createMockEndpoints({
+			findRoute: async () => makeFuelInfo({ fuelPerJump: 10, fuelAvailable: 25 }),
+			jump: async () => {
+				jumpCalls++;
+				return mockApiResponse({});
+			},
+		});
+		const ctx: GoalContext = { endpoints, state: makeState("sol") };
+
+		const goal = new NavigateViaRoute(["a", "target"], 10);
+		const result = await goal.execute(ctx);
+
+		expect(result.success).toBe(false);
+		expect(result.message).toContain("Insufficient fuel");
+		expect(result.message).toContain("need 30");
+		expect(result.message).toContain("(incl. 10 reserve)");
+		expect(result.message).toContain("have 25");
+		expect(jumpCalls).toBe(0);
+	});
+
 	test("undocks before jumping when docked", async () => {
 		let undocked = false;
 		const endpoints = createMockEndpoints({

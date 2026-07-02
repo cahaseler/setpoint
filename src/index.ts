@@ -227,6 +227,7 @@ async function resumeLoops(
 		hauling: loopManager.startHaulingLoop.bind(loopManager) as StartFn,
 		"storage-transfer": loopManager.startStorageTransferLoop.bind(loopManager) as StartFn,
 		salvage: loopManager.startSalvageLoop.bind(loopManager) as StartFn,
+		"tow-salvage": loopManager.startTowSalvageLoop.bind(loopManager) as StartFn,
 		exploration: loopManager.startExplorationLoop.bind(loopManager) as StartFn,
 		guard: loopManager.startGuardLoop.bind(loopManager) as StartFn,
 	};

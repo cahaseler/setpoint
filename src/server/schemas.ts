@@ -188,9 +188,18 @@ export const goalSchemas: GoalSchema[] = [
 	{
 		type: "navigate-to-system",
 		label: "Navigate to System",
-		description: "Travel to a target star system.",
+		description:
+			"Travel to a target star system via multi-hop jumps. Does NOT refuel en route — " +
+			"fails before departing if the trip exceeds current fuel. Refuel separately first.",
 		category: "navigation",
-		fields: [str("targetSystemId", "Target System ID")],
+		fields: [
+			str("targetSystemId", "Target System ID"),
+			num("fuelReserve", "Fuel Reserve", {
+				advanced: true,
+				min: 0,
+				help: "Fuel to keep beyond the trip's estimated cost; fails before departing unless the ship would arrive with at least this much to spare (e.g. for the return trip or in-system travel).",
+			}),
+		],
 	},
 	{
 		type: "go-to-poi",

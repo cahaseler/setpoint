@@ -29,3 +29,7 @@ export { LootRun } from "./loot-run.js";
 export type { LootRunOptions } from "./loot-run.js";
 export { FuelRescue } from "./fuel-rescue.js";
 export type { FuelRescueOptions } from "./fuel-rescue.js";
+export { DrainTowedWreck } from "./drain-towed-wreck.js";
+export type { DrainTowedWreckOptions } from "./drain-towed-wreck.js";
+export { ProcessTowedWreck } from "./process-towed-wreck.js";
+export type { ProcessTowedWreckOptions } from "./process-towed-wreck.js";

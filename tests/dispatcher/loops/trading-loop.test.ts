@@ -201,6 +201,48 @@ describe("runTradingLoop", () => {
 		expect(result.ticksUsed).toBeGreaterThan(0);
 	});
 
+	test("wires minFuelReserve into the navigation pre-flight", async () => {
+		// Ship starts in a different system from the buy station, so the loop's
+		// first navigation runs its fuel check. The route fits the tank (need 10,
+		// have 100) but the 1000-unit reserve must fail the leg before departing.
+		const state = makeState({
+			location: { system_id: "alpha", system_name: "Alpha", poi_id: "alpha_poi" },
+		});
+		const jumps: string[] = [];
+		const endpoints = createMockEndpoints({
+			findRoute: async () =>
+				mockApiResponse({
+					found: true,
+					message: "Route found",
+					route: [{ system_id: "sol" }],
+					total_jumps: 1,
+					estimated_fuel: 10,
+					fuel_available: 100,
+				}),
+			jump: async (systemId) => {
+				jumps.push(systemId as string);
+				return mockApiResponse({});
+			},
+		});
+		const ctx: GoalContext = { endpoints, state, refreshState: async () => state };
+
+		const result = await runTradingLoop(
+			{
+				buyStation: { systemId: "sol", poiId: "buy_station", baseId: "buy_base" },
+				sellStation: { systemId: "sol", stationPoiId: "sell_station", baseId: "sell_base" },
+				items: [{ itemId: "goods", maxBuyPrice: 50, minSellPrice: 60 }],
+				minFuelReserve: 1000,
+				loopOptions: { maxIterations: 1, maxConsecutiveFailures: 1, retryDelayMs: 0 },
+			},
+			ctx,
+		);
+
+		expect(result.success).toBe(false);
+		expect(result.message).toContain("Insufficient fuel");
+		expect(result.message).toContain("(incl. 1000 reserve)");
+		expect(jumps).toHaveLength(0);
+	});
+
 	test("cancels via AbortSignal", async () => {
 		const mocks = buildCycleMocks();
 		const controller = new AbortController();

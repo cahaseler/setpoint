@@ -172,6 +172,24 @@ describe("dispatch", () => {
 		expect(client.post).toHaveBeenCalledWith("/accounts/player-123/loop", body);
 	});
 
+	test("loop start tow-salvage POSTs /accounts/:playerId/loop with the body", async () => {
+		const body = {
+			type: "tow-salvage",
+			options: {
+				mode: "fixed",
+				disposition: "scrap",
+				yardSystemId: "sol",
+				yardPoiId: "yard",
+				yardBaseId: "yard-base",
+				wreckSystemId: "sol",
+				wreckPoiId: "belt",
+			},
+		};
+		const { ctx, client } = makeCtx({ status: 201, data: {} }, body);
+		await dispatch(ctx, ["loop", "start", "player-123"]);
+		expect(client.post).toHaveBeenCalledWith("/accounts/player-123/loop", body);
+	});
+
 	test("loop stop calls DELETE /accounts/:playerId/loop", async () => {
 		const { ctx, client } = makeCtx();
 		await dispatch(ctx, ["loop", "stop", "player-123"]);
@@ -496,6 +514,19 @@ describe("help commands", () => {
 		expect(text).toContain("homeSystemId");
 		expect(text).toContain("depositTarget");
 		expect(text).toContain("allowLawless");
+	});
+
+	test("help tow-salvage shows tow salvage loop details", async () => {
+		const { ctx, output } = makeCtx();
+		await dispatch(ctx, ["help", "tow-salvage"]);
+
+		expect(output.raw).toHaveBeenCalled();
+		const text = output.lastRaw as string;
+		expect(text).toContain("Tow-Salvage Loop");
+		expect(text).toContain("yardSystemId");
+		expect(text).toContain("wreckPoiId");
+		expect(text).toContain("disposition");
+		expect(text).toContain("storageTarget");
 	});
 });
 

@@ -11,8 +11,8 @@ export type SessionState = "disconnected" | "connecting" | "active" | "recoverin
 
 /**
  * Controls access to the auth endpoint across multiple sessions.
- * Implementations must space concurrent acquire() calls by at least the
- * configured stagger interval to stay within rate limits.
+ * Implementations must cap granted acquire() calls to stay within the
+ * server's fixed-window auth rate limit.
  */
 export interface AuthSlot {
 	acquire(): Promise<void>;
