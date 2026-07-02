@@ -45,14 +45,9 @@ export class LibAccountManager {
 		log.info(`Connected ${this.byPlayerId.size} account(s)`);
 	}
 
-	/** Index username→player_id lazily so callers can look up either way. */
+	/** Look up the player_id for a username (case-insensitive). */
 	private playerIdForUsername(username: string): string | undefined {
-		const lower = username.toLowerCase();
-		const cached = this.usernameToPlayerId.get(lower);
-		if (cached) {
-			return cached;
-		}
-		return undefined;
+		return this.usernameToPlayerId.get(username.toLowerCase());
 	}
 
 	getByPlayerId(playerId: string): LibAccountLike | undefined {

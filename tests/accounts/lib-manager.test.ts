@@ -46,7 +46,7 @@ describe("LibAccountManager", () => {
 	});
 
 	test("wires onStateChange per account with the account's player_id", async () => {
-		const { client, accounts } = setup([player("Alpha", "pid-a")]);
+		const { client, accounts } = setup([player("Alpha", "pid-a"), player("Beta", "pid-b")]);
 		const events: Array<{ playerId: string; changed: string[] }> = [];
 		const mgr = new LibAccountManager(
 			client,
@@ -57,8 +57,8 @@ describe("LibAccountManager", () => {
 		);
 		await mgr.connect();
 
-		accounts.get("Alpha")?.emitStateChange(["location", "ship"]);
-		expect(events).toEqual([{ playerId: "pid-a", changed: ["location", "ship"] }]);
+		accounts.get("Beta")?.emitStateChange(["location", "ship"]);
+		expect(events).toEqual([{ playerId: "pid-b", changed: ["location", "ship"] }]);
 	});
 
 	test("disconnect(playerId) closes and removes the account", async () => {
@@ -69,6 +69,7 @@ describe("LibAccountManager", () => {
 		await mgr.disconnect("pid-a");
 		expect(mgr.size).toBe(0);
 		expect(mgr.getByPlayerId("pid-a")).toBeUndefined();
+		expect(mgr.getByUsername("alpha")).toBeUndefined();
 		expect(accounts.get("Alpha")?.closed).toBe(true);
 	});
 
