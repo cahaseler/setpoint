@@ -1,19 +1,5 @@
-import type { FindRouteResponse, GameState, MutationResult, QueryResult } from "@spacemolt/lib";
+import type { Commands, GameState } from "@spacemolt/lib";
 import type { GoalResult } from "./goals.js";
-
-/**
- * The subset of a lib `Account`'s `spacemolt` command group the ported slice
- * goals invoke. Typed with the lib's generated param/result types so calls are
- * checked and fakes stay honest. The real `account.commands.spacemolt` object
- * structurally satisfies this.
- */
-export interface LibGoalCommands {
-	travel(params: { id: string }): Promise<MutationResult>;
-	undock(): Promise<MutationResult>;
-	find_route(params: { id: string }): Promise<QueryResult<FindRouteResponse>>;
-	jump(params: { id: string }): Promise<MutationResult>;
-	refuel(params?: { id?: string; quantity?: number; target?: string }): Promise<MutationResult>;
-}
 
 /**
  * Narrow boundary over a lib `Account` for goal execution. The real `Account`
@@ -21,6 +7,11 @@ export interface LibGoalCommands {
  * tests supply a fake. Kept separate from `LibAccountLike` (the account-manager
  * boundary) because goal execution needs `commands`/`refresh` that the manager
  * does not.
+ *
+ * `commands` is the lib's full generated `Commands` surface — every goal gets
+ * the real, typed command set (`commands.spacemolt.dock()`,
+ * `commands.spacemolt_market.view_market(...)`, etc.) with param shapes checked
+ * by the compiler against the lib. No hand-maintained command interface.
  */
 export interface LibGoalAccount {
 	/**
@@ -31,7 +22,7 @@ export interface LibGoalAccount {
 	readonly state: Readonly<GameState>;
 	/** Force a live `get_status` re-seed of the cache. Returns the refreshed state. */
 	refresh(): Promise<Readonly<GameState>>;
-	readonly commands: { spacemolt: LibGoalCommands };
+	readonly commands: Commands;
 }
 
 /** Context passed to a lib-backed goal during execution. */
