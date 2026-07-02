@@ -1,0 +1,72 @@
+import { describe, expect, test } from "bun:test";
+import { SpacemoltError } from "@spacemolt/lib";
+import { LibMineWithJettison } from "../../../src/dispatcher/lib-compounds/mine-with-jettison.js";
+import { makeLibGoalContext } from "../../../src/dispatcher/lib-goal-context.js";
+import { FakeLibGoalAccount, fakeMutationResult } from "../lib-fakes.js";
+
+describe("LibMineWithJettison", () => {
+	test("fails when docked", async () => {
+		const account = new FakeLibGoalAccount({
+			ship: { cargo_used: 0, cargo_capacity: 100 },
+			location: { docked_at: "station-1" },
+		});
+		const result = await new LibMineWithJettison({ junkItemIds: ["rock_dust"] }).execute(
+			makeLibGoalContext(account),
+		);
+		expect(result.success).toBe(false);
+		expect(result.message).toContain("Cannot mine while docked");
+	});
+
+	test("mines full, jettisons junk, then mines again to full with no junk", async () => {
+		let mineCalls = 0;
+		const account = new FakeLibGoalAccount(
+			{ ship: { cargo_used: 90, cargo_capacity: 100 }, cargo: [] },
+			{
+				mine: () => {
+					mineCalls++;
+					if (mineCalls === 1) {
+						// First round fills up with junk mixed in.
+						account.setState({
+							ship: { cargo_used: 100, cargo_capacity: 100 },
+							cargo: [{ item_id: "rock_dust", quantity: 20 }],
+						});
+					} else {
+						// Second round (post-jettison) fills with valuable ore only.
+						account.setState({
+							ship: { cargo_used: 100, cargo_capacity: 100 },
+							cargo: [{ item_id: "iron_ore", quantity: 100 }],
+						});
+					}
+					return fakeMutationResult("mine");
+				},
+				jettison: () => {
+					account.setState({ ship: { cargo_used: 80, cargo_capacity: 100 }, cargo: [] });
+					return fakeMutationResult("jettison");
+				},
+			},
+		);
+		const result = await new LibMineWithJettison({ junkItemIds: ["rock_dust"] }).execute(
+			makeLibGoalContext(account),
+		);
+		expect(result.success).toBe(true);
+		expect(mineCalls).toBe(2);
+		expect(account.calls.filter((c) => c.action === "jettison")).toHaveLength(1);
+		expect(result.message).toContain("1 jettison round(s)");
+	});
+
+	test("fails when mining fails outright", async () => {
+		const account = new FakeLibGoalAccount(
+			{ ship: { cargo_used: 0, cargo_capacity: 100 } },
+			{
+				mine: () => {
+					throw new SpacemoltError("not_at_asteroid", "Not at a mining site");
+				},
+			},
+		);
+		const result = await new LibMineWithJettison({ junkItemIds: ["rock_dust"] }).execute(
+			makeLibGoalContext(account),
+		);
+		expect(result.success).toBe(false);
+		expect(result.message).toContain("Mining failed");
+	});
+});
