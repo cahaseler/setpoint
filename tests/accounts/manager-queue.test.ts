@@ -385,11 +385,15 @@ describe("AccountManager queue", () => {
 			] as Array<{ status: number; body?: unknown; headers?: Record<string, string> }>;
 
 			const { client } = makeClient(responses);
-			const delayMs = 80;
+			const windowMs = 80;
 			manager = new AccountManager(client, {
-				staggerDelayMs: delayMs,
+				staggerDelayMs: 0,
 				keepaliveIntervalMs: 60_000,
 				stateStore,
+				// Cap of 1 per window forces the second fallback login to wait for the
+				// first to age out, proving both route through the shared auth limiter.
+				authMaxLoginsPerWindow: 1,
+				authWindowMs: windowMs,
 			});
 
 			const start = Date.now();
@@ -404,7 +408,37 @@ describe("AccountManager queue", () => {
 			expect(manager.size).toBe(2);
 			// The second login waited on the auth limiter even though connectAll
 			// skipped its own stagger (likelyResume was true).
-			expect(elapsed).toBeGreaterThanOrEqual(delayMs - 20);
+			expect(elapsed).toBeGreaterThanOrEqual(windowMs - 20);
+		});
+
+		test("paces credentials-only logins through the auth limiter", async () => {
+			// Credentials-only adds (player_id discovered on login) must also route
+			// their login through the shared limiter, otherwise a fleet of credential
+			// adds bypasses the cap and trips the auth rate limit / IP block.
+			const responses = [
+				{ status: 200, body: makeSessionResponse("sess-1") },
+				{ status: 200, body: makeLoginResponse("player-A", "sess-1") },
+				{ status: 200, body: makeSessionResponse("sess-2") },
+				{ status: 200, body: makeLoginResponse("player-B", "sess-2") },
+			];
+
+			const { client } = makeClient(responses);
+			const windowMs = 80;
+			manager = new AccountManager(client, {
+				staggerDelayMs: 0,
+				keepaliveIntervalMs: 60_000,
+				authMaxLoginsPerWindow: 1,
+				authWindowMs: windowMs,
+			});
+
+			const start = Date.now();
+			await manager.connectByCredentials({ username: "Player1", password: "pw1" });
+			await manager.connectByCredentials({ username: "Player2", password: "pw2" });
+			const elapsed = Date.now() - start;
+
+			expect(manager.size).toBe(2);
+			// The second login waited for the first to age out of the limiter window.
+			expect(elapsed).toBeGreaterThanOrEqual(windowMs - 20);
 		});
 
 		test("onAccountConnected fires after queueAccount connects", async () => {

@@ -155,6 +155,11 @@ function makeContext(
 			startedAt: new Date().toISOString(),
 			running: true,
 		})),
+		startTowSalvageLoop: mock(() => ({
+			type: "tow-salvage",
+			startedAt: new Date().toISOString(),
+			running: true,
+		})),
 		startTradingLoop: mock(() => ({
 			type: "trading",
 			startedAt: new Date().toISOString(),
@@ -1091,6 +1096,54 @@ describe("handleStartLoop", () => {
 			headers: { "Content-Type": "application/json" },
 		});
 
+		const res = await handleStartLoop(req, { playerId: "p1" }, ctx);
+		expect(res.status).toBe(400);
+	});
+
+	test("starts tow-salvage loop and returns 201", async () => {
+		const account = makeAccount("p1");
+		const ctx = makeContext({ accounts: [account] });
+		const req = new Request("http://localhost/accounts/p1/loop", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				type: "tow-salvage",
+				options: {
+					mode: "fixed",
+					disposition: "scrap",
+					yardSystemId: "sol",
+					yardPoiId: "yard",
+					yardBaseId: "yard-base",
+					wreckSystemId: "sol",
+					wreckPoiId: "belt",
+				},
+			}),
+		});
+		const res = await handleStartLoop(req, { playerId: "p1" }, ctx);
+		expect(res.status).toBe(201);
+		const opts = (ctx.loopManager.startTowSalvageLoop as ReturnType<typeof mock>).mock
+			.calls[0]?.[1] as Record<string, unknown>;
+		expect(opts["wreckPoiId"]).toBe("belt");
+		expect(opts["yardBaseId"]).toBe("yard-base");
+	});
+
+	test("returns 400 for tow-salvage fixed mode missing wreckPoiId", async () => {
+		const account = makeAccount("p1");
+		const ctx = makeContext({ accounts: [account] });
+		const req = new Request("http://localhost/accounts/p1/loop", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				type: "tow-salvage",
+				options: {
+					mode: "fixed",
+					yardSystemId: "sol",
+					yardPoiId: "yard",
+					yardBaseId: "yard-base",
+					wreckSystemId: "sol",
+				},
+			}),
+		});
 		const res = await handleStartLoop(req, { playerId: "p1" }, ctx);
 		expect(res.status).toBe(400);
 	});

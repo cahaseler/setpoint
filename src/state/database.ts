@@ -72,6 +72,15 @@ export function createDatabase(path: string): Database {
 		db.run("ALTER TABLE jobs ADD COLUMN goal_options TEXT");
 	} catch {}
 
+	// Index the per-account job lookups (dashboard status, pending-job resume).
+	// Without it, "most recent N jobs for an account" full-scans and sorts the
+	// entire jobs table once per account — O(accounts × table size) on every
+	// dashboard poll. The (account_id, submitted_at DESC) order serves both the
+	// WHERE filter and the ORDER BY ... LIMIT without a temp b-tree sort.
+	db.run(
+		"CREATE INDEX IF NOT EXISTS idx_jobs_account_submitted ON jobs(account_id, submitted_at DESC)",
+	);
+
 	log.info("Database schema initialized");
 	return db;
 }

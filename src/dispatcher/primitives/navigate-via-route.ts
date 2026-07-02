@@ -14,16 +14,26 @@ const log = createLogger("goal:navigate-via-route");
  * ship's current system so the caller can re-plan; a transient HTTP error
  * is retried once on the same hop only.
  *
+ * Does NOT refuel en route. A single pre-flight check verifies the whole
+ * route fits in the current tank (plus an optional fuelReserve buffer) and
+ * fails before the first jump rather than stranding the ship mid-route.
+ *
  * Already satisfied if the player is already in the final system.
  * Prerequisites: none (undocks automatically if docked).
  */
 export class NavigateViaRoute implements Goal {
 	readonly name = "navigate-via-route";
 	private readonly route: string[];
+	private readonly fuelReserve: number;
 
-	/** @param route Systems to jump through in order; the last entry is the destination. */
-	constructor(route: string[]) {
+	/**
+	 * @param route Systems to jump through in order; the last entry is the destination.
+	 * @param fuelReserve Fuel units to keep beyond the route's estimated cost; the
+	 *   pre-flight check requires hops * fuel_per_jump + fuelReserve. Defaults to 0.
+	 */
+	constructor(route: string[], fuelReserve = 0) {
 		this.route = route;
+		this.fuelReserve = fuelReserve;
 	}
 
 	async execute(ctx: GoalContext): Promise<GoalResult> {
@@ -56,10 +66,11 @@ export class NavigateViaRoute implements Goal {
 		const routeInfo = await ctx.endpoints.findRoute(target);
 		const fuelPerJump = routeInfo.structuredContent.fuel_per_jump;
 		const fuelAvailable = routeInfo.structuredContent.fuel_available;
-		const estimatedFuel = hops.length * fuelPerJump;
-		if (estimatedFuel > fuelAvailable) {
+		const fuelNeeded = hops.length * fuelPerJump + this.fuelReserve;
+		if (fuelNeeded > fuelAvailable) {
+			const reserveNote = this.fuelReserve > 0 ? ` (incl. ${this.fuelReserve} reserve)` : "";
 			return failed(
-				`Insufficient fuel for ${hops.length}-hop route to ${target}: need ${estimatedFuel}, have ${fuelAvailable}`,
+				`Insufficient fuel for ${hops.length}-hop route to ${target}: need ${fuelNeeded}${reserveNote}, have ${fuelAvailable}`,
 				0,
 			);
 		}
@@ -91,7 +102,9 @@ export class NavigateViaRoute implements Goal {
 
 				if (isTransient && ctx.refreshState) {
 					// The jump may have executed server-side; check actual position.
-					const fresh = await ctx.refreshState();
+					// Force a live read — jumps carry no state, so the cached snapshot
+					// can't tell us whether this hop landed.
+					const fresh = await ctx.refreshState({ force: true });
 					if (fresh.location?.system_id === hopSystemId) {
 						ticksUsed++;
 						continue;
@@ -114,9 +127,11 @@ export class NavigateViaRoute implements Goal {
 		}
 
 		// Sync position after navigation — jump responses carry no V2GameState,
-		// so the store lags behind the actual position until refreshed.
+		// so the store lags behind the actual position until refreshed. Force a live
+		// read: the store still looks "fresh" by timestamp, so the freshness shortcut
+		// would otherwise return the stale pre-navigation position.
 		if (ticksUsed > 0 && ctx.refreshState) {
-			await ctx.refreshState();
+			await ctx.refreshState({ force: true });
 		}
 
 		return succeeded(`Navigated explicit route to ${target} in ${ticksUsed} tick(s)`, ticksUsed);
@@ -132,7 +147,9 @@ export class NavigateViaRoute implements Goal {
 		err: unknown,
 		ticksUsed: number,
 	): Promise<GoalResult> {
-		const state = ctx.refreshState ? await ctx.refreshState() : ctx.state;
+		// Force a live read so the reported position is the ship's true location,
+		// not a cached pre-jump snapshot (jumps carry no state to update the store).
+		const state = ctx.refreshState ? await ctx.refreshState({ force: true }) : ctx.state;
 		const position = state.location?.system_id ?? "unknown";
 		return failed(
 			`Route jump to ${hopSystemId} failed (currently in ${position}): ${errorMessage(err)}`,

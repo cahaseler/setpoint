@@ -178,12 +178,15 @@ export function makeLoginStructuredContent(): components["schemas"]["LoginRespon
 }
 
 /** Minimal login V2Response. */
-export function makeLoginResponse(): V2Response {
+export function makeLoginResponse(
+	playerId = "test-player-id",
+	sessionId = "test-session-id",
+): V2Response {
 	return makeV2Response({
 		structuredContent: makeLoginStructuredContent() as unknown as Record<string, never>,
 		session: {
-			id: "test-session-id",
-			player_id: "test-player-id",
+			id: sessionId,
+			player_id: playerId,
 			created_at: "2026-02-19T00:00:00Z",
 			expires_at: "2026-02-19T00:30:00Z",
 		},

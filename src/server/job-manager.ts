@@ -200,7 +200,7 @@ export class JobManager {
 	listPendingForAccount(accountId: string): JobRecord[] {
 		const rows = this.db
 			.query<JobRow, [string]>(
-				"SELECT * FROM jobs WHERE account_id = ? AND status = 'pending' ORDER BY submitted_at ASC",
+				"SELECT * FROM jobs WHERE account_id = ? AND status = 'pending' ORDER BY submitted_at ASC, rowid ASC",
 			)
 			.all(accountId);
 		return rows.map(rowToRecord);

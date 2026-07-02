@@ -30,8 +30,12 @@ export interface GoalContext {
 	 * Refresh state from the API. Returns fresh state.
 	 * Use for initial state sync or when transit polling is needed.
 	 * Prefer readLocalState for post-mutation checks — it avoids an extra API call.
+	 *
+	 * Pass `{ force: true }` to bypass the local-store freshness shortcut and
+	 * guarantee a live get_state — required after actions whose responses do not
+	 * carry post-action state (e.g. multi-hop jumps), where the store lags reality.
 	 */
-	refreshState?: () => Promise<StoredGameState>;
+	refreshState?: (opts?: { force?: boolean }) => Promise<StoredGameState>;
 	/** Signal for external cancellation. Goals should check this before starting work. */
 	signal?: AbortSignal;
 }

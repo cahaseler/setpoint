@@ -248,6 +248,48 @@ describe("PrepareAtStation", () => {
 		expect(result.steps[0]?.goalName).toBe("navigate-via-route");
 	});
 
+	test("forwards fuelReserve to the navigation step's pre-flight check", async () => {
+		// Ship is in a different system, so navigate-to-system actually runs its
+		// fuel check. The route fits the tank (need 10, have 100) but the 1000-unit
+		// reserve must push it over and fail before departing.
+		const state = makeState({
+			location: { system_id: "alpha", system_name: "Alpha", poi_id: "alpha_poi" },
+		});
+		const jumps: string[] = [];
+		const endpoints = createMockEndpoints({
+			findRoute: async () =>
+				mockApiResponse({
+					found: true,
+					message: "Route found",
+					route: [{ system_id: "sol" }],
+					total_jumps: 1,
+					estimated_fuel: 10,
+					fuel_available: 100,
+				}),
+			jump: async (systemId: unknown) => {
+				jumps.push(systemId as string);
+				return mockApiResponse({});
+			},
+		});
+		const ctx: GoalContext = { endpoints, state, refreshState: async () => state };
+
+		const goal = new PrepareAtStation({
+			systemId: "sol",
+			poiId: "sol_station",
+			baseId: "sol_base",
+			refuel: false,
+			repair: false,
+			fuelReserve: 1000,
+		});
+
+		const result = await goal.execute(ctx);
+
+		expect(result.success).toBe(false);
+		expect(result.message).toContain("Insufficient fuel");
+		expect(result.message).toContain("(incl. 1000 reserve)");
+		expect(jumps).toHaveLength(0);
+	});
+
 	test("fails upfront when the explicit route does not end at the target system", async () => {
 		const goal = new PrepareAtStation({
 			systemId: "sol",

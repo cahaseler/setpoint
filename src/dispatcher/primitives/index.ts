@@ -35,3 +35,6 @@ export { TransferStorage } from "./transfer-storage.js";
 export type { TransferStorageOptions } from "./transfer-storage.js";
 export { CancelOrders } from "./cancel-orders.js";
 export type { CancelOrdersOptions } from "./cancel-orders.js";
+export { TowWreck, PERMANENT_PREFIX } from "./tow-wreck.js";
+export { DisposeTowedWreck } from "./dispose-towed-wreck.js";
+export type { DisposeTowedWreckOptions } from "./dispose-towed-wreck.js";

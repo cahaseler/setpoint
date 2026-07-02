@@ -9,16 +9,22 @@ import { createLogger } from "../util/logger.js";
 import { type AccountConfig, saveAccountConfig } from "./config.js";
 
 /**
- * Serialises recovery connect() calls across all managed sessions so that
- * concurrent account reconnects (e.g. after a server restart) are spaced at
- * least minIntervalMs apart, staying within the 10 auth/min rate limit.
+ * Gates login/auth calls across all managed sessions to stay within the
+ * server's fixed-window auth limit (10/min). Grants at most maxPerWindow logins
+ * in any rolling windowMs span — a spacing model peaks at exactly the server
+ * ceiling with no headroom, so a window counter with headroom is used instead.
+ * Shared by the cold-start connect queue and per-session recovery reconnects.
  */
-class AuthRateLimiter implements AuthSlot {
-	private lastGrantedAt = 0;
+export class AuthRateLimiter implements AuthSlot {
+	/** Timestamps of recent grants, oldest first; pruned to the trailing window. */
+	private readonly grants: number[] = [];
 	private readonly queue: Array<() => void> = [];
 	private processing = false;
 
-	constructor(private readonly minIntervalMs: number) {}
+	constructor(
+		private readonly maxPerWindow: number,
+		private readonly windowMs: number,
+	) {}
 
 	acquire(): Promise<void> {
 		return new Promise<void>((resolve) => {
@@ -32,15 +38,24 @@ class AuthRateLimiter implements AuthSlot {
 	private async process(): Promise<void> {
 		this.processing = true;
 		while (this.queue.length > 0) {
-			const now = Date.now();
-			const wait = this.lastGrantedAt + this.minIntervalMs - now;
-			if (wait > 0) {
-				await new Promise<void>((r) => setTimeout(r, wait));
+			this.prune();
+			const oldest = this.grants[0];
+			if (this.grants.length >= this.maxPerWindow && oldest !== undefined) {
+				await new Promise<void>((r) => setTimeout(r, oldest + this.windowMs - Date.now()));
+				continue;
 			}
-			this.lastGrantedAt = Date.now();
+			this.grants.push(Date.now());
 			this.queue.shift()?.();
 		}
 		this.processing = false;
+	}
+
+	/** Drop grants that have aged out of the trailing window. */
+	private prune(): void {
+		const cutoff = Date.now() - this.windowMs;
+		while (this.grants.length > 0 && (this.grants[0] ?? 0) <= cutoff) {
+			this.grants.shift();
+		}
 	}
 }
 
@@ -91,10 +106,18 @@ export interface AccountManagerOptions {
 	 * after connectAll returns.
 	 */
 	onAccountConnected?: (playerId: string) => void;
+	/** Max logins the shared auth limiter grants per window. Defaults to 8. */
+	authMaxLoginsPerWindow?: number;
+	/** Auth limiter window in ms. Defaults to 60000 (the server's auth window). */
+	authWindowMs?: number;
 }
 
 const DEFAULT_STAGGER_DELAY_MS = 6500;
 const DEFAULT_KEEPALIVE_INTERVAL_MS = 10 * 60 * 1000;
+
+/** Server auth limit is a fixed 10/min window; cap below it for headroom. */
+const AUTH_MAX_LOGINS_PER_WINDOW = 8;
+const AUTH_WINDOW_MS = 60_000;
 
 /**
  * Manages the lifecycle of multiple SpaceMolt accounts.
@@ -114,7 +137,7 @@ export class AccountManager {
 	private readonly stateStore: StateStore | undefined;
 	private readonly configDir: string | undefined;
 	private onAccountConnectedCb: ((playerId: string) => void) | undefined;
-	/** Shared rate limiter passed to every session to stagger recovery reconnects. */
+	/** Shared rate limiter passed to every session to cap recovery reconnect logins. */
 	private readonly authRateLimiter: AuthRateLimiter;
 
 	constructor(client: SpaceMoltClient, options: AccountManagerOptions = {}) {
@@ -125,7 +148,10 @@ export class AccountManager {
 		this.stateStore = options.stateStore;
 		this.configDir = options.configDir;
 		this.onAccountConnectedCb = options.onAccountConnected;
-		this.authRateLimiter = new AuthRateLimiter(this.staggerDelayMs);
+		this.authRateLimiter = new AuthRateLimiter(
+			options.authMaxLoginsPerWindow ?? AUTH_MAX_LOGINS_PER_WINDOW,
+			options.authWindowMs ?? AUTH_WINDOW_MS,
+		);
 	}
 
 	/**
@@ -412,10 +438,10 @@ export class AccountManager {
 			// Pace the login through the shared auth limiter. connectAll() skips its
 			// own stagger when a stored session looks resumable, but if that resume
 			// fails (e.g. the server dropped sessions during downtime) the fallback
-			// login still needs pacing — otherwise a whole fleet re-logs in at once
-			// and trips the auth rate limit / IP block. The limiter's interval equals
-			// connectAll's stagger, so this adds no delay on the cold-start path where
-			// the stagger already spaced this call.
+			// login still needs capping — otherwise a whole fleet re-logs in at once
+			// and trips the auth rate limit / IP block. The limiter only adds delay
+			// once its window fills, so the cold-start path (already spaced by the
+			// stagger) passes through without extra wait.
 			await this.authRateLimiter.acquire();
 			log.info(`Connecting account: ${config.username}`);
 			const loginResponse = await session.connect();
@@ -445,6 +471,9 @@ export class AccountManager {
 			authSlot: this.authRateLimiter,
 		});
 
+		// Pace the login through the shared auth limiter so credentials-only adds
+		// are capped alongside every other login path.
+		await this.authRateLimiter.acquire();
 		log.info(`Connecting account by credentials: ${credentials.username}`);
 		const loginResponse = await session.connect();
 

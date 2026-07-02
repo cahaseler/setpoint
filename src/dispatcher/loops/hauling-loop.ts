@@ -37,10 +37,10 @@ export interface HaulingLoopOptions {
 	refuel?: boolean;
 	/**
 	 * Extra fuel units to keep in reserve beyond the route's estimated fuel cost.
-	 * The NavigateToSystem pre-flight check (estimated_fuel <= fuel_available) provides
-	 * the primary one-way fuel guard; this reserve adds margin for in-system travel.
-	 * Defaults to 0. Currently informational — a future change may wire this into the
-	 * pre-flight check once the NavigateToSystem API supports a reserve parameter.
+	 * Fed into the NavigateToSystem pre-flight check (estimated_fuel + reserve <=
+	 * fuel_available), so each leg fails before departing unless the ship would
+	 * arrive with at least this much fuel to spare for in-system travel.
+	 * Defaults to 0.
 	 */
 	minFuelReserve?: number;
 	/** Loop control options (signal, maxIterations, shouldContinue). */
@@ -70,6 +70,7 @@ export function runHaulingLoop(options: HaulingLoopOptions, ctx: GoalContext): P
 				sourceType: options.source.type,
 				items: options.source.items,
 				...(options.refuel !== undefined ? { refuel: options.refuel } : {}),
+				...(options.minFuelReserve !== undefined ? { fuelReserve: options.minFuelReserve } : {}),
 			}),
 			new UnloadAtStation({
 				systemId: options.destination.systemId,
@@ -81,6 +82,7 @@ export function runHaulingLoop(options: HaulingLoopOptions, ctx: GoalContext): P
 					: {}),
 				...(options.destination.items !== undefined ? { items: options.destination.items } : {}),
 				...(options.refuel !== undefined ? { refuel: options.refuel } : {}),
+				...(options.minFuelReserve !== undefined ? { fuelReserve: options.minFuelReserve } : {}),
 			}),
 		]);
 

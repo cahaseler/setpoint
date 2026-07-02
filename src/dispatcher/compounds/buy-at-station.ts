@@ -18,6 +18,8 @@ export interface BuyAtStationOptions {
 	items: BuyItemsOptions["items"];
 	/** Whether to refuel after docking. Defaults to true. */
 	refuel?: boolean;
+	/** Fuel units the navigation step must keep in reserve. Defaults to 0. */
+	fuelReserve?: number;
 }
 
 /**
@@ -46,6 +48,9 @@ export class BuyAtStation implements Goal {
 				poiId: this.options.poiId,
 				baseId: this.options.baseId,
 				...(this.options.refuel !== undefined ? { refuel: this.options.refuel } : {}),
+				...(this.options.fuelReserve !== undefined
+					? { fuelReserve: this.options.fuelReserve }
+					: {}),
 			}),
 			new BuyItems({ items: this.options.items }),
 		];

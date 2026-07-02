@@ -6,3 +6,5 @@ export { runTradingLoop } from "./trading-loop.js";
 export type { TradingLoopOptions } from "./trading-loop.js";
 export { runHaulingLoop } from "./hauling-loop.js";
 export type { HaulingLoopOptions } from "./hauling-loop.js";
+export { runTowSalvageLoop } from "./tow-salvage-loop.js";
+export type { TowSalvageLoopOptions } from "./tow-salvage-loop.js";

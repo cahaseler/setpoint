@@ -47,6 +47,37 @@ describe("GameEndpoints", () => {
 		return { endpoints, mockFetch };
 	}
 
+	/**
+	 * Lightweight recording stub: intercepts session.execute() calls and records
+	 * the last invocation for assertion without spinning up a real HTTP mock.
+	 */
+	function makeRecordingSession() {
+		let record: { toolGroup: string; action: string; params: Record<string, unknown> } = {
+			toolGroup: "",
+			action: "",
+			params: {},
+		};
+		const session = {
+			execute: async <T>(
+				toolGroup: string,
+				action: string,
+				params: Record<string, unknown> = {},
+			) => {
+				record = { toolGroup, action, params };
+				return {
+					result: "OK",
+					structuredContent: {} as T,
+					notifications: [],
+					session: undefined,
+				};
+			},
+		} as unknown as Session;
+		return {
+			session,
+			last: () => record,
+		};
+	}
+
 	describe("navigation", () => {
 		test("getState sends correct request", async () => {
 			const stateContent = makeGameStateContent();
@@ -316,6 +347,49 @@ describe("GameEndpoints", () => {
 			const body = JSON.parse(mockFetch.calls[2]?.init?.body as string) as Record<string, unknown>;
 			expect(mockFetch.calls[2]?.url).toContain("/spacemolt_storage/withdraw");
 			expect(body["target"]).toBe("faction");
+		});
+	});
+
+	describe("salvage tow/scrap/sell/release", () => {
+		test("towWreck calls spacemolt_salvage/tow with the wreck id", async () => {
+			const session = makeRecordingSession();
+			const endpoints = new GameEndpoints(session.session);
+			await endpoints.towWreck("w1");
+			expect(session.last()).toEqual({
+				toolGroup: "spacemolt_salvage",
+				action: "tow",
+				params: { id: "w1" },
+			});
+		});
+
+		test("scrapTowedWreck calls spacemolt_salvage/scrap with no params", async () => {
+			const session = makeRecordingSession();
+			await new GameEndpoints(session.session).scrapTowedWreck();
+			expect(session.last()).toEqual({
+				toolGroup: "spacemolt_salvage",
+				action: "scrap",
+				params: {},
+			});
+		});
+
+		test("sellTowedWreck calls spacemolt_salvage/sell with no params", async () => {
+			const session = makeRecordingSession();
+			await new GameEndpoints(session.session).sellTowedWreck();
+			expect(session.last()).toEqual({
+				toolGroup: "spacemolt_salvage",
+				action: "sell",
+				params: {},
+			});
+		});
+
+		test("releaseTow calls spacemolt_salvage/release with no params", async () => {
+			const session = makeRecordingSession();
+			await new GameEndpoints(session.session).releaseTow();
+			expect(session.last()).toEqual({
+				toolGroup: "spacemolt_salvage",
+				action: "release",
+				params: {},
+			});
 		});
 	});
 });

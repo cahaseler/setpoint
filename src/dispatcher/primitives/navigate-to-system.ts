@@ -11,15 +11,27 @@ const log = createLogger("goal:navigate-to-system");
  * Uses find_route to plan the path (free query), then jumps each hop
  * sequentially. Each jump consumes one tick (~10s).
  *
+ * Does NOT refuel en route — there is no detour to fuel stations along the
+ * way. A single pre-flight check verifies the whole planned route fits in the
+ * current tank (plus an optional fuelReserve buffer) and fails before the
+ * first jump rather than stranding the ship mid-route. Refuel separately
+ * (e.g. ensure-fueled while docked) before navigating, and use fuelReserve to
+ * guarantee the ship arrives with enough fuel left for whatever comes next.
+ *
  * Already satisfied if the player is already in the target system.
  * Prerequisites: none (can jump from anywhere, docked or undocked).
+ *
+ * @param fuelReserve Fuel units to keep beyond the route's estimated cost; the
+ *   pre-flight check requires estimated_fuel + fuelReserve. Defaults to 0.
  */
 export class NavigateToSystem implements Goal {
 	readonly name = "navigate-to-system";
 	private readonly targetSystemId: string;
+	private readonly fuelReserve: number;
 
-	constructor(targetSystemId: string) {
+	constructor(targetSystemId: string, fuelReserve = 0) {
 		this.targetSystemId = targetSystemId;
+		this.fuelReserve = fuelReserve;
 	}
 
 	async execute(ctx: GoalContext): Promise<GoalResult> {
@@ -49,8 +61,10 @@ export class NavigateToSystem implements Goal {
 		// Without this sync the next goal reads the pre-navigation origin, causing
 		// findRoute to return a route that starts at the actual position while fromSystemId
 		// is still the old origin — the skip-logic mismatch triggers "already in X" errors.
+		// Force a live read: the store still looks "fresh" by timestamp (jumps carry no
+		// state), so the freshness shortcut would otherwise return the stale origin.
 		if (result.ticksUsed > 0 && ctx.refreshState) {
-			await ctx.refreshState();
+			await ctx.refreshState({ force: true });
 		}
 		return result;
 	}
@@ -76,9 +90,13 @@ export class NavigateToSystem implements Goal {
 
 		// Pre-flight fuel check: fail before the first jump rather than stranding
 		// mid-route. fuel_available is the game server's current reading for this ship.
-		if (route.estimated_fuel > route.fuel_available) {
+		// fuelReserve keeps a buffer beyond the jump cost (e.g. for in-system travel
+		// after arrival) so the ship arrives with fuel to spare rather than dry.
+		const fuelNeeded = route.estimated_fuel + this.fuelReserve;
+		if (fuelNeeded > route.fuel_available) {
+			const reserveNote = this.fuelReserve > 0 ? ` (incl. ${this.fuelReserve} reserve)` : "";
 			return failed(
-				`Insufficient fuel to reach ${this.targetSystemId}: need ${route.estimated_fuel}, have ${route.fuel_available}`,
+				`Insufficient fuel to reach ${this.targetSystemId}: need ${fuelNeeded}${reserveNote}, have ${route.fuel_available}`,
 				ticksUsedSoFar,
 			);
 		}
@@ -131,7 +149,10 @@ export class NavigateToSystem implements Goal {
 					log.warn(
 						`Jump to ${hopSystemId} failed (${err instanceof Error ? err.message : String(err)}), re-planning from actual position`,
 					);
-					const freshState = await ctx.refreshState();
+					// Force a live read: jumps carry no state, so the store still looks
+					// "fresh" while holding the pre-jump origin — re-planning from that
+					// stale position is exactly the failure this re-route guards against.
+					const freshState = await ctx.refreshState({ force: true });
 					const actualSystemId = freshState.location?.system_id;
 
 					if (actualSystemId === this.targetSystemId) {

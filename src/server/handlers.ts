@@ -26,6 +26,7 @@ import type {
 	RoamingSalvageLoopApiOptions,
 	SalvageLoopApiOptions,
 	StorageTransferLoopApiOptions,
+	TowSalvageLoopApiOptions,
 	TradingLoopApiOptions,
 } from "./loop-manager.js";
 import { type RouteParams, errorResponse, jsonResponse } from "./router.js";
@@ -1063,6 +1064,7 @@ export async function handleStartLoop(
 		"enhanced-mining",
 		"salvage",
 		"roaming-salvage",
+		"tow-salvage",
 		"trading",
 		"hauling",
 		"storage-transfer",
@@ -1121,6 +1123,9 @@ export async function handleStartLoop(
 		} else if (loopType === "roaming-salvage") {
 			const apiOptions = validateRoamingSalvageOptions(opts);
 			status = ctx.loopManager.startRoamingSalvageLoop(actualId, apiOptions, account, ctx.store);
+		} else if (loopType === "tow-salvage") {
+			const apiOptions = validateTowSalvageOptions(opts);
+			status = ctx.loopManager.startTowSalvageLoop(actualId, apiOptions, account, ctx.store);
 		} else if (loopType === "exploration") {
 			const apiOptions = validateExplorationOptions(opts);
 			status = ctx.loopManager.startExplorationLoop(actualId, apiOptions, account, ctx.store);
@@ -1432,6 +1437,16 @@ function validateDepositTarget(
 	return {};
 }
 
+function validateStorageTarget(
+	opts: Record<string, unknown>,
+): { storageTarget: "personal" | "faction" } | Record<string, never> {
+	const val = opts["storageTarget"];
+	if (val === "personal" || val === "faction") {
+		return { storageTarget: val };
+	}
+	return {};
+}
+
 function parseListPrices(
 	raw: unknown,
 ): { listPrices: Record<string, number> } | Record<string, never> {
@@ -1529,6 +1544,28 @@ function validateSalvageOptions(opts: Record<string, unknown>): SalvageLoopApiOp
 		...validateDepositTarget(opts),
 		...(typeof opts["skipMarket"] === "boolean" ? { skipMarket: opts["skipMarket"] } : {}),
 		...validateCashSource(opts),
+		...(typeof opts["maxIterations"] === "number" ? { maxIterations: opts["maxIterations"] } : {}),
+	};
+}
+
+function validateTowSalvageOptions(opts: Record<string, unknown>): TowSalvageLoopApiOptions {
+	const mode = opts["mode"];
+	if (mode !== "fixed") {
+		throw new Error('options.mode is required and must be "fixed"');
+	}
+	const disposition = opts["disposition"];
+	if (disposition !== undefined && disposition !== "scrap" && disposition !== "sell") {
+		throw new Error('options.disposition must be "scrap" or "sell"');
+	}
+	return {
+		mode: "fixed",
+		yardSystemId: requireString(opts, "yardSystemId"),
+		yardPoiId: requireString(opts, "yardPoiId"),
+		yardBaseId: requireString(opts, "yardBaseId"),
+		wreckSystemId: requireString(opts, "wreckSystemId"),
+		wreckPoiId: requireString(opts, "wreckPoiId"),
+		...(disposition !== undefined ? { disposition: disposition as "scrap" | "sell" } : {}),
+		...validateStorageTarget(opts),
 		...(typeof opts["maxIterations"] === "number" ? { maxIterations: opts["maxIterations"] } : {}),
 	};
 }
