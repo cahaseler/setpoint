@@ -9,7 +9,7 @@ const log = createLogger("goal:withdraw-from-faction-storage");
 /**
  * View result — the union member returned by action=view (has an `items` array).
  *
- * lib codegen bug: the vendored StorageResponse view branch omits `credits`
+ * Upstream spec gap: the vendored StorageResponse view branch omits `credits`
  * (and other faction-only fields like `buckets`/`faction_id`) even though the
  * live server includes them for target=faction; the schema marks this branch
  * additionalProperties:false and never declares them. Verified live: view

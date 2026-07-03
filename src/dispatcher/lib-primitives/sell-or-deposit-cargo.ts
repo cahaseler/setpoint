@@ -131,13 +131,11 @@ export class LibSellOrDepositCargo implements LibGoal {
 			const batch = sellOrders.slice(i, i + BULK_LIMIT);
 			log.info(`Listing ${batch.length} item type(s) on market in bulk`);
 			const response = await ctx.account.commands.spacemolt_market.create_sell_order({
-				// lib codegen bug: orders typed string[] but wire schema is
-				// {item_id, quantity, price_each}[]
 				orders: batch.map((o) => ({
 					item_id: o.itemId,
 					quantity: o.quantity,
 					price_each: o.price,
-				})) as unknown as string[],
+				})),
 			});
 			listedCount += this.countSellResults(response.delta.details, log);
 			ticksUsed++;
@@ -152,11 +150,10 @@ export class LibSellOrDepositCargo implements LibGoal {
 			const target = depositToFaction ? "faction storage" : "storage";
 			log.info(`Depositing ${batch.length} item type(s) to ${target} in bulk`);
 			const response = await ctx.account.commands.spacemolt_storage.deposit({
-				// lib codegen bug: items typed string[] but wire schema is {item_id,quantity}[]
 				items: batch.map((i) => ({
 					item_id: i.itemId,
 					quantity: i.quantity,
-				})) as unknown as string[],
+				})),
 				target: depositToFaction ? "faction" : "self",
 			});
 			depositedCount += this.countDepositResults(response.delta.details, target, log);

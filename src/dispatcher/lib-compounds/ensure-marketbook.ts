@@ -205,14 +205,11 @@ export class LibEnsureMarketbook implements LibGoal {
 			const batch = toBuy.slice(i, i + BULK_LIMIT);
 			log.info(`Creating ${batch.length} buy order(s) in bulk`);
 			const response = await ctx.account.commands.spacemolt_market.create_buy_order({
-				// lib codegen bug: SpacemoltMarketCreateBuyOrderParams.orders is typed
-				// string[], but the wire schema and server expect
-				// {item_id, quantity, price_each}[] — the friendly command wrapper mistyped it.
 				orders: batch.map((t) => ({
 					item_id: t.itemId,
 					quantity: t.quantity,
 					price_each: t.price,
-				})) as unknown as string[],
+				})),
 			});
 			const bulkResult = this.countBulkResults(response.delta.details, "create buy", true);
 			createdCount += bulkResult.succeeded;
@@ -232,14 +229,11 @@ export class LibEnsureMarketbook implements LibGoal {
 			const batch = toSell.slice(i, i + BULK_LIMIT);
 			log.info(`Creating ${batch.length} sell order(s) in bulk`);
 			const response = await ctx.account.commands.spacemolt_market.create_sell_order({
-				// lib codegen bug: SpacemoltMarketCreateSellOrderParams.orders is typed
-				// string[], but the wire schema and server expect
-				// {item_id, quantity, price_each}[] — the friendly command wrapper mistyped it.
 				orders: batch.map((t) => ({
 					item_id: t.itemId,
 					quantity: t.quantity,
 					price_each: t.price,
-				})) as unknown as string[],
+				})),
 			});
 			const bulkResult = this.countBulkResults(response.delta.details, "create sell", true);
 			createdCount += bulkResult.succeeded;

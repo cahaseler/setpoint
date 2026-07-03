@@ -64,10 +64,7 @@ export class LibEnsureEmptyCargo implements LibGoal {
 			const batch = items.slice(i, i + BULK_LIMIT);
 			log.info(`Depositing ${batch.length} item type(s) to ${dest} in bulk`);
 			const response = await ctx.account.commands.spacemolt_storage.deposit({
-				// LIB BUG: SpacemoltStorageDepositParams.items is typed string[], but the
-				// wire schema (SpacemoltStorageDepositData.body.items) and server both
-				// expect {item_id, quantity}[] — the friendly command wrapper mistyped it.
-				items: batch as unknown as string[],
+				items: batch,
 				target: toFaction ? "faction" : "self",
 			});
 			depositedCount += this.countDepositResults(response.delta.details, dest);

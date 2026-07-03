@@ -9,7 +9,7 @@ const log = createLogger("goal:transfer-storage");
 /**
  * View result — the union member returned by action=view (has an `items` array).
  *
- * lib codegen bug: the vendored StorageResponse view branch omits `credits`
+ * Upstream spec gap: the vendored StorageResponse view branch omits `credits`
  * even though the live server includes it for target=faction (verified live).
  * The schema marks this branch additionalProperties:false and never declares it.
  */
