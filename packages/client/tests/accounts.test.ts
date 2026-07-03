@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import type { AccountDetail, AccountsListResult } from "../src/account.js";
+import type { AccountsListResult, ConnectedAccountDetail } from "../src/account.js";
 import { SetpointClient } from "../src/client.js";
 
 describe("SetpointClient.accounts", () => {
@@ -57,7 +57,7 @@ describe("SetpointClient.accounts", () => {
 	});
 
 	test("get(id) GETs /accounts/:id and returns the account detail", async () => {
-		const detail: AccountDetail = {
+		const detail: ConnectedAccountDetail = {
 			player_id: "p1",
 			username: "Player1",
 			status: "connected",

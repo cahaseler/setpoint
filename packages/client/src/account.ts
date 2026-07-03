@@ -308,7 +308,12 @@ export interface AccountDetailState {
 	location: AccountLocationSummary | null;
 }
 
-/** `GET /accounts/:id` (`handleGetAccount`) response for a connected account. */
+/**
+ * `GET /accounts/:id` (`handleGetAccount`) response. The daemon only resolves
+ * connected accounts (`resolveAccount` looks up `ctx.manager`, which holds
+ * connected accounts only) — an unresolved id/username 404s instead of
+ * returning a "pending" shape, so there is no separate pending-detail variant.
+ */
 export interface ConnectedAccountDetail {
 	player_id: string;
 	username: string;
@@ -321,18 +326,6 @@ export interface ConnectedAccountDetail {
 	executingGoal: unknown;
 	recentJobs: JobRecord[];
 }
-
-/** `GET /accounts/:id` (`handleGetAccount`) response for an account still queued for connection. */
-export interface PendingAccountDetail {
-	player_id: string | null;
-	username: string;
-	status: string;
-	error: string | null;
-	state: null;
-	loop: null;
-}
-
-export type AccountDetail = ConnectedAccountDetail | PendingAccountDetail;
 
 /** Response of `POST /accounts` (`handleAddAccount`). */
 export interface AddAccountResult {
@@ -377,10 +370,10 @@ export class AccountsApi {
 		return result as AccountsListResult;
 	}
 
-	/** Gets details for a single account, by player_id or username. */
-	async get(id: string): Promise<AccountDetail> {
+	/** Gets details for a single account, by player_id or username. Throws `SetpointHttpError` (404) if not found. */
+	async get(id: string): Promise<ConnectedAccountDetail> {
 		const result = await this.client.request("GET", `/accounts/${encodeURIComponent(id)}`);
-		return result as AccountDetail;
+		return result as ConnectedAccountDetail;
 	}
 
 	/** Queues an account for background connection (HTTP 202). */

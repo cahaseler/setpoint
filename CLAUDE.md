@@ -37,15 +37,15 @@ setpoint/
 ├── tsconfig.json
 ├── scripts/
 │   └── bump-version.ts             # Auto-increment patch version on deploy
+├── packages/                       # Bun workspace packages
+│   ├── protocol/                   # @setpoint/protocol — shared goal/loop/game-state types + zod schemas
+│   └── client/                     # @setpoint/client — typed HTTP client for the daemon's API
 ├── src/
 │   ├── index.ts                    # Entry point — starts the service
-│   ├── api/                        # SpaceMolt API client layer
-│   │   ├── client.ts               # HTTP client, request/response handling
-│   │   ├── session.ts              # Session creation, keepalive, recovery
-│   │   └── endpoints.ts            # Typed endpoint wrappers
 │   ├── accounts/                   # Multi-account management
-│   │   ├── manager.ts              # Account lifecycle, connection queue, config loading
-│   │   └── config.ts               # Config file schema, loading, and credential parsing
+│   │   ├── lib-manager.ts          # Account lifecycle via @spacemolt/lib's Clerk-based connectOwned
+│   │   ├── lib-config.ts           # Parses config/dispatcher.json (clerkApiKey, accountsFilter)
+│   │   └── config.ts               # Loads config/registration.json (registration_code)
 │   ├── state/                      # Game state tracking
 │   │   ├── database.ts             # SQLite schema and queries
 │   │   ├── store.ts                # State store interface
@@ -72,10 +72,10 @@ setpoint/
 │   └── util/                       # Shared utilities
 │       ├── logger.ts
 │       └── errors.ts
-├── tests/                          # Mirrors src/ structure
-└── config/                         # Runtime config (gitignored — holds credentials)
-    ├── registration.json           # Shared registration code
-    └── accounts/                   # One JSON file per account
+├── tests/                          # Mirrors src/ structure; packages/*/tests hold package-local tests
+└── config/                         # Runtime config (gitignored)
+    ├── dispatcher.json             # clerkApiKey + optional accountsFilter
+    └── registration.json           # Shared registration code (used by the register endpoint)
 ```
 
 ## SpaceMolt v2 API Summary
@@ -112,23 +112,29 @@ setpoint/
 
 ### Account Config Format
 
-`config/registration.json`:
+There are no more per-account credential files. The daemon is Clerk-based: on startup, `@spacemolt/lib`'s `connectOwned` looks up and connects every account owned by the configured Clerk API key (optionally narrowed by a filter), instead of reading one JSON file per account.
+
+`config/dispatcher.json` (parsed by `parseLibConfig` in `src/accounts/lib-config.ts`):
+```json
+{
+  "clerkApiKey": "ak_...",
+  "accountsFilter": {
+    "usernames": ["Player1"],
+    "empires": ["solarian"],
+    "includeHidden": false
+  }
+}
+```
+`clerkApiKey` is required (or set `SPACEMOLT_CLERK_API_KEY`, which takes precedence over the file). `accountsFilter` is optional — all clauses AND together; omit it to connect every owned, non-hidden account.
+
+`config/registration.json` (parsed by `loadRegistrationConfig` in `src/accounts/config.ts`, still used by `POST /accounts/register`):
 ```json
 {
   "registration_code": "code-from-spacemolt-dashboard"
 }
 ```
 
-`config/accounts/<name>.json` (matches the API registration response format):
-```json
-{
-  "username": "Player1",
-  "password": "generated-password",
-  "player_id": "uuid"
-}
-```
-
-Port and log level come from the `SM_PORT` and `SM_LOG_LEVEL` environment variables (defaults `7580` / `info`); there is no `dispatcher.json`.
+Port and log level come from the `SM_PORT` and `SM_LOG_LEVEL` environment variables (defaults `7580` / `info`).
 
 ## Type Generation
 
@@ -226,7 +232,7 @@ After finishing a set of changes, run `bun run deploy`. It bumps the patch versi
 - **Every mutation response updates state** — no mutation call should skip the state updater
 - **Per-account isolation** — accounts must never share sessions, state, or queues
 - **Respect rate limits proactively** — don't rely on 429 responses to pace; predict and prevent
-- **Queue-based account connection** — `POST /accounts` returns 202 Accepted and queues accounts for background connection with a ~6.5s stagger (10 auth/min rate limit). Use `GET /accounts` to check connection status.
+- **Queue-based account connection** — `POST /accounts` (username of an account already owned by the configured Clerk API key) returns 202 Accepted and connects in the background; `@spacemolt/lib` staggers the underlying auth calls to respect the 10 auth/min rate limit. Use `GET /accounts` to check connection status.
 - **Account resolution by ID or username** — all API endpoints accepting a `playerId` parameter also accept a username (case-insensitive). Handlers use `resolveAccount()` to look up by player_id first, then by username.
 - **Idempotent goals** — if a goal is already satisfied (e.g., already at the target location), it should succeed immediately without making API calls.
 
@@ -320,13 +326,12 @@ smctl log-level debug                     # Set log level (debug|info|warn|error
 ```bash
 smctl accounts list                       # List all connected + pending accounts
 smctl accounts get <playerId>             # Get account details (accepts player_id or username)
-smctl accounts add --json '{"username":"Player1","password":"pass","player_id":"uuid"}'
-smctl accounts add --json '{"username":"Player1","password":"pass"}'    # Credentials-only (discovers player_id via login)
+smctl accounts add --json '{"username":"Player1"}'    # Connect an account already owned by the configured Clerk API key
 smctl accounts register --json '{"username":"NewPlayer","empire":"solarian"}'
 smctl accounts remove <playerId>          # Disconnect and remove account
 ```
 
-Account addition is queue-based: `accounts add` returns 202 Accepted immediately and connects in the background with stagger delays. Use `accounts list` or `accounts get` to check connection status.
+Account addition is queue-based: `accounts add` returns 202 Accepted immediately and connects in the background (the lib staggers the underlying auth calls). Use `accounts list` or `accounts get` to check connection status.
 
 Valid empires for registration: `solarian`, `voidborn`, `crimson`, `nebula`, `outerrim`.
 

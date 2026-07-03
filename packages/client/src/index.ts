@@ -1,7 +1,6 @@
 export { AccountApi, AccountsApi, AccountStateApi, AccountSystemApi } from "./account.js";
 export type {
 	AbortOptions,
-	AccountDetail,
 	AccountDetailState,
 	AccountLocationSummary,
 	AccountShipSummary,
@@ -10,7 +9,6 @@ export type {
 	AddAccountResult,
 	ConnectedAccountDetail,
 	ConnectedAccountSummary,
-	PendingAccountDetail,
 	PendingAccountSummary,
 	RegisterAccountOptions,
 	RegisterAccountResult,

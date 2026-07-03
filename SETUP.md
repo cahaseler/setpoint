@@ -36,25 +36,52 @@ That installs the dev tooling (Biome, TypeScript) and the `@spacemolt/lib` packa
 
 ## 2. Configuration
 
-The daemon reads everything from a `config/` directory in the project root. This directory is gitignored — it holds your plaintext credentials, so treat it as a secret.
+The daemon reads everything from a `config/` directory in the project root. This directory is gitignored — it holds your Clerk API key, so treat it as a secret.
 
 ```
 config/
-├── registration.json        # registration code from the SpaceMolt dashboard
-└── accounts/
-    ├── player1.json         # one file per account
-    └── player2.json
+├── dispatcher.json           # Clerk API key + optional owned-account filter
+└── registration.json         # registration code from the SpaceMolt dashboard
 ```
 
-Create the directory layout:
+Create the directory:
 
 ```bash
-mkdir -p config/accounts
+mkdir -p config
 ```
+
+Account credentials are **not** stored here at all: the daemon is built on `@spacemolt/lib`'s Clerk integration, which owns and authenticates every account tied to your Clerk API key. There is no per-account password file — `connectOwned` connects all of them (optionally narrowed by a filter) on startup.
+
+### `config/dispatcher.json`
+
+Holds the Clerk API key and an optional filter over which owned accounts to connect.
+
+```json
+{
+  "clerkApiKey": "ak_...",
+  "accountsFilter": {
+    "usernames": ["Player1"],
+    "empires": ["solarian"],
+    "includeHidden": false
+  }
+}
+```
+
+Schema (verified in `src/accounts/lib-config.ts`, `parseLibConfig`):
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `clerkApiKey` | string | yes* | Your Clerk API key. *Or set `SPACEMOLT_CLERK_API_KEY`, which takes precedence over the file. |
+| `accountsFilter` | object | no | Narrows which owned accounts connect. Omit to connect every owned, non-hidden account. |
+| `accountsFilter.usernames` | string[] | no | Case-insensitive allowlist. |
+| `accountsFilter.empires` | string[] | no | Case-insensitive allowlist. |
+| `accountsFilter.includeHidden` | boolean | no | Include accounts hidden in the dashboard. Default `false`. |
+
+All `accountsFilter` clauses AND together.
 
 ### `config/registration.json`
 
-Holds the shared registration code from your SpaceMolt dashboard. It is **required** to register brand-new accounts via the daemon; if you only ever add already-existing accounts, the registration step won't read it.
+Holds the shared registration code from your SpaceMolt dashboard. It is **required** to register brand-new accounts via the daemon (`POST /accounts/register` / `smctl accounts register`); newly-registered accounts are connected and owned by Clerk automatically, so this file is only needed for that one flow.
 
 ```json
 {
@@ -62,52 +89,30 @@ Holds the shared registration code from your SpaceMolt dashboard. It is **requir
 }
 ```
 
-Schema (verified in `src/accounts/config.ts`):
+Schema (verified in `src/accounts/config.ts`, `loadRegistrationConfig`):
 
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
 | `registration_code` | string | yes | Non-empty string from your SpaceMolt dashboard |
 
-### `config/accounts/<name>.json`
-
-One JSON file per account. The filename is up to you (the daemon loads every `*.json` file in the directory, sorted by name). Each file matches the API registration response format:
-
-```json
-{
-  "username": "Player1",
-  "password": "generated-password",
-  "player_id": "00000000-0000-0000-0000-000000000000"
-}
-```
-
-Schema (verified in `src/accounts/config.ts`, `parseAccountConfig`):
-
-| Field | Type | Required | Notes |
-|-------|------|----------|-------|
-| `username` | string | yes | Non-empty |
-| `password` | string | yes | Non-empty |
-| `player_id` | string | yes | Non-empty; the account UUID |
-
-> Note: account config files loaded at daemon startup require all three fields including `player_id`. (When you *add* an account at runtime via the API/CLI, you may omit `player_id` and the daemon discovers it by logging in — see section 3. Files written by that flow always include all three fields.)
-
 ### Port and log level
 
-There is no `dispatcher.json` — the daemon does not read a config file for these. The port comes from the `SM_PORT` environment variable (default `7580`) and the log level from `SM_LOG_LEVEL` (`debug` | `info` | `warn` | `error`), both read in `src/index.ts`. You can also change the log level live with `smctl log-level <level>`.
+The port comes from the `SM_PORT` environment variable (default `7580`) and the log level from `SM_LOG_LEVEL` (`debug` | `info` | `warn` | `error`), both read in `src/index.ts`. You can also change the log level live with `smctl log-level <level>`.
 
-### Protect your credentials
+### Protect your Clerk key
 
-`config/` is gitignored, but it still holds plaintext passwords on disk. Lock the files down:
+`config/` is gitignored, but `dispatcher.json` still holds a plaintext API key on disk. Lock it down:
 
 ```bash
-chmod 700 config config/accounts
-chmod 600 config/registration.json config/accounts/*.json
+chmod 700 config
+chmod 600 config/dispatcher.json config/registration.json
 ```
 
 ---
 
 ## 3. Registering vs. adding accounts
 
-You can either register a brand-new SpaceMolt account or add an account you already have. Both can be done at startup (by dropping config files in `config/accounts/`) or at runtime via `smctl` once the daemon is running.
+You can either register a brand-new SpaceMolt account or connect one you already own in Clerk but that wasn't picked up at startup (e.g. added to Clerk, or excluded by `accountsFilter`, after the daemon last connected).
 
 ### Register a new account
 
@@ -120,32 +125,19 @@ bun run smctl accounts register --json '{"username":"NewPlayer","empire":"solari
 - `username`: 3–24 characters
 - `empire`: one of `solarian`, `voidborn`, `crimson`, `nebula`, `outerrim`
 
-On success the daemon writes the resulting credentials to `config/accounts/<slug>.json` for you.
+On success the account is registered, connected, and owned by your Clerk API key — no local credential file is written.
 
-### Add an existing account
-
-Provide full credentials:
+### Add (connect) an already-owned account
 
 ```bash
-bun run smctl accounts add --json '{"username":"Player1","password":"generated-password","player_id":"<uuid>"}'
+bun run smctl accounts add --json '{"username":"Player1"}'
 ```
 
-Or credentials only — the daemon discovers `player_id` by logging in:
-
-```bash
-bun run smctl accounts add --json '{"username":"Player1","password":"generated-password"}'
-```
-
-`accounts add` returns **202 Accepted** immediately and connects the account in the background.
+`username` must belong to an account already owned by the configured Clerk API key. `accounts add` returns **202 Accepted** immediately and connects the account in the background; poll with `smctl accounts list` or `smctl accounts get <playerId>`.
 
 ### Rate limits and staggered connection
 
-Account connections are queued and staggered automatically to stay within the game server's per-IP rate limits:
-
-- **Session creation:** 20/min
-- **Auth (login/register):** 10/min
-
-So when you add many accounts (or start the daemon with many configured), they come online gradually (~6.5s apart) rather than all at once. This is expected — check progress with `smctl accounts list` or `smctl accounts get <playerId>`. Avoid restarting the daemon repeatedly in a short window, which can trip the auth rate limit.
+`@spacemolt/lib`'s `connectOwned`/`connect` stagger authentication internally to stay within the game server's per-IP rate limits, so a fleet of owned accounts comes online gradually rather than all at once. This is expected — check progress with `smctl accounts list` or `smctl accounts get <playerId>`. Avoid restarting the daemon repeatedly in a short window, which can trip the auth rate limit.
 
 ---
 
@@ -156,7 +148,7 @@ bun run start          # start the daemon
 bun run dev            # start with watch/reload for development
 ```
 
-On startup the daemon loads `config/`, opens (or creates) `data/dispatcher.db`, starts the HTTP server, then connects configured accounts in the background (staggered). The HTTP server comes up immediately so health checks and state queries work while accounts are still connecting.
+On startup the daemon loads `config/`, opens (or creates) `data/dispatcher.db`, starts the HTTP server, then connects every owned account (per `accountsFilter`, if set) in the background via `@spacemolt/lib`'s `connectOwned` (staggered internally). The HTTP server comes up immediately so health checks and state queries work while accounts are still connecting.
 
 ### Binding and security
 

@@ -895,12 +895,15 @@ export async function handlePatchLoop(
 		return errorResponse("No loop running on this account", 409);
 	}
 
-	// Validate patch keys against the loop's schema — the patch merges keys
-	// verbatim into the persisted config, so an unknown key (e.g. a body
-	// wrapped in {"options": ...}) would silently corrupt it.
-	const schema = getLoopSchemas().find((s) => s.type === current.type);
-	if (schema) {
-		const validKeys = schema.fields.map((f) => f.name);
+	// Validate patch keys against the loop's zod partial schema (from
+	// `@setpoint/protocol`, the single source of truth for loop option
+	// shapes) — the patch merges keys verbatim into the persisted config, so
+	// an unknown key (e.g. a body wrapped in {"options": ...}) would silently
+	// corrupt it. `loopPatchSchemas[type].shape` is a plain object, not a zod
+	// object with `.strict()`, so `.parse()` alone would silently strip
+	// unknown keys rather than reject them — hence the explicit key check.
+	if (isLoopType(current.type)) {
+		const validKeys = Object.keys(loopPatchSchemas[current.type].shape);
 		const unknown = Object.keys(patch).filter((k) => !validKeys.includes(k));
 		if (unknown.length > 0) {
 			const hint = unknown.includes("options")
@@ -911,13 +914,7 @@ export async function handlePatchLoop(
 				400,
 			);
 		}
-	}
 
-	// Validate field types/enums against the loop's zod partial schema (from
-	// `@setpoint/protocol`) — the flat PATCH body maps directly onto
-	// `loopPatchSchemas[type]`, unlike `handleStartLoop`'s `{ options: {...} }`
-	// wrapper.
-	if (isLoopType(current.type)) {
 		try {
 			loopPatchSchemas[current.type].parse(patch);
 		} catch (err) {
@@ -1426,24 +1423,6 @@ export function handleGetLoopSchemas(
 }
 
 // ── Map data endpoints ──────────────────────────────────────────────────────
-
-export async function handleGetMap(
-	_req: Request,
-	_params: RouteParams,
-	_ctx: HandlerContext,
-): Promise<Response> {
-	try {
-		// Proxy the public map endpoint (no auth needed, includes positions + connections)
-		const res = await fetch("https://game.spacemolt.com/api/map");
-		if (!res.ok) {
-			throw new Error(`Public map API returned ${res.status}`);
-		}
-		const data = await res.json();
-		return jsonResponse(data);
-	} catch (err) {
-		return errorResponse(`Map fetch failed: ${errorMessage(err)}`, 500);
-	}
-}
 
 export async function handleGetSystem(
 	_req: Request,
