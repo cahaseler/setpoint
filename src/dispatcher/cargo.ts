@@ -1,6 +1,6 @@
-import type { components } from "../generated/api-types.js";
+import type { V2GameState } from "@spacemolt/lib";
 
-type RawCargoEntry = NonNullable<components["schemas"]["V2GameState"]["cargo"]>[number];
+type RawCargoEntry = NonNullable<V2GameState["cargo"]>[number];
 
 /** A cargo entry narrowed to the fields required to act on it. */
 export type CargoStack = RawCargoEntry & { item_id: string; quantity: number };

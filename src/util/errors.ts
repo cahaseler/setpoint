@@ -1,6 +1,6 @@
-import type { components } from "../generated/api-types.js";
+import type { V2Response } from "@spacemolt/lib";
 
-type V2ResponseError = NonNullable<components["schemas"]["V2Response"]["error"]>;
+type V2ResponseError = NonNullable<V2Response["error"]>;
 
 /** Error returned by the SpaceMolt API in the response envelope. */
 export class ApiError extends Error {

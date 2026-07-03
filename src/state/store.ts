@@ -1,10 +1,8 @@
 import type { Database } from "bun:sqlite";
-import type { components } from "../generated/api-types.js";
+import type { V2GameState } from "@spacemolt/lib";
 import { createLogger } from "../util/logger.js";
 
 const log = createLogger("state-store");
-
-type V2GameState = components["schemas"]["V2GameState"];
 
 /** The state sections present in V2GameState that we track. */
 type V2GameStateSectionKey =

@@ -1,18 +1,14 @@
-import type { GameState, StateSection } from "@spacemolt/lib";
-import type { components } from "../generated/api-types.js";
+import type { GameState, StateSection, V2GameState } from "@spacemolt/lib";
 import { createLogger } from "../util/logger.js";
 import type { StateStore } from "./store.js";
-
-type V2GameState = components["schemas"]["V2GameState"];
 
 const log = createLogger("state-projector");
 
 /**
  * Projects the lib's push-fed state cache into the read-only SQLite store.
  * On each state change, writes only the changed sections. The lib's `GameState`
- * and the store's generated `V2GameState` both derive from the same OpenAPI
- * spec, so the sections are structurally identical; this class is the single
- * place that bridges the two nominal types.
+ * and `V2GameState` are distinct nominal types over the same shape; this class
+ * is the single place that bridges them.
  */
 export class StateProjector {
 	constructor(private readonly store: StateStore) {}
