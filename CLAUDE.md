@@ -6,14 +6,14 @@ This file is working guidance for an AI agent (or human) developing **in this re
 
 ## Project Overview
 
-**What it does:** Connects to the SpaceMolt v2 REST API (`game.spacemolt.com/api/v2/`), manages session lifecycle for multiple game accounts, maintains an accurate local game state model in SQLite, and exposes a local HTTP API for declarative game automation.
+**What it does:** Connects to the SpaceMolt game over WebSocket v2 via `@spacemolt/lib` (Clerk-authenticated — one API key owns every account, no per-account passwords), mirrors each account's live game state into a local SQLite projection, and exposes a local HTTP API for declarative game automation.
 
 **Declarative model:** Users specify desired states (e.g., "be at system X, docked, full fuel tank"), not individual API calls. setpoint plans and executes the steps. Built in layers:
 1. **Primitives** — single-action declarative goals (travel, dock, refuel, buy, sell)
 2. **Compound goals** — multi-step sequences built from primitives (travel + dock + refuel)
 3. **Loops** — repeating behaviors (mine until full → sell → refuel → repeat)
 
-**Multi-account:** Supports N accounts concurrently. Each account has its own session, action queue, and state tracking.
+**Multi-account:** Supports N accounts concurrently. Each account has its own lib connection, action queue, and state tracking.
 
 ## Tech Stack
 
@@ -83,17 +83,17 @@ setpoint/
 
 ## SpaceMolt v2 API Summary
 
-- **Base URL:** `https://game.spacemolt.com/api/v2/`
-- **Auth flow:** `POST /session` → get session ID → include as `X-Session-Id` header on all calls
-- **Request pattern:** `POST /api/v2/{tool_group}/{action}` with JSON body (`id`, `quantity`, `text` fields)
-- **Response envelope:** `{ result, structuredContent, notifications, session, error }`
-  - `structuredContent` always contains typed JSON data for programmatic use
-  - `session` contains `{ id, player_id, created_at, expires_at }`
-  - `notifications` accumulates events since last request
-- **Mutations are synchronous:** The server blocks until the game tick executes, then returns the result. One mutation per 10-second tick per account.
-- **Queries are unlimited:** `get_state`, `get_cargo`, `get_nearby`, etc. have no rate limit.
+`@spacemolt/lib` owns the entire wire protocol — setpoint never speaks raw WebSocket/REST to the game itself, only the lib's typed `Account`/`Commands` surface.
 
-### Rate Limits (per-IP, 1-minute fixed window)
+- **Transport:** `wss://game.spacemolt.com/ws/v2`, via `SpacemoltClient`/`Account` from `@spacemolt/lib`.
+- **Auth:** a single Clerk API key drives every account you own (`new SpacemoltClient({ clerkApiKey })`). `connectOwned()` looks up and connects every account the key owns, minting a short-lived, single-use WS token per connection — no per-account passwords are stored anywhere.
+- **Commands are queries or mutations**, classified from the server's OpenAPI spec:
+  - **Queries** (`get_status`, `view_market`, …) resolve immediately, with no rate limit.
+  - **Mutations** (`jump`, `mine`, `buy`, …) are queued for the next 10-second game tick, one per account per tick. The lib hides the two-phase protocol: an awaited mutation doesn't resolve until the action actually executes (which can be many ticks later for travel/jump), and the local state cache already reflects it by then. Mutations are serialized per account, and `rate_limited` responses are retried automatically underneath `account.commands`/`account.send()` — setpoint's own code never sees a game-level rate-limit error for a mutation.
+
+### Rate Limits (game-side, per-IP)
+
+These limits are enforced by the game server, not by setpoint — `@spacemolt/lib` paces connects and token minting internally (staggered `connectOwned`, a separate per-user token-mint budget from gameplay) so a large fleet won't trip them. setpoint does not implement its own connection stagger or rate limiter.
 
 | Category | Limit | Notes |
 |----------|-------|-------|
@@ -101,17 +101,13 @@ setpoint/
 | Auth (login/register) | 10/min | Total attempts |
 | Failed auth | 5/min | Blocks ALL auth on failure threshold |
 
-### Session Lifecycle
+### Connection Lifecycle
 
-- **Inactivity timeout:** 30 minutes — every request bumps `LastSeen`
-- **No persistence:** Sessions are in-memory on the game server. Server restarts kill all sessions.
-- **Server restarts regularly** due to the update cycle — must handle session loss gracefully without hammering rate limits.
+`@spacemolt/lib` owns the WebSocket connection lifecycle end-to-end — setpoint does not implement session creation, keepalive, or reconnection-on-error itself:
 
-**Session keepalive strategy:**
-- Poll a cheap query endpoint at regular intervals (every 10–15 minutes) to prevent timeout
-- On 401 response, re-create session + re-login, respecting rate limits
-- On startup with N accounts, stagger session creation to stay under 20/min
-- Track session health per-account independently
+- **Auto-reconnect + re-auth.** The lib reconnects on unexpected drops and re-authenticates, restoring subscriptions. Reconnect is close-code-aware: a `session_replaced` close (someone else logged in as that player) or a deliberate `close()` is terminal; transient drops retry with backoff.
+- **Server restarts** drop every open WebSocket; the lib's reconnect-with-backoff handles this without setpoint needing to hammer rate limits.
+- **`LibAccountManager`** (`src/accounts/lib-manager.ts`) is a thin layer on top: it calls `connectOwned()` at startup (or `connectOne()`/`register()` for a single account), indexes the returned accounts by `player_id`/username, and wires each account's `onStateChange` stream to the state projector. It does not manage reconnection itself — that stays inside the lib.
 
 ### Account Config Format
 
@@ -145,15 +141,13 @@ All request and response types come from the `@spacemolt/lib` package. **Never h
 
 ## State Management
 
-Every mutation response's `structuredContent` contains a `V2GameState` with partial updates to: `player`, `ship`, `cargo`, `location`, `modules`, `skills`, `missions`, `queue`.
+`@spacemolt/lib` maintains a live, push-fed cache per account (`account.state`), seeded by `get_status` on connect and updated in real time from mutation deltas and server push events. That cache is the source of truth goals read from directly (via `LibGoalContext`) — no wire call needed.
 
-The state updater:
-1. Receives every API response
-2. Extracts `structuredContent` fields
-3. Merges them into the per-account SQLite state
-4. Emits state change events (for the goal engine to react to)
+The SQLite database is a **read-only mirror** of that cache, for the HTTP API's state endpoints (`GET /accounts/:playerId/state[/:section]`) to serve without going through an account's lib object. The `StateProjector` (`src/state/projector.ts`) writes it:
+1. `LibAccountManager` wires each account's `onStateChange(sections)` stream (via `src/state/attach-projector.ts`) to the projector.
+2. On each change, the projector reads the changed sections off `account.state` and calls `store.applyUpdate()`, which writes only the sections that are present (partial update — a `cargo`-only change doesn't clobber stored `ship`).
 
-The local DB is always as fresh as the last API response. Queries can read local state without hitting the API.
+The local DB is as fresh as the last change the lib pushed to the account's cache. Goals and loops read `account.state` directly and never depend on the SQLite mirror; only the HTTP state endpoints do.
 
 ## Service HTTP API (localhost)
 
@@ -196,11 +190,8 @@ bun run deploy           # Full deploy: bump version, check, typecheck, test, bu
 ### Testing
 - **95% coverage target**
 - Test files mirror source structure in `tests/`
-- Mock the HTTP layer, never call the real SpaceMolt API in tests
-- Use fixture files for API response data
+- Fake the lib account surface (`FakeLibGoalAccount` / `tests/dispatcher/lib-fakes.ts`, `tests/accounts/fakes.ts`), never call the real `@spacemolt/lib` or game server in tests
 - Test state transitions thoroughly — the state model is the core of the system
-- Test rate-limit compliance — verify staggered session creation, keepalive timing
-- Test session recovery — simulate 401s, server restarts
 
 #### What must always have a test
 Every piece of new behavior needs a test written at the same time as the code — not after:
@@ -214,9 +205,8 @@ Every piece of new behavior needs a test written at the same time as the code �
 Read `src/server/index.ts` to verify the exact registered route path before using it in the CLI. Route names are not always obvious from the handler name — e.g., `handleDashboardData` is registered at `/dashboard/data`, not `/dashboard-data`.
 
 ### Error Handling
-- All API errors must be typed (use the `V2Response.error` structure)
-- Session errors (401) trigger automatic recovery, not user-facing errors
-- Rate-limit errors (429) include `retry_after` — respect it, add jitter
+- Game API rejections surface as `SpacemoltError` (from `@spacemolt/lib`), with a `.code` field goals match against (e.g. `already_docked`, `unknown_destination`) — see `src/dispatcher/lib-primitives/dock-at.ts` for the pattern
+- Connection/auth recovery (reconnect, re-auth, `rate_limited` retries) happens inside `@spacemolt/lib` — setpoint's own code doesn't implement 401/429 recovery for game calls
 - Never swallow errors silently — log and surface them
 
 ### Git
@@ -232,9 +222,9 @@ After finishing a set of changes, run `bun run deploy`. It bumps the patch versi
 
 ### Important Patterns
 - **Never hardcode API types** — always use the types exported by `@spacemolt/lib`
-- **Every mutation response updates state** — no mutation call should skip the state updater
-- **Per-account isolation** — accounts must never share sessions, state, or queues
-- **Respect rate limits proactively** — don't rely on 429 responses to pace; predict and prevent
+- **The lib's push-fed cache is the source of truth** — the SQLite store is a read-only mirror of it (via `StateProjector`), kept current by wiring every account's `onStateChange` to the projector. No code path should read stale state by bypassing `account.state`.
+- **Per-account isolation** — accounts must never share a lib connection, state, or queues
+- **Respect rate limits proactively** — `@spacemolt/lib` already paces auth/connects and retries `rate_limited` mutations; don't add a second layer of pacing on top
 - **Queue-based account connection** — `POST /accounts` (username of an account already owned by the configured Clerk API key) returns 202 Accepted and connects in the background; `@spacemolt/lib` staggers the underlying auth calls to respect the 10 auth/min rate limit. Use `GET /accounts` to check connection status.
 - **Account resolution by ID or username** — all API endpoints accepting a `playerId` parameter also accept a username (case-insensitive). Handlers use `resolveAccount()` to look up by player_id first, then by username.
 - **Idempotent goals** — if a goal is already satisfied (e.g., already at the target location), it should succeed immediately without making API calls.
@@ -244,20 +234,18 @@ Key timing constants that interact — understand these before debugging any loc
 
 | Constant | Value | Location | Purpose |
 |----------|-------|----------|---------|
-| `ACTION_IN_PROGRESS_WAIT_MS` | 12s | `src/api/session.ts` | Wait before retrying when the game server has a pending action |
-| `DaemonClient.requestTimeoutMs` | 30s default, **5min for sync goals** | `src/cli/client.ts` | CLI per-request timeout |
-| `SpaceMoltClient.requestTimeoutMs` | 5min | `src/api/client.ts` | HTTP timeout to the game server |
+| `DaemonClient.requestTimeoutMs` | 30s default; **no timeout (unbounded wait)** for sync goals, `raw`, `accounts register`, `accounts remove`, and forced `abort` | `src/cli/client.ts` (default), `GAME_API_TIMEOUT_MS` in `src/cli/commands.ts` (per-command override) | CLI per-request timeout |
 | `retryDelayMs` | 1s | `src/cli/client.ts` | CLI delay between connection retries (3 attempts max) |
 
 **Error handling**: The CLI distinguishes connection errors (daemon unreachable — retried 3 times) from timeouts (daemon running but slow — reported immediately, no retry). Timeouts produce exit code 5 (`"timeout"`); connection failures produce exit code 3 (`"connection_failed"`).
 
-**Transit holds (game server behavior)**: `jump` blocks until the ship *arrives* — the HTTP response is held for the full transit (distance-based, can exceed 60s), not just one tick. A mutation submitted while a ship is in transit is also held server-side until arrival, then validated/executed — so a "slow" command answer (~1min wall clock, seconds of server processing) usually means it was queued behind a transit, not that anything is stuck. Queries return instantly. Further mutations beyond the held one can be rejected with `code: in_transit` (the session layer polls through that like `action_in_progress`).
+**Transit holds (game server behavior, hidden by `@spacemolt/lib`)**: a mutation like `jump` doesn't resolve until the ship *arrives* — the lib hides the two-phase mutation protocol, so the awaited call can take the full transit time (distance-based, can exceed 60s), not just one tick. A "slow" command (~1min wall clock, seconds of actual server processing) usually means it was queued behind a transit, not that anything is stuck. Queries always return instantly.
 
 ### Debugging Lock/Timing Issues
 When debugging a "lock not releasing" report:
 
 1. **Read the full execution chain first** — trace every file from the HTTP handler through to the game API call and back. Don't hypothesize from partial reading.
-2. **Identify what happens AFTER the lock is acquired by the new request** — the release point may be correct, but a subsequent blocking operation (e.g., an `action_in_progress` retry) can hold the lock long enough for the CLI to time out and retry.
+2. **Identify what happens AFTER the lock is acquired by the new request** — the release point may be correct, but a subsequent blocking operation (e.g., a mutation held by the lib for an in-progress transit) can hold the lock long enough for the CLI to time out and retry.
 3. **Explain the anomalous timing** — if a failure takes 7 seconds but should be instant, there's a timeout+retry cycle involved. Work backwards from the timing to the matching timeout constant.
 4. **Check both sides** — daemon-side locks AND client-side retry behavior. A bug can live in either place.
 
@@ -375,7 +363,7 @@ smctl loop update <playerId> --json '{"junkItemIds":["rock_dust"]}'   # Patch op
 smctl loop stop <playerId>                # Stop a running loop
 ```
 
-Supported loop types: `mining`, `enhanced-mining`, `trading`, `hauling`, `storage-transfer`.
+Supported loop types: `mining`, `enhanced-mining`, `salvage`, `roaming-salvage`, `tow-salvage`, `trading`, `hauling`, `storage-transfer`, `exploration`, `guard`.
 
 Loop configs are persisted to disk and auto-resume on daemon restart.
 
@@ -383,7 +371,7 @@ Use `smctl help loops`, `smctl help trading`, or `smctl help hauling` for detail
 
 #### Raw Command (Game API Passthrough)
 
-The `raw` command posts directly to the daemon's `POST /accounts/:playerId/raw` endpoint, using the account's managed session — no external binary required.
+The `raw` command posts directly to the daemon's `POST /accounts/:playerId/raw` endpoint, using the account's managed `@spacemolt/lib` connection — no external binary required.
 
 ```bash
 smctl raw <playerId> <action> [args...]
@@ -433,7 +421,7 @@ The daemon listens on `http://127.0.0.1:7580` by default. All responses are JSON
 
 #### Raw API Passthrough (HTTP)
 
-`POST /accounts/:playerId/raw` makes direct game API calls through the daemon's managed session, without the external spacemolt CLI binary. Useful for curl-based testing and for AI assistants.
+`POST /accounts/:playerId/raw` makes direct game API calls through the daemon's managed `@spacemolt/lib` connection for the target account. Useful for curl-based testing and for AI assistants.
 
 ```bash
 curl -s http://localhost:7580/accounts/Player1/raw \
@@ -454,4 +442,4 @@ Request body fields:
 - `action` (string, required) — the action within the tool group (e.g., `get_state`, `travel`, `buy`)
 - `params` (object, optional) — action parameters (e.g., `{"id":"...", "quantity":5}`)
 
-The response contains `{ result, structuredContent, notifications }` directly from the game API.
+The response contains `{ result, structuredContent }` (mutation responses also include `tick` and `command`). There is no `notifications` field — live push events (chat, combat, etc.) arrive on the account's event stream, not on command responses, so `raw` cannot relay them.
