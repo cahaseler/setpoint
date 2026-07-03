@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import type { GoalContext } from "../../src/dispatcher/goals.js";
+import type { GameState } from "@spacemolt/lib";
+import { makeLibGoalContext } from "../../src/dispatcher/lib-goal-context.js";
 import { createGoal, getGoalTypes } from "../../src/server/goal-registry.js";
-import type { StoredGameState } from "../../src/state/store.js";
-import { createMockEndpoints, mockApiResponse } from "../fixtures/mock-endpoints.js";
+import { FakeLibGoalAccount } from "../dispatcher/lib-fakes.js";
 
 describe("goal-registry", () => {
 	test("getGoalTypes returns all registered types", () => {
@@ -66,24 +66,21 @@ describe("goal-registry", () => {
 		const state = {
 			location: { system_id: "alpha", system_name: "Alpha", poi_id: "alpha_poi" },
 			ship: { id: "s1", fuel: 100, max_fuel: 100 },
-		} as StoredGameState;
-		const jumps: string[] = [];
-		const endpoints = createMockEndpoints({
-			findRoute: async () =>
-				mockApiResponse({
+		} as GameState;
+		const account = new FakeLibGoalAccount(state, {
+			find_route: () => ({
+				result: "",
+				structuredContent: {
 					found: true,
 					message: "Route found",
 					route: [{ system_id: "sol" }],
 					total_jumps: 1,
 					estimated_fuel: 10,
 					fuel_available: 100,
-				}),
-			jump: async (systemId: unknown) => {
-				jumps.push(systemId as string);
-				return mockApiResponse({});
-			},
+				},
+			}),
 		});
-		const ctx: GoalContext = { endpoints, state, refreshState: async () => state };
+		const ctx = makeLibGoalContext(account);
 
 		const goal = createGoal("navigate-to-system", { targetSystemId: "sol", fuelReserve: 1000 });
 		const result = await goal.execute(ctx);
@@ -91,7 +88,7 @@ describe("goal-registry", () => {
 		expect(result.success).toBe(false);
 		expect(result.message).toContain("Insufficient fuel");
 		expect(result.message).toContain("(incl. 1000 reserve)");
-		expect(jumps).toHaveLength(0);
+		expect(account.calls.some((c) => c.action === "jump")).toBe(false);
 	});
 
 	test("creates go-to-poi with targetPoiId", () => {

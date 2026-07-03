@@ -1,54 +1,54 @@
 import {
-	BuyAtStation,
-	EnhancedMiningRun,
-	EnsureLoadout,
-	EnsureMarketbook,
-	FuelRescue,
-	LoadAtStation,
-	MineUntilFull,
-	MineWithJettison,
-	MiningRun,
-	PrepareAtStation,
-	SellAtStation,
-	SellAtStationPriced,
-	TransferStorageToFaction,
+	LibBuyAtStation,
+	LibEnhancedMiningRun,
+	LibEnsureLoadout,
+	LibEnsureMarketbook,
+	LibFuelRescue,
+	LibLoadAtStation,
+	LibMineUntilFull,
+	LibMineWithJettison,
+	LibMiningRun,
+	LibPrepareAtStation,
+	LibSellAtStation,
+	LibSellAtStationPriced,
+	LibTransferStorageToFaction,
+	LibUnloadAtStation,
 	UNLOAD_DEST_TYPES,
-	UnloadAtStation,
-} from "../dispatcher/compounds/index.js";
-import type { Goal } from "../dispatcher/goals.js";
+} from "../dispatcher/lib-compounds/index.js";
+import type { LibGoal } from "../dispatcher/lib-goal-context.js";
 import {
-	AbandonMission,
-	AcceptMission,
-	BuyItems,
-	CancelOrders,
-	CompleteMission,
-	CreateMarketBuyOrder,
-	CreateMarketSellOrder,
-	DepositToFactionStorage,
-	DockAt,
-	EnsureCreditsFromFaction,
-	EnsureEmptyCargo,
-	EnsureFueled,
-	EnsureRepaired,
-	EnsureUndocked,
-	GiftToPlayer,
-	GoToPoi,
-	InstallMod,
-	JettisonCargo,
-	ListCargoForSale,
-	LoadFromFactionStorage,
-	LoadFromStorage,
-	NavigateToSystem,
-	NavigateViaRoute,
-	Scan,
-	SellOrDepositCargo,
-	TransferStorage,
-	UninstallMod,
-	UseItem,
-	WithdrawFromFactionStorage,
-} from "../dispatcher/primitives/index.js";
+	LibAbandonMission,
+	LibAcceptMission,
+	LibBuyItems,
+	LibCancelOrders,
+	LibCompleteMission,
+	LibCreateBuyOrder,
+	LibCreateSellOrder,
+	LibDepositToFactionStorage,
+	LibDockAt,
+	LibEnsureCreditsFromFaction,
+	LibEnsureEmptyCargo,
+	LibEnsureFueled,
+	LibEnsureRepaired,
+	LibEnsureUndocked,
+	LibGiftToPlayer,
+	LibGoToPoi,
+	LibInstallMod,
+	LibJettisonCargo,
+	LibListCargoForSale,
+	LibLoadFromFactionStorage,
+	LibLoadFromStorage,
+	LibNavigateToSystem,
+	LibNavigateViaRoute,
+	LibScan,
+	LibSellOrDepositCargo,
+	LibTransferStorage,
+	LibUninstallMod,
+	LibUseItem,
+	LibWithdrawFromFactionStorage,
+} from "../dispatcher/lib-primitives/index.js";
 
-type GoalFactory = (opts: Record<string, unknown>) => Goal;
+type GoalFactory = (opts: Record<string, unknown>) => LibGoal;
 
 function requireString(opts: Record<string, unknown>, key: string): string {
 	const value = opts[key];
@@ -103,32 +103,32 @@ const registry: ReadonlyMap<string, GoalFactory> = new Map<string, GoalFactory>(
 		"navigate-to-system",
 		(opts) => {
 			const fuelReserve = typeof opts["fuelReserve"] === "number" ? opts["fuelReserve"] : undefined;
-			return new NavigateToSystem(requireString(opts, "targetSystemId"), fuelReserve);
+			return new LibNavigateToSystem(requireString(opts, "targetSystemId"), fuelReserve);
 		},
 	],
 	[
 		"navigate-via-route",
 		(opts) => {
 			const fuelReserve = typeof opts["fuelReserve"] === "number" ? opts["fuelReserve"] : undefined;
-			return new NavigateViaRoute(requireStringArray(opts, "route"), fuelReserve);
+			return new LibNavigateViaRoute(requireStringArray(opts, "route"), fuelReserve);
 		},
 	],
-	["go-to-poi", (opts) => new GoToPoi(requireString(opts, "targetPoiId"))],
-	["dock-at", (opts) => new DockAt(requireString(opts, "targetBaseId"))],
-	["ensure-undocked", () => new EnsureUndocked()],
+	["go-to-poi", (opts) => new LibGoToPoi(requireString(opts, "targetPoiId"))],
+	["dock-at", (opts) => new LibDockAt(requireString(opts, "targetBaseId"))],
+	["ensure-undocked", () => new LibEnsureUndocked()],
 	[
 		"ensure-fueled",
 		(opts) => {
 			const targetFuel = typeof opts["targetFuel"] === "number" ? opts["targetFuel"] : undefined;
-			return new EnsureFueled(targetFuel);
+			return new LibEnsureFueled(targetFuel);
 		},
 	],
-	["ensure-repaired", () => new EnsureRepaired()],
+	["ensure-repaired", () => new LibEnsureRepaired()],
 	[
 		"sell-or-deposit-cargo",
 		(opts) => {
 			const depositTarget = opts["depositTarget"];
-			return new SellOrDepositCargo(
+			return new LibSellOrDepositCargo(
 				depositTarget === "personal" || depositTarget === "faction" ? { depositTarget } : {},
 			);
 		},
@@ -137,7 +137,7 @@ const registry: ReadonlyMap<string, GoalFactory> = new Map<string, GoalFactory>(
 		"ensure-empty-cargo",
 		(opts) => {
 			const depositTarget = opts["depositTarget"];
-			return new EnsureEmptyCargo(
+			return new LibEnsureEmptyCargo(
 				depositTarget === "personal" || depositTarget === "faction" ? { depositTarget } : {},
 			);
 		},
@@ -145,7 +145,7 @@ const registry: ReadonlyMap<string, GoalFactory> = new Map<string, GoalFactory>(
 	[
 		"jettison-cargo",
 		(opts) =>
-			new JettisonCargo({
+			new LibJettisonCargo({
 				itemId: requireString(opts, "itemId"),
 				quantity: requireNumber(opts, "quantity"),
 			}),
@@ -154,15 +154,15 @@ const registry: ReadonlyMap<string, GoalFactory> = new Map<string, GoalFactory>(
 		"load-from-storage",
 		(opts) => {
 			const maxQuantity = typeof opts["maxQuantity"] === "number" ? opts["maxQuantity"] : undefined;
-			return new LoadFromStorage(requireString(opts, "itemId"), maxQuantity);
+			return new LibLoadFromStorage(requireString(opts, "itemId"), maxQuantity);
 		},
 	],
-	["scan", () => new Scan()],
-	["use-item", (opts) => new UseItem({ itemId: requireString(opts, "itemId") })],
+	["scan", () => new LibScan()],
+	["use-item", (opts) => new LibUseItem({ itemId: requireString(opts, "itemId") })],
 	[
 		"create-buy-order",
 		(opts) =>
-			new CreateMarketBuyOrder(
+			new LibCreateBuyOrder(
 				requireString(opts, "itemId"),
 				requireNumber(opts, "quantity"),
 				requireNumber(opts, "price"),
@@ -171,29 +171,35 @@ const registry: ReadonlyMap<string, GoalFactory> = new Map<string, GoalFactory>(
 	[
 		"create-sell-order",
 		(opts) =>
-			new CreateMarketSellOrder(
+			new LibCreateSellOrder(
 				requireString(opts, "itemId"),
 				requireNumber(opts, "quantity"),
 				requireNumber(opts, "price"),
 			),
 	],
-	["cancel-orders", (opts) => new CancelOrders({ orderIds: requireStringArray(opts, "orderIds") })],
-	["accept-mission", (opts) => new AcceptMission({ missionId: requireString(opts, "missionId") })],
+	[
+		"cancel-orders",
+		(opts) => new LibCancelOrders({ orderIds: requireStringArray(opts, "orderIds") }),
+	],
+	[
+		"accept-mission",
+		(opts) => new LibAcceptMission({ missionId: requireString(opts, "missionId") }),
+	],
 	[
 		"complete-mission",
-		(opts) => new CompleteMission({ missionId: requireString(opts, "missionId") }),
+		(opts) => new LibCompleteMission({ missionId: requireString(opts, "missionId") }),
 	],
 	[
 		"abandon-mission",
-		(opts) => new AbandonMission({ missionId: requireString(opts, "missionId") }),
+		(opts) => new LibAbandonMission({ missionId: requireString(opts, "missionId") }),
 	],
-	["install-mod", (opts) => new InstallMod({ moduleId: requireString(opts, "moduleId") })],
-	["uninstall-mod", (opts) => new UninstallMod({ moduleId: requireString(opts, "moduleId") })],
+	["install-mod", (opts) => new LibInstallMod({ moduleId: requireString(opts, "moduleId") })],
+	["uninstall-mod", (opts) => new LibUninstallMod({ moduleId: requireString(opts, "moduleId") })],
 	[
 		"buy-items",
 		(opts) => {
 			const items = requireItemArray(opts, "items", ["itemId", "maxPrice"]);
-			return new BuyItems({
+			return new LibBuyItems({
 				items: items.map((item) => ({
 					itemId: item["itemId"] as string,
 					maxPrice: item["maxPrice"] as number,
@@ -206,7 +212,7 @@ const registry: ReadonlyMap<string, GoalFactory> = new Map<string, GoalFactory>(
 		"list-cargo-for-sale",
 		(opts) => {
 			const items = requireItemArray(opts, "items", ["itemId", "minPrice"]);
-			return new ListCargoForSale({
+			return new LibListCargoForSale({
 				items: items.map((item) => ({
 					itemId: item["itemId"] as string,
 					minPrice: item["minPrice"] as number,
@@ -217,7 +223,7 @@ const registry: ReadonlyMap<string, GoalFactory> = new Map<string, GoalFactory>(
 	[
 		"deposit-to-faction-storage",
 		(opts) =>
-			new DepositToFactionStorage({
+			new LibDepositToFactionStorage({
 				itemId: requireString(opts, "itemId"),
 				quantity: requireNumber(opts, "quantity"),
 			}),
@@ -226,7 +232,7 @@ const registry: ReadonlyMap<string, GoalFactory> = new Map<string, GoalFactory>(
 		"withdraw-from-faction-storage",
 		(opts) => {
 			const quantity = typeof opts["quantity"] === "number" ? opts["quantity"] : undefined;
-			return new WithdrawFromFactionStorage({
+			return new LibWithdrawFromFactionStorage({
 				itemId: requireString(opts, "itemId"),
 				...(quantity !== undefined ? { quantity } : {}),
 			});
@@ -235,7 +241,7 @@ const registry: ReadonlyMap<string, GoalFactory> = new Map<string, GoalFactory>(
 	[
 		"gift-to-player",
 		(opts) =>
-			new GiftToPlayer({
+			new LibGiftToPlayer({
 				targetName: requireString(opts, "targetName"),
 				itemId: requireString(opts, "itemId"),
 				quantity: requireNumber(opts, "quantity"),
@@ -246,14 +252,14 @@ const registry: ReadonlyMap<string, GoalFactory> = new Map<string, GoalFactory>(
 		"load-from-faction-storage",
 		(opts) => {
 			const maxQuantity = typeof opts["maxQuantity"] === "number" ? opts["maxQuantity"] : undefined;
-			return new LoadFromFactionStorage(requireString(opts, "itemId"), maxQuantity);
+			return new LibLoadFromFactionStorage(requireString(opts, "itemId"), maxQuantity);
 		},
 	],
 	[
 		"ensure-credits-from-faction",
 		(opts) => {
 			const minCredits = typeof opts["minCredits"] === "number" ? opts["minCredits"] : undefined;
-			return new EnsureCreditsFromFaction(minCredits !== undefined ? { minCredits } : undefined);
+			return new LibEnsureCreditsFromFaction(minCredits !== undefined ? { minCredits } : undefined);
 		},
 	],
 
@@ -264,7 +270,7 @@ const registry: ReadonlyMap<string, GoalFactory> = new Map<string, GoalFactory>(
 			const fullThreshold =
 				typeof opts["fullThreshold"] === "number" ? opts["fullThreshold"] : undefined;
 			const maxAttempts = typeof opts["maxAttempts"] === "number" ? opts["maxAttempts"] : undefined;
-			return new MineUntilFull({
+			return new LibMineUntilFull({
 				...(fullThreshold !== undefined ? { fullThreshold } : {}),
 				...(maxAttempts !== undefined ? { maxAttempts } : {}),
 			});
@@ -278,7 +284,7 @@ const registry: ReadonlyMap<string, GoalFactory> = new Map<string, GoalFactory>(
 			const cashSource = opts["cashSource"] === "faction" ? ("faction" as const) : undefined;
 			const minCredits = typeof opts["minCredits"] === "number" ? opts["minCredits"] : undefined;
 			const route = opts["route"] !== undefined ? requireStringArray(opts, "route") : undefined;
-			return new PrepareAtStation({
+			return new LibPrepareAtStation({
 				systemId: requireString(opts, "systemId"),
 				poiId: requireString(opts, "poiId"),
 				baseId: requireString(opts, "baseId"),
@@ -297,7 +303,7 @@ const registry: ReadonlyMap<string, GoalFactory> = new Map<string, GoalFactory>(
 			const depositTarget = opts["depositTarget"];
 			const cashSource = opts["cashSource"] === "faction" ? ("faction" as const) : undefined;
 			const minCredits = typeof opts["minCredits"] === "number" ? opts["minCredits"] : undefined;
-			return new SellAtStation({
+			return new LibSellAtStation({
 				systemId: requireString(opts, "systemId"),
 				stationPoiId: requireString(opts, "stationPoiId"),
 				baseId: requireString(opts, "baseId"),
@@ -314,7 +320,7 @@ const registry: ReadonlyMap<string, GoalFactory> = new Map<string, GoalFactory>(
 			const fullThreshold =
 				typeof opts["fullThreshold"] === "number" ? opts["fullThreshold"] : undefined;
 			const maxAttempts = typeof opts["maxAttempts"] === "number" ? opts["maxAttempts"] : undefined;
-			return new MiningRun({
+			return new LibMiningRun({
 				systemId: requireString(opts, "systemId"),
 				beltPoiId: requireString(opts, "beltPoiId"),
 				...(fullThreshold !== undefined ? { fullThreshold } : {}),
@@ -330,7 +336,7 @@ const registry: ReadonlyMap<string, GoalFactory> = new Map<string, GoalFactory>(
 			const maxAttempts = typeof opts["maxAttempts"] === "number" ? opts["maxAttempts"] : undefined;
 			const maxJettisonRounds =
 				typeof opts["maxJettisonRounds"] === "number" ? opts["maxJettisonRounds"] : undefined;
-			return new EnhancedMiningRun({
+			return new LibEnhancedMiningRun({
 				systemId: requireString(opts, "systemId"),
 				beltPoiId: requireString(opts, "beltPoiId"),
 				junkItemIds: requireStringArray(opts, "junkItemIds"),
@@ -348,7 +354,7 @@ const registry: ReadonlyMap<string, GoalFactory> = new Map<string, GoalFactory>(
 			const maxAttempts = typeof opts["maxAttempts"] === "number" ? opts["maxAttempts"] : undefined;
 			const maxJettisonRounds =
 				typeof opts["maxJettisonRounds"] === "number" ? opts["maxJettisonRounds"] : undefined;
-			return new MineWithJettison({
+			return new LibMineWithJettison({
 				junkItemIds: requireStringArray(opts, "junkItemIds"),
 				...(fullThreshold !== undefined ? { fullThreshold } : {}),
 				...(maxAttempts !== undefined ? { maxAttempts } : {}),
@@ -361,7 +367,7 @@ const registry: ReadonlyMap<string, GoalFactory> = new Map<string, GoalFactory>(
 		(opts) => {
 			const items = requireItemArray(opts, "items", ["itemId", "maxPrice"]);
 			const refuel = typeof opts["refuel"] === "boolean" ? opts["refuel"] : undefined;
-			return new BuyAtStation({
+			return new LibBuyAtStation({
 				systemId: requireString(opts, "systemId"),
 				poiId: requireString(opts, "poiId"),
 				baseId: requireString(opts, "baseId"),
@@ -379,7 +385,7 @@ const registry: ReadonlyMap<string, GoalFactory> = new Map<string, GoalFactory>(
 		(opts) => {
 			const items = requireItemArray(opts, "items", ["itemId", "minPrice"]);
 			const refuel = typeof opts["refuel"] === "boolean" ? opts["refuel"] : undefined;
-			return new SellAtStationPriced({
+			return new LibSellAtStationPriced({
 				systemId: requireString(opts, "systemId"),
 				stationPoiId: requireString(opts, "stationPoiId"),
 				baseId: requireString(opts, "baseId"),
@@ -397,7 +403,7 @@ const registry: ReadonlyMap<string, GoalFactory> = new Map<string, GoalFactory>(
 			const items = requireItemArray(opts, "items", ["itemId"]);
 			const refuel = typeof opts["refuel"] === "boolean" ? opts["refuel"] : undefined;
 			const sourceType = requireString(opts, "sourceType");
-			return new LoadAtStation({
+			return new LibLoadAtStation({
 				systemId: requireString(opts, "systemId"),
 				poiId: requireString(opts, "poiId"),
 				baseId: requireString(opts, "baseId"),
@@ -429,7 +435,7 @@ const registry: ReadonlyMap<string, GoalFactory> = new Map<string, GoalFactory>(
 					}))
 				: undefined;
 
-			return new UnloadAtStation({
+			return new LibUnloadAtStation({
 				systemId: requireString(opts, "systemId"),
 				poiId: requireString(opts, "poiId"),
 				baseId: requireString(opts, "baseId"),
@@ -469,7 +475,7 @@ const registry: ReadonlyMap<string, GoalFactory> = new Map<string, GoalFactory>(
 				throw new Error('options.uninstalledStorage must be "personal", "faction", or "cargo"');
 			}
 
-			return new EnsureLoadout({
+			return new LibEnsureLoadout({
 				systemId: requireString(opts, "systemId"),
 				poiId: requireString(opts, "poiId"),
 				baseId: requireString(opts, "baseId"),
@@ -516,18 +522,18 @@ const registry: ReadonlyMap<string, GoalFactory> = new Map<string, GoalFactory>(
 			const cancelUnmatched =
 				typeof opts["cancelUnmatched"] === "boolean" ? opts["cancelUnmatched"] : undefined;
 
-			return new EnsureMarketbook({
+			return new LibEnsureMarketbook({
 				targetOrders,
 				...(priceTolerance !== undefined ? { priceTolerance } : {}),
 				...(cancelUnmatched !== undefined ? { cancelUnmatched } : {}),
 			});
 		},
 	],
-	["transfer-storage-to-faction", () => new TransferStorageToFaction()],
+	["transfer-storage-to-faction", () => new LibTransferStorageToFaction()],
 	[
 		"fuel-rescue",
 		(opts) =>
-			new FuelRescue({
+			new LibFuelRescue({
 				systemId: requireString(opts, "systemId"),
 				poiId: requireString(opts, "poiId"),
 				targetUsername: requireString(opts, "targetUsername"),
@@ -545,7 +551,7 @@ const registry: ReadonlyMap<string, GoalFactory> = new Map<string, GoalFactory>(
 				throw new Error('options.target must be "self" or "faction"');
 			}
 			const quantity = typeof opts["quantity"] === "number" ? opts["quantity"] : undefined;
-			return new TransferStorage({
+			return new LibTransferStorage({
 				source: source as "self" | "faction",
 				target: target as "self" | "faction",
 				itemId: requireString(opts, "itemId"),
@@ -594,7 +600,7 @@ export function getGoalTypes(): string[] {
  * Create a Goal instance by type name and options.
  * Throws if the type is unknown, deprecated, or options are invalid.
  */
-export function createGoal(type: string, options: Record<string, unknown>): Goal {
+export function createGoal(type: string, options: Record<string, unknown>): LibGoal {
 	const factory = registry.get(type);
 	if (!factory) {
 		const deprecated = deprecatedTypeMessage(type);

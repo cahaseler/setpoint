@@ -1,15 +1,18 @@
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { AccountConfig } from "./accounts/config.js";
-import { loadConfig } from "./accounts/config.js";
-import { AccountManager } from "./accounts/manager.js";
-import { SpaceMoltClient } from "./api/client.js";
+import { SpacemoltClient, type StateSection } from "@spacemolt/lib";
+import { parseLibConfig } from "./accounts/lib-config.js";
+import { LibAccountManager } from "./accounts/lib-manager.js";
+import { type LibManagedAccount, playerId as playerIdOf } from "./accounts/lib-types.js";
+import { makeLibGoalContext } from "./dispatcher/lib-goal-context.js";
 import { createGoal } from "./server/goal-registry.js";
 import { startServer } from "./server/index.js";
 import type { JobManager } from "./server/job-manager.js";
-import { LoopManager, buildGoalContext } from "./server/loop-manager.js";
+import { LoopManager } from "./server/loop-manager.js";
+import { makeProjectingOnStateChange } from "./state/attach-projector.js";
 import { createDatabase } from "./state/database.js";
+import { StateProjector } from "./state/projector.js";
 import { StateStore } from "./state/store.js";
-import { StateUpdater } from "./state/updater.js";
 import { bandwidthTracker } from "./util/bandwidth-tracker.js";
 import { errorMessage } from "./util/errors.js";
 import { type LogLevel, createLogger, enableFileLogging, setLogLevel } from "./util/logger.js";
@@ -29,55 +32,57 @@ const CONFIG_DIR = join(import.meta.dir, "..", "config");
 const DB_PATH = join(import.meta.dir, "..", "data", "dispatcher.db");
 const API_PORT = Number(process.env["SM_PORT"]) || 7580;
 
+/** Read config/dispatcher.json, returning `{}` if it is missing or unreadable. */
+async function readDispatcherConfig(): Promise<unknown> {
+	try {
+		return JSON.parse(await readFile(join(CONFIG_DIR, "dispatcher.json"), "utf-8"));
+	} catch {
+		return {};
+	}
+}
+
 async function main(): Promise<void> {
 	log.info("setpoint starting...");
 
-	// Load config
+	// Load config: Clerk API key (env wins) + optional owned-player filter.
 	log.info(`Loading config from ${CONFIG_DIR}`);
-	const config = await loadConfig(CONFIG_DIR);
-	log.info(`Found ${config.accounts.length} account(s)`);
+	const libConfig = parseLibConfig(process.env, await readDispatcherConfig());
 
 	// Initialize database and state
 	const db = createDatabase(DB_PATH);
 	const store = new StateStore(db);
-	const updater = new StateUpdater(store);
+	const projector = new StateProjector(store);
 
-	// Wire up state change logging
-	updater.onStateChange((event) => {
-		log.info(`[${event.accountId}] State updated: ${event.sections.join(", ")}`);
-	});
+	// Project every lib state change into SQLite, then log the changed sections.
+	const projectOnChange = makeProjectingOnStateChange(projector);
+	const onStateChange = (
+		playerId: string,
+		changed: StateSection[],
+		account: LibManagedAccount,
+	): void => {
+		projectOnChange(playerId, changed, account);
+		log.info(`[${playerId}] State updated: ${changed.join(", ")}`);
+	};
 
-	// Create API client and account manager
-	const client = new SpaceMoltClient();
-	const manager = new AccountManager(client, {
-		stateUpdater: updater,
-		stateStore: store,
-		configDir: CONFIG_DIR,
-	});
+	// Create the lib client and account manager
+	const client = new SpacemoltClient({ clerkApiKey: libConfig.clerkApiKey });
+	const manager = new LibAccountManager(client, libConfig, { onStateChange });
 
 	// Start bandwidth rollup logging (5-minute windows)
 	bandwidthTracker.start();
 
 	// Start the HTTP API server BEFORE connecting accounts, so health checks and
-	// state queries are live immediately. A cold start with expired sessions
-	// re-logs in every account at the auth-rate-limit stagger (~6.5s each), which
-	// for a large fleet can take many minutes — we must not hold the server down
-	// for that whole window.
+	// state queries are live immediately. A cold start re-authenticates every
+	// owned account under the auth rate limit, which for a large fleet can take
+	// many minutes — we must not hold the server down for that whole window.
 	const server = startServer({ port: API_PORT, manager, store, db, client, configDir: CONFIG_DIR });
 	log.info(`Dispatcher running on port ${server.port}. Press Ctrl+C to stop.`);
 
-	// Wire job resumption for accounts that connect after startup via queueAccount.
-	// Set before connecting so any API-queued account during startup is covered;
-	// connectAll() accounts do not fire this hook (handled by connectAccounts below).
-	manager.setOnAccountConnected((playerId) => {
-		void resumeJobsForAccount(server.jobManager, manager, store, playerId);
-	});
-
-	// Connect all configured accounts in the background (staggered). The server is
-	// already serving; accounts come online as they connect, and loops/jobs resume
-	// once the bulk connect finishes.
+	// Connect all owned accounts in the background (the lib staggers connections
+	// internally). The server is already serving; accounts come online as they
+	// connect, and loops/jobs resume once the bulk connect finishes.
 	log.info("Connecting accounts in the background...");
-	connectAccounts(manager, store, server, config.accounts).catch((err) => {
+	connectAccounts(manager, store, server).catch((err) => {
 		log.error(`Background account connection failed: ${errorMessage(err)}`);
 	});
 
@@ -97,17 +102,17 @@ async function main(): Promise<void> {
 }
 
 /**
- * Connect all configured accounts (staggered), log their initial state, then
- * resume persisted loops and interrupted async jobs. Runs in the background so
- * the HTTP server can serve health/queries while accounts come online.
+ * Connect all owned accounts, log their initial state, then resume persisted
+ * loops and interrupted async jobs. Runs in the background so the HTTP server
+ * can serve health/queries while accounts come online.
  */
 async function connectAccounts(
-	manager: AccountManager,
+	manager: LibAccountManager,
 	store: StateStore,
 	server: { loopManager: LoopManager; jobManager: JobManager },
-	accounts: AccountConfig[],
 ): Promise<void> {
-	const connected = await manager.connectAll(accounts);
+	await manager.connect();
+	const connected = manager.getAll();
 
 	if (connected.length === 0) {
 		log.warn("No accounts connected at startup. The server is up; add accounts via the API.");
@@ -116,13 +121,13 @@ async function connectAccounts(
 
 	// Log initial state for each connected account
 	for (const account of connected) {
-		const state = store.getState(account.config.player_id);
+		const state = store.getState(playerIdOf(account));
 		if (state) {
 			const player = state.player;
 			const ship = state.ship;
 			const location = state.location;
 			log.info(
-				`[${account.config.username}] ` +
+				`[${account.id ?? "?"}] ` +
 					`Credits: ${player?.credits ?? "?"} | ` +
 					`Ship: ${ship?.class_name ?? ship?.class_id ?? "?"} ` +
 					`(Hull: ${ship?.hull ?? "?"}/${ship?.max_hull ?? "?"}, ` +
@@ -131,36 +136,30 @@ async function connectAccounts(
 					`${location?.docked_at ? "(docked)" : "(undocked)"}`,
 			);
 		} else {
-			log.warn(`[${account.config.username}] No state available`);
+			log.warn(`[${account.id ?? "?"}] No state available`);
 		}
 	}
 
 	// Auto-resume persisted loops and interrupted async jobs for all connected accounts
-	await resumeLoops(server.loopManager, manager, store, CONFIG_DIR);
-	await resumeJobs(server.jobManager, manager, store);
+	await resumeLoops(server.loopManager, manager, CONFIG_DIR);
+	await resumeJobs(server.jobManager, manager);
 }
 
 /**
  * Resume all pending jobs (interrupted by a daemon restart) for all connected accounts.
  */
-async function resumeJobs(
-	jobManager: JobManager,
-	manager: AccountManager,
-	store: StateStore,
-): Promise<void> {
+async function resumeJobs(jobManager: JobManager, manager: LibAccountManager): Promise<void> {
 	for (const account of manager.getAll()) {
-		await resumeJobsForAccount(jobManager, manager, store, account.config.player_id);
+		await resumeJobsForAccount(jobManager, manager, playerIdOf(account));
 	}
 }
 
 /**
  * Re-queue any pending jobs for a single account.
- * Called after an account connects — either at startup or via the queue.
  */
 async function resumeJobsForAccount(
 	jobManager: JobManager,
-	manager: AccountManager,
-	store: StateStore,
+	manager: LibAccountManager,
 	playerId: string,
 ): Promise<void> {
 	const pendingJobs = jobManager.listPendingForAccount(playerId);
@@ -184,7 +183,7 @@ async function resumeJobsForAccount(
 		}
 
 		jobManager.requeue(job.jobId);
-		const goalCtx = buildGoalContext(account, store);
+		const goalCtx = makeLibGoalContext(account);
 
 		goal
 			.execute(goalCtx)
@@ -200,9 +199,8 @@ async function resumeJobsForAccount(
  * Reads loop configs from disk and restarts them on the appropriate accounts.
  */
 async function resumeLoops(
-	loopManager: import("./server/loop-manager.js").LoopManager,
-	manager: AccountManager,
-	store: StateStore,
+	loopManager: LoopManager,
+	manager: LibAccountManager,
 	configDir: string,
 ): Promise<void> {
 	const configs = await LoopManager.loadLoopConfigs(configDir);
@@ -212,13 +210,7 @@ async function resumeLoops(
 
 	log.info(`Found ${configs.length} persisted loop config(s), resuming...`);
 
-	type ManagedAccount = import("./accounts/manager.js").ManagedAccount;
-	type StartFn = (
-		playerId: string,
-		options: never,
-		account: ManagedAccount,
-		store: StateStore,
-	) => unknown;
+	type StartFn = (playerId: string, options: never, account: LibManagedAccount) => unknown;
 
 	const startMethodMap: Record<string, StartFn | undefined> = {
 		mining: loopManager.startMiningLoop.bind(loopManager) as StartFn,
@@ -246,14 +238,11 @@ async function resumeLoops(
 		}
 
 		try {
-			(
-				startFn as (
-					pid: string,
-					opts: Record<string, unknown>,
-					acct: ManagedAccount,
-					st: StateStore,
-				) => unknown
-			)(config.playerId, config.options, account, store);
+			(startFn as (pid: string, opts: Record<string, unknown>, acct: LibManagedAccount) => unknown)(
+				config.playerId,
+				config.options,
+				account,
+			);
 			log.info(`[${config.playerId}] Resumed ${config.type} loop`);
 		} catch (err) {
 			log.warn(`[${config.playerId}] Failed to resume ${config.type} loop: ${errorMessage(err)}`);

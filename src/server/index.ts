@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
-import type { AccountManager } from "../accounts/manager.js";
-import type { SpaceMoltClient } from "../api/client.js";
+import type { SpacemoltClient } from "@spacemolt/lib";
+import type { LibAccountManager } from "../accounts/lib-manager.js";
 import type { StateStore } from "../state/store.js";
 import { createLogger } from "../util/logger.js";
 import {
@@ -11,14 +11,12 @@ import {
 	handleDeleteAccount,
 	handleExecuteGoal,
 	handleExecuteGoalAsync,
-	handleGameProxy,
 	handleGetAccount,
 	handleGetGoalSchemas,
 	handleGetJob,
 	handleGetLogLevel,
 	handleGetLoop,
 	handleGetLoopSchemas,
-	handleGetSessionId,
 	handleGetState,
 	handleGetStateSection,
 	handleGetSystem,
@@ -52,10 +50,10 @@ export function resolveBindHost(env: Record<string, string | undefined> = proces
 
 export interface ServerOptions {
 	port?: number;
-	manager: AccountManager;
+	manager: LibAccountManager;
 	store: StateStore;
 	db: Database;
-	client: SpaceMoltClient;
+	client: SpacemoltClient;
 	configDir: string;
 }
 
@@ -104,9 +102,6 @@ export function startServer(options: ServerOptions): DispatcherServer {
 	router.post("/accounts/register", handleRegisterAccount);
 	router.delete("/accounts/:playerId", handleDeleteAccount);
 
-	// Session
-	router.get("/accounts/:playerId/session", handleGetSessionId);
-
 	// State
 	router.get("/accounts/:playerId/state", handleGetState);
 	router.post("/accounts/:playerId/state/refresh", handleRefreshState);
@@ -141,12 +136,6 @@ export function startServer(options: ServerOptions): DispatcherServer {
 	// System data (routed through specific account)
 	router.get("/accounts/:playerId/system", handleGetSystem);
 	router.get("/accounts/:playerId/system/:systemId", handleGetSystem);
-
-	// Transparent game-API proxy for the spacemolt CLI (smctl raw points the
-	// binary here via SPACEMOLT_URL so its egress is branded + compressed +
-	// tracked). Forwards any /api/v2/* sub-path to the game server.
-	router.get("/gameproxy/*", handleGameProxy);
-	router.post("/gameproxy/*", handleGameProxy);
 
 	const server = Bun.serve({
 		hostname: host,

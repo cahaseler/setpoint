@@ -1,20 +1,15 @@
-import { randomBytes } from "node:crypto";
-import {
-	loadRegistrationConfig,
-	parseAccountConfig,
-	parseAccountCredentials,
-	saveAccountConfig,
-} from "../accounts/config.js";
-import type { AccountManager } from "../accounts/manager.js";
-import type { SpaceMoltClient } from "../api/client.js";
+import type { SpacemoltClient } from "@spacemolt/lib";
+import { loadRegistrationConfig } from "../accounts/config.js";
+import type { LibAccountManager } from "../accounts/lib-manager.js";
+import { type LibManagedAccount, playerId as playerIdOf } from "../accounts/lib-types.js";
 import type { ProgressRef } from "../dispatcher/goals.js";
+import { makeLibGoalContext } from "../dispatcher/lib-goal-context.js";
 import { STATE_SECTION_KEYS, type StateSectionKey, type StateStore } from "../state/store.js";
 import { ApiError, HttpError, errorMessage } from "../util/errors.js";
 import { createLogger } from "../util/logger.js";
 import { type LogLevel, getLogLevel, setLogLevel } from "../util/logger.js";
 import { createGoal, deprecatedTypeMessage, getGoalTypes } from "./goal-registry.js";
 import type { JobManager } from "./job-manager.js";
-import { buildGoalContext } from "./loop-manager.js";
 import type {
 	EnhancedMiningLoopApiOptions,
 	ExplorationLoopApiOptions,
@@ -36,11 +31,11 @@ const log = createLogger("handlers");
 
 /** Shared context available to all handlers. */
 export interface HandlerContext {
-	manager: AccountManager;
+	manager: LibAccountManager;
 	store: StateStore;
 	loopManager: LoopManager;
 	jobManager: JobManager;
-	client: SpaceMoltClient;
+	client: SpacemoltClient;
 	configDir: string;
 	startedAt: string;
 	/** Accounts with a synchronous goal currently executing. Used to prevent races. */
@@ -58,10 +53,7 @@ export interface HandlerContext {
 }
 
 /** Resolve an account by player_id or username (case-insensitive). */
-function resolveAccount(
-	ctx: HandlerContext,
-	idOrName: string,
-): import("../accounts/manager.js").ManagedAccount | undefined {
+function resolveAccount(ctx: HandlerContext, idOrName: string): LibManagedAccount | undefined {
 	return ctx.manager.getByPlayerId(idOrName) ?? ctx.manager.getByUsername(idOrName);
 }
 
@@ -78,16 +70,17 @@ export function handleHealth(_req: Request, _params: RouteParams, ctx: HandlerCo
 
 // ── Accounts ────────────────────────────────────────────────────────
 
-export function handleListAccounts(
+export async function handleListAccounts(
 	_req: Request,
 	_params: RouteParams,
 	ctx: HandlerContext,
-): Response {
+): Promise<Response> {
 	const connected = ctx.manager.getAll().map((a) => {
-		const state = ctx.store.getState(a.config.player_id);
+		const id = playerIdOf(a);
+		const state = ctx.store.getState(id);
 		return {
-			player_id: a.config.player_id,
-			username: a.config.username,
+			player_id: id,
+			username: a.id ?? null,
 			status: "connected" as const,
 			credits: state?.player?.credits ?? null,
 			ship: state?.ship
@@ -107,22 +100,43 @@ export function handleListAccounts(
 						docked: state.location.docked_at ?? null,
 					}
 				: null,
-			loop: ctx.loopManager.getStatus(a.config.player_id) ?? null,
+			loop: ctx.loopManager.getStatus(id) ?? null,
 		};
 	});
 
-	const pending = ctx.manager.getAllPending().map((p) => ({
-		player_id: p.playerId ?? null,
-		username: p.username,
-		status: p.status,
-		error: p.error ?? null,
-		credits: null,
-		ship: null,
-		location: null,
-		loop: null,
-	}));
+	// Owned-but-not-connected accounts come from Clerk. Match against the
+	// connected usernames (account.id) case-insensitively; ClerkPlayer.id is not
+	// assumed to equal player_id. Degrade to connected-only if Clerk fails.
+	const connectedUsernames = new Set(
+		ctx.manager
+			.getAll()
+			.map((a) => a.id?.toLowerCase())
+			.filter((u): u is string => u !== undefined),
+	);
 
-	return jsonResponse({ accounts: [...connected, ...pending] });
+	const notConnected: Array<Record<string, unknown>> = [];
+	try {
+		const owned = await ctx.manager.listOwned();
+		for (const p of owned) {
+			if (connectedUsernames.has(p.username.toLowerCase())) {
+				continue;
+			}
+			notConnected.push({
+				player_id: p.id,
+				username: p.username,
+				empire: p.empire,
+				status: ctx.manager.isConnecting(p.username) ? "connecting" : "disconnected",
+				credits: null,
+				ship: null,
+				location: null,
+				loop: null,
+			});
+		}
+	} catch (err) {
+		log.warn(`Failed to list owned players: ${errorMessage(err)}`);
+	}
+
+	return jsonResponse({ accounts: [...connected, ...notConnected] });
 }
 
 export function handleGetAccount(
@@ -136,57 +150,44 @@ export function handleGetAccount(
 	}
 
 	const account = resolveAccount(ctx, playerId);
-	if (account) {
-		const actualId = account.config.player_id;
-		const state = ctx.store.getState(actualId);
-
-		return jsonResponse({
-			player_id: actualId,
-			username: account.config.username,
-			status: "connected",
-			state: state
-				? {
-						credits: state.player?.credits,
-						ship: state.ship
-							? {
-									hull: state.ship.hull,
-									max_hull: state.ship.max_hull,
-									fuel: state.ship.fuel,
-									max_fuel: state.ship.max_fuel,
-								}
-							: null,
-						location: state.location
-							? {
-									system: state.location.system_name,
-									poi: state.location.poi_name,
-									docked: state.location.docked_at ?? null,
-								}
-							: null,
-					}
-				: null,
-			loop: ctx.loopManager.getStatus(actualId) ?? null,
-			hasRunningJob: ctx.jobManager.isRunning(actualId),
-			runningJob: ctx.jobManager.getRunningJob(actualId) ?? null,
-			hasExecutingGoal: ctx.executingGoals.has(actualId),
-			executingGoal: ctx.executingGoals.get(actualId) ?? null,
-			recentJobs: ctx.jobManager.listByAccount(actualId, 5),
-		});
+	if (!account) {
+		return errorResponse("Account not found", 404);
 	}
 
-	// Check pending queue by player_id or by username
-	const pending = ctx.manager.getPendingByPlayerId(playerId) ?? ctx.manager.getPending(playerId);
-	if (pending) {
-		return jsonResponse({
-			player_id: pending.playerId ?? null,
-			username: pending.username,
-			status: pending.status,
-			error: pending.error ?? null,
-			state: null,
-			loop: null,
-		});
-	}
+	const actualId = playerIdOf(account);
+	const state = ctx.store.getState(actualId);
 
-	return errorResponse("Account not found", 404);
+	return jsonResponse({
+		player_id: actualId,
+		username: account.id ?? null,
+		status: "connected",
+		state: state
+			? {
+					credits: state.player?.credits,
+					ship: state.ship
+						? {
+								hull: state.ship.hull,
+								max_hull: state.ship.max_hull,
+								fuel: state.ship.fuel,
+								max_fuel: state.ship.max_fuel,
+							}
+						: null,
+					location: state.location
+						? {
+								system: state.location.system_name,
+								poi: state.location.poi_name,
+								docked: state.location.docked_at ?? null,
+							}
+						: null,
+				}
+			: null,
+		loop: ctx.loopManager.getStatus(actualId) ?? null,
+		hasRunningJob: ctx.jobManager.isRunning(actualId),
+		runningJob: ctx.jobManager.getRunningJob(actualId) ?? null,
+		hasExecutingGoal: ctx.executingGoals.has(actualId),
+		executingGoal: ctx.executingGoals.get(actualId) ?? null,
+		recentJobs: ctx.jobManager.listByAccount(actualId, 5),
+	});
 }
 
 export async function handleAddAccount(
@@ -201,53 +202,37 @@ export async function handleAddAccount(
 		return errorResponse("Invalid JSON body", 400);
 	}
 
-	// Try full config (username + password + player_id) first
-	try {
-		const config = parseAccountConfig(body, "api");
-
-		try {
-			const pending = ctx.manager.queueAccount(config);
-			return jsonResponse(
-				{
-					player_id: pending.playerId ?? null,
-					username: pending.username,
-					status: pending.status,
-					message: "Account queued for connection",
-				},
-				202,
-			);
-		} catch (err) {
-			return errorResponse(err instanceof Error ? err.message : "Failed to queue account", 409);
-		}
-	} catch {
-		// Fall through to credentials-only path
+	if (typeof body !== "object" || body === null || Array.isArray(body)) {
+		return errorResponse("Body must be a JSON object", 400);
 	}
 
-	// Try credentials-only (username + password, discover player_id via login)
-	let credentials: { username: string; password: string };
-	try {
-		credentials = parseAccountCredentials(body, "api");
-	} catch (err) {
+	const username = (body as Record<string, unknown>)["username"];
+	if (typeof username !== "string" || username.length === 0) {
 		return errorResponse(
-			err instanceof Error ? err.message : "Invalid account config: need username and password",
+			"username is required (string) — the account must be owned by the configured Clerk user",
 			400,
 		);
 	}
 
-	try {
-		const pending = ctx.manager.queueByCredentials(credentials);
-		return jsonResponse(
-			{
-				player_id: pending.playerId ?? null,
-				username: pending.username,
-				status: pending.status,
-				message: "Account queued for connection",
-			},
-			202,
-		);
-	} catch (err) {
-		return errorResponse(err instanceof Error ? err.message : "Failed to queue account", 409);
+	if (ctx.manager.getByUsername(username)) {
+		return errorResponse(`Account "${username}" is already connected`, 409);
 	}
+
+	// Connect in the background. Owned accounts authenticate via the lib's
+	// credential store; connecting can take seconds under the auth rate limit,
+	// so we return 202 immediately and let the caller poll GET /accounts.
+	void ctx.manager.connectOne(username).catch((err) => {
+		log.error(`[${username}] Background connect failed: ${errorMessage(err)}`);
+	});
+
+	return jsonResponse(
+		{
+			username,
+			status: "connecting",
+			message: "Account connection started; poll GET /accounts for status",
+		},
+		202,
+	);
 }
 
 export async function handleDeleteAccount(
@@ -261,32 +246,25 @@ export async function handleDeleteAccount(
 	}
 
 	const account = resolveAccount(ctx, playerId);
-	if (account) {
-		const actualId = account.config.player_id;
-		// Stop any running loop first
-		if (ctx.loopManager.isRunning(actualId)) {
-			ctx.loopManager.abortLoop(actualId);
-			const loopPromise = ctx.loopManager.getPromise(actualId);
-			if (loopPromise) await loopPromise.catch(() => {});
-		}
-
-		// Delete persisted loop config
-		ctx.loopManager.deleteLoopConfig(actualId, ctx.configDir).catch((err) => {
-			log.warn(`Failed to delete loop config: ${errorMessage(err)}`);
-		});
-
-		ctx.manager.disconnectAccount(actualId);
-		return jsonResponse({ message: "Account disconnected", player_id: actualId });
+	if (!account) {
+		return errorResponse("Account not found", 404);
 	}
 
-	// Check pending queue by player_id or username
-	const pending = ctx.manager.getPendingByPlayerId(playerId) ?? ctx.manager.getPending(playerId);
-	if (pending) {
-		ctx.manager.removePending(pending.username);
-		return jsonResponse({ message: "Pending account removed", username: pending.username });
+	const actualId = playerIdOf(account);
+	// Stop any running loop first
+	if (ctx.loopManager.isRunning(actualId)) {
+		ctx.loopManager.abortLoop(actualId);
+		const loopPromise = ctx.loopManager.getPromise(actualId);
+		if (loopPromise) await loopPromise.catch(() => {});
 	}
 
-	return errorResponse("Account not found", 404);
+	// Delete persisted loop config
+	ctx.loopManager.deleteLoopConfig(actualId, ctx.configDir).catch((err) => {
+		log.warn(`Failed to delete loop config: ${errorMessage(err)}`);
+	});
+
+	await ctx.manager.remove(actualId);
+	return jsonResponse({ message: "Account disconnected", player_id: actualId });
 }
 
 // ── Registration ────────────────────────────────────────────────────
@@ -335,51 +313,22 @@ export async function handleRegisterAccount(
 		return errorResponse(`Failed to load registration config: ${errorMessage(err)}`, 500);
 	}
 
-	// Generate a random password
-	const password = randomBytes(18).toString("base64url");
-
+	// Register + connect through the lib. It generates and persists the account's
+	// credentials in the credential store and returns the generated password.
 	try {
-		// Create a temporary session for registration
-		const sessionResponse = await ctx.client.createSession();
-		const sessionId = sessionResponse.session?.id;
-		if (!sessionId) {
-			return errorResponse("Failed to create session for registration", 500);
-		}
-
-		// Register the account
-		const registerResponse = await ctx.client.authAction<Record<string, unknown>>(
-			"register",
-			{
-				username,
-				password,
-				registration_code: registrationCode,
-				empire: empire as "solarian" | "voidborn" | "crimson" | "nebula" | "outerrim",
-			},
-			sessionId,
-		);
-
-		// Extract player_id from the response
-		const playerId =
-			registerResponse.session?.player_id ??
-			(registerResponse.structuredContent["player_id"] as string | undefined);
-
-		if (!playerId) {
-			return errorResponse("Registration succeeded but no player_id returned", 500);
-		}
-
-		const config = { username, password, player_id: playerId };
-
-		// Save config to disk
-		await saveAccountConfig(config, ctx.configDir);
-
-		// Connect the account
-		await ctx.manager.connectAccount(config);
+		const { account, result } = await ctx.manager.register({
+			username,
+			empire,
+			registration_code: registrationCode,
+		});
 
 		return jsonResponse(
 			{
-				player_id: playerId,
-				username,
-				password,
+				player_id: result.player_id,
+				username: account.id ?? username,
+				password: result.password,
+				empire,
+				status: "connected",
 				message: "Account registered and connected",
 			},
 			201,
@@ -387,48 +336,6 @@ export async function handleRegisterAccount(
 	} catch (err) {
 		return errorResponse(`Registration failed: ${errorMessage(err)}`, 500);
 	}
-}
-
-// ── Session ─────────────────────────────────────────────────────────
-
-export async function handleGetSessionId(
-	_req: Request,
-	params: RouteParams,
-	ctx: HandlerContext,
-): Promise<Response> {
-	const playerId = params["playerId"];
-	if (!playerId) {
-		return errorResponse("Missing playerId", 400);
-	}
-
-	const account = resolveAccount(ctx, playerId);
-	if (!account) {
-		return errorResponse("Account not found", 404);
-	}
-
-	const sessionId = account.session.sessionId;
-	if (!sessionId) {
-		return errorResponse("Session not available (account may be reconnecting)", 503);
-	}
-
-	// Validate the session is still alive by making a lightweight query.
-	// This triggers auto-recovery if the game server dropped the session.
-	try {
-		await account.session.execute("spacemolt", "get_player");
-	} catch {
-		// Recovery may have failed — return whatever session we have now
-	}
-
-	const freshSessionId = account.session.sessionId;
-	if (!freshSessionId) {
-		return errorResponse("Session not available (recovery failed)", 503);
-	}
-
-	return jsonResponse({
-		session_id: freshSessionId,
-		player_id: account.config.player_id,
-		username: account.config.username,
-	});
 }
 
 // ── Goals ───────────────────────────────────────────────────────────
@@ -448,7 +355,7 @@ export async function handleExecuteGoal(
 		return errorResponse("Account not found", 404);
 	}
 
-	const actualId = account.config.player_id;
+	const actualId = playerIdOf(account);
 
 	// Block if a loop is running
 	if (ctx.loopManager.isRunning(actualId)) {
@@ -525,7 +432,7 @@ export async function handleExecuteGoal(
 		remainingSteps: [],
 	};
 
-	const goalCtx = buildGoalContext(account, ctx.store, goalController.signal);
+	const goalCtx = makeLibGoalContext(account, goalController.signal);
 	const goalPromise = goal.execute(goalCtx);
 
 	ctx.executingGoals.set(actualId, {
@@ -591,7 +498,7 @@ export async function handleExecuteGoal(
 			// Runs after clearing executingGoals so a slow/hung getState can't
 			// leave the flag stuck.
 			try {
-				await goalCtx.endpoints.getState();
+				await account.refresh();
 			} catch {
 				// Non-critical — state may be slightly stale if this fails
 			}
@@ -641,7 +548,7 @@ export async function handleExecuteGoalAsync(
 		return errorResponse("Account not found", 404);
 	}
 
-	const actualId = account.config.player_id;
+	const actualId = playerIdOf(account);
 
 	// Block if a loop is running
 	if (ctx.loopManager.isRunning(actualId)) {
@@ -704,14 +611,14 @@ export async function handleExecuteGoalAsync(
 			completedSteps: [],
 			remainingSteps: [],
 		};
-		const goalCtx = buildGoalContext(account, ctx.store, jobController.signal);
+		const goalCtx = makeLibGoalContext(account, jobController.signal);
 		const jobPromise = goal
 			.execute(goalCtx)
 			.then(async (result) => {
 				// Refresh state after completion: many mutation responses (deposit, sell, etc.)
 				// don't include V2GameState, leaving the state store stale.
 				try {
-					await goalCtx.endpoints.getState();
+					await account.refresh();
 				} catch {
 					// Non-critical — state may be slightly stale if this fails
 				}
@@ -814,12 +721,25 @@ export async function handleRawAction(
 		: `spacemolt_${toolGroup}`;
 
 	try {
-		const response = await account.session.execute(resolvedToolGroup, action, actionParams);
-		return jsonResponse({
-			result: response.result,
-			structuredContent: response.structuredContent,
-			notifications: response.notifications,
-		});
+		// account.send() dispatches to query/mutate by the spec's mutation flag.
+		// Mutations resolve with { command, tick, delta, autoDocked?, autoUndocked? };
+		// queries resolve with { result, structuredContent? }. Normalize both to a
+		// stable envelope. Push events (notifications) arrive on the event stream,
+		// not on command results, so there is nothing to relay here.
+		const response = await account.send(resolvedToolGroup, action, actionParams);
+		return jsonResponse(
+			"delta" in response
+				? {
+						result: response.delta,
+						structuredContent: response.delta,
+						tick: response.tick,
+						command: response.command,
+					}
+				: {
+						result: response.result,
+						structuredContent: response.structuredContent,
+					},
+		);
 	} catch (err) {
 		const apiErr = err instanceof ApiError ? ` [code: ${err.code}]` : "";
 		return errorResponse(`API call failed: ${errorMessage(err)}${apiErr}`, 500);
@@ -839,7 +759,7 @@ export function handleGetState(_req: Request, params: RouteParams, ctx: HandlerC
 		return errorResponse("Account not found", 404);
 	}
 
-	const state = ctx.store.getState(account.config.player_id);
+	const state = ctx.store.getState(playerIdOf(account));
 	if (!state) {
 		return errorResponse("No state available", 404);
 	}
@@ -863,11 +783,12 @@ export async function handleRefreshState(
 	}
 
 	try {
-		// get_state returns player, ship, cargo, location, skills, missions, modules, queue
-		// The session's onResponse callback automatically processes and stores the result
-		await account.session.execute("spacemolt", "get_state", {});
+		// refresh() re-seeds the lib's push-fed state cache via get_status; the
+		// account's onStateChange stream projects the change into the store
+		// synchronously before this resolves.
+		await account.refresh();
 
-		const state = ctx.store.getState(account.config.player_id);
+		const state = ctx.store.getState(playerIdOf(account));
 		if (!state) {
 			return errorResponse("No state available after refresh", 500);
 		}
@@ -904,7 +825,7 @@ export function handleGetStateSection(
 		return errorResponse("Account not found", 404);
 	}
 
-	const data = ctx.store.getSection(sectionAccount.config.player_id, section as StateSectionKey);
+	const data = ctx.store.getSection(playerIdOf(sectionAccount), section as StateSectionKey);
 	if (data === undefined) {
 		return errorResponse(`No ${section} data available`, 404);
 	}
@@ -925,7 +846,7 @@ export function handleGetLoop(_req: Request, params: RouteParams, ctx: HandlerCo
 		return errorResponse("Account not found", 404);
 	}
 
-	const status = ctx.loopManager.getStatus(loopAccount.config.player_id);
+	const status = ctx.loopManager.getStatus(playerIdOf(loopAccount));
 	return jsonResponse(status ?? { running: false });
 }
 
@@ -960,7 +881,7 @@ export async function handlePatchLoop(
 		return errorResponse("Patch body must not be empty", 400);
 	}
 
-	const current = ctx.loopManager.getStatus(account.config.player_id);
+	const current = ctx.loopManager.getStatus(playerIdOf(account));
 	if (!current?.running) {
 		return errorResponse("No loop running on this account", 409);
 	}
@@ -983,7 +904,7 @@ export async function handlePatchLoop(
 		}
 	}
 
-	const status = ctx.loopManager.patchLoopOptions(account.config.player_id, patch);
+	const status = ctx.loopManager.patchLoopOptions(playerIdOf(account), patch);
 	if (!status) {
 		return errorResponse("No loop running on this account", 409);
 	}
@@ -1006,7 +927,7 @@ export async function handleStopLoop(
 		return errorResponse("Account not found", 404);
 	}
 
-	const actualId = account.config.player_id;
+	const actualId = playerIdOf(account);
 
 	const aborted = ctx.loopManager.abortLoop(actualId);
 	// Always delete persisted config — even if no in-memory loop was found,
@@ -1085,7 +1006,7 @@ export async function handleStartLoop(
 
 	const opts = options as Record<string, unknown>;
 
-	const actualId = account.config.player_id;
+	const actualId = playerIdOf(account);
 
 	// If a loop is already running, stop it before starting the new one.
 	// This allows the fleet brain to update a ship's target without needing
@@ -1104,34 +1025,34 @@ export async function handleStartLoop(
 
 		if (loopType === "mining") {
 			const apiOptions = validateMiningOptions(opts);
-			status = ctx.loopManager.startMiningLoop(actualId, apiOptions, account, ctx.store);
+			status = ctx.loopManager.startMiningLoop(actualId, apiOptions, account);
 		} else if (loopType === "enhanced-mining") {
 			const apiOptions = validateEnhancedMiningOptions(opts);
-			status = ctx.loopManager.startEnhancedMiningLoop(actualId, apiOptions, account, ctx.store);
+			status = ctx.loopManager.startEnhancedMiningLoop(actualId, apiOptions, account);
 		} else if (loopType === "trading") {
 			const apiOptions = validateTradingOptions(opts);
-			status = ctx.loopManager.startTradingLoop(actualId, apiOptions, account, ctx.store);
+			status = ctx.loopManager.startTradingLoop(actualId, apiOptions, account);
 		} else if (loopType === "hauling") {
 			const apiOptions = validateHaulingOptions(opts);
-			status = ctx.loopManager.startHaulingLoop(actualId, apiOptions, account, ctx.store);
+			status = ctx.loopManager.startHaulingLoop(actualId, apiOptions, account);
 		} else if (loopType === "storage-transfer") {
 			const apiOptions = validateStorageTransferOptions(opts);
-			status = ctx.loopManager.startStorageTransferLoop(actualId, apiOptions, account, ctx.store);
+			status = ctx.loopManager.startStorageTransferLoop(actualId, apiOptions, account);
 		} else if (loopType === "salvage") {
 			const apiOptions = validateSalvageOptions(opts);
-			status = ctx.loopManager.startSalvageLoop(actualId, apiOptions, account, ctx.store);
+			status = ctx.loopManager.startSalvageLoop(actualId, apiOptions, account);
 		} else if (loopType === "roaming-salvage") {
 			const apiOptions = validateRoamingSalvageOptions(opts);
-			status = ctx.loopManager.startRoamingSalvageLoop(actualId, apiOptions, account, ctx.store);
+			status = ctx.loopManager.startRoamingSalvageLoop(actualId, apiOptions, account);
 		} else if (loopType === "tow-salvage") {
 			const apiOptions = validateTowSalvageOptions(opts);
-			status = ctx.loopManager.startTowSalvageLoop(actualId, apiOptions, account, ctx.store);
+			status = ctx.loopManager.startTowSalvageLoop(actualId, apiOptions, account);
 		} else if (loopType === "exploration") {
 			const apiOptions = validateExplorationOptions(opts);
-			status = ctx.loopManager.startExplorationLoop(actualId, apiOptions, account, ctx.store);
+			status = ctx.loopManager.startExplorationLoop(actualId, apiOptions, account);
 		} else if (loopType === "guard") {
 			const apiOptions = validateGuardOptions(opts);
-			status = ctx.loopManager.startGuardLoop(actualId, apiOptions, account, ctx.store);
+			status = ctx.loopManager.startGuardLoop(actualId, apiOptions, account);
 		} else {
 			throw new HttpError(`Unsupported loop type: ${loopType}`, 400);
 		}
@@ -1178,7 +1099,7 @@ export async function handleAbortAccount(
 		return errorResponse("Account not found", 404);
 	}
 
-	const actualId = account.config.player_id;
+	const actualId = playerIdOf(account);
 
 	// Parse optional body for force flag
 	let force = false;
@@ -1399,10 +1320,10 @@ export function handleDashboardData(
 	ctx: HandlerContext,
 ): Response {
 	const accounts = ctx.manager.getAll().map((account) => {
-		const id = account.config.player_id;
+		const id = playerIdOf(account);
 		return {
 			player_id: id,
-			username: account.config.username,
+			username: account.id,
 			state: ctx.store.getState(id),
 			loop: ctx.loopManager.getStatus(id) ?? null,
 			hasRunningJob: ctx.jobManager.isRunning(id),
@@ -1836,48 +1757,6 @@ export async function handleGetMap(
 	}
 }
 
-// ── Raw game-API proxy (for the spacemolt CLI spawned by `smctl raw`) ────────
-
-/**
- * Transparent proxy for the external spacemolt CLI's game-API traffic.
- *
- * `smctl raw` spawns the spacemolt binary with SPACEMOLT_URL pointed at this
- * route, so the CLI's requests arrive here instead of going straight to
- * game.spacemolt.com. We forward them through SpaceMoltClient — which brands
- * them with our User-Agent, requests zstd/gzip compression, and records
- * bandwidth — then relay the game's response back verbatim. This keeps the CLI
- * as the authority for request shaping and output formatting while ensuring its
- * egress is identified and compressed like the rest of the daemon's traffic.
- */
-export async function handleGameProxy(
-	req: Request,
-	_params: RouteParams,
-	ctx: HandlerContext,
-): Promise<Response> {
-	const url = new URL(req.url);
-	const proxyPath = url.pathname.replace(/^\/gameproxy/, "");
-	// The proxy only relays game REST calls; constrain the forwarded path to the
-	// game API namespace so it cannot be coerced toward other endpoints. URL
-	// parsing has already normalized any "../" segments out of the pathname.
-	if (!proxyPath.startsWith("/api/v2/")) {
-		return errorResponse("gameproxy path must begin with /api/v2/", 400);
-	}
-	const targetPath = proxyPath + url.search;
-	const sessionId = req.headers.get("x-session-id") ?? undefined;
-	const contentType = req.headers.get("content-type") ?? undefined;
-	const body = req.method === "GET" || req.method === "HEAD" ? undefined : await req.text();
-
-	try {
-		const result = await ctx.client.forward(req.method, targetPath, body, sessionId, contentType);
-		return new Response(result.body, {
-			status: result.status,
-			headers: { "Content-Type": result.contentType },
-		});
-	} catch (err) {
-		return errorResponse(`Proxy request failed: ${errorMessage(err)}`, 502);
-	}
-}
-
 export async function handleGetSystem(
 	_req: Request,
 	params: RouteParams,
@@ -1899,32 +1778,31 @@ export async function handleGetSystem(
 		// If requesting a specific system, check if the account is currently there.
 		// get_system always returns the player's current system regardless of params.
 		// For remote systems, use faction intel instead.
-		const actualId = account.config.player_id;
+		const actualId = playerIdOf(account);
 		const state = ctx.store.getState(actualId);
 		const currentSystemId = state?.location?.system_id;
 
 		if (!systemId || systemId === currentSystemId) {
-			// Account is in the requested system (or no system specified) — use get_system
-			const result = await account.endpoints.getSystem();
+			// Account is in the requested system (or no system specified) — get_system
+			// always returns the player's current system and takes no params.
+			const result = await account.query("spacemolt", "get_system");
 			return jsonResponse(result.structuredContent);
 		}
 
 		// Remote system: try to find an account that's actually IN that system
 		for (const other of ctx.manager.getAll()) {
-			const otherState = ctx.store.getState(other.config.player_id);
+			const otherState = ctx.store.getState(playerIdOf(other));
 			if (otherState?.location?.system_id === systemId) {
-				const result = await other.endpoints.getSystem();
+				const result = await other.query("spacemolt", "get_system");
 				return jsonResponse(result.structuredContent);
 			}
 		}
 
 		// No account in target system — fall back to faction intel
-		const intelResult = await account.session.execute<Record<string, unknown>>(
-			"spacemolt_intel",
-			"query_intel",
-			{ system_id: systemId },
-		);
-		const entries = intelResult.structuredContent["entries"] as
+		const intelResult = await account.query("spacemolt_intel", "query_intel", {
+			system_id: systemId,
+		});
+		const entries = intelResult.structuredContent?.["entries"] as
 			| Array<Record<string, unknown>>
 			| undefined;
 		const entry = entries?.[0];
