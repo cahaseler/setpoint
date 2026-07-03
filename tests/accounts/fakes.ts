@@ -4,6 +4,8 @@ import type {
 	GameState,
 	MutationResult,
 	QueryResult,
+	RegisterParams,
+	RegisterResult,
 	StateSection,
 } from "@spacemolt/lib";
 import type { AccountClientLike, LibManagedAccount } from "../../src/accounts/lib-types.js";
@@ -102,6 +104,32 @@ export class FakeClient implements AccountClientLike {
 			}
 		}
 		return Promise.resolve([...this.connected.values()]);
+	}
+	/** Connect a single stored account by username. Throws if it isn't in the fixture map (simulates unknown creds). */
+	connect(id: string): Promise<LibManagedAccount> {
+		const acct = this.accountsByUsername.get(id);
+		if (!acct) {
+			return Promise.reject(new Error(`FakeClient.connect: no stored account for "${id}"`));
+		}
+		this.connected.set(id, acct);
+		return Promise.resolve(acct);
+	}
+	/** Registers a brand-new account: creates and connects a FakeAccount keyed by username, playerId `pid-<username>`. */
+	register(
+		params: RegisterParams,
+	): Promise<{ account: LibManagedAccount; result: RegisterResult }> {
+		const playerId = `pid-${params.username}`;
+		const account = new FakeAccount(playerId, params.username);
+		this.accountsByUsername.set(params.username, account);
+		this.connected.set(params.username, account);
+		return Promise.resolve({
+			account,
+			result: { password: "generated-password", player_id: playerId, state: {} },
+		});
+	}
+	/** Passthrough over the fixture player list, ignoring connection status. */
+	listOwnedPlayers(): Promise<ClerkPlayer[]> {
+		return Promise.resolve(this.players);
 	}
 	accounts(): LibManagedAccount[] {
 		return [...this.connected.values()];

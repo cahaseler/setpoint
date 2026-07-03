@@ -1,4 +1,10 @@
-import { STATE_SECTIONS, type StateSection } from "@spacemolt/lib";
+import {
+	type ClerkPlayer,
+	type RegisterParams,
+	type RegisterResult,
+	STATE_SECTIONS,
+	type StateSection,
+} from "@spacemolt/lib";
 import { createLogger } from "../util/logger.js";
 import { type LibConfig, buildOwnedFilter } from "./lib-config.js";
 import type { AccountClientLike, LibManagedAccount } from "./lib-types.js";
@@ -18,6 +24,8 @@ export interface LibAccountManagerOptions {
 export class LibAccountManager {
 	private readonly byPlayerId = new Map<string, LibManagedAccount>();
 	private readonly usernameToPlayerId = new Map<string, string>();
+	/** Usernames/ids with an in-flight connectOne/register call. */
+	private readonly connecting = new Set<string>();
 
 	constructor(
 		private readonly client: AccountClientLike,
@@ -25,31 +33,81 @@ export class LibAccountManager {
 		private readonly opts: LibAccountManagerOptions = {},
 	) {}
 
+	/**
+	 * Index a newly-connected account by player_id and username, wire its
+	 * onStateChange stream to the optional hook, and backfill the projector
+	 * with the account's current state. Shared by `connect()`, `connectOne()`,
+	 * and `register()` so every connection path gets identical treatment.
+	 */
+	private indexAndWire(account: LibManagedAccount): string {
+		const playerId = account.player?.id;
+		if (!playerId) {
+			throw new Error("Connected account has no player_id after connect");
+		}
+		this.byPlayerId.set(playerId, account);
+		if (typeof account.id === "string") {
+			this.usernameToPlayerId.set(account.id.toLowerCase(), playerId);
+		}
+		const onChange = this.opts.onStateChange;
+		if (onChange) {
+			account.onStateChange((changed) => onChange(playerId, changed, account));
+			// Backfill: the lib seeds full state during connect(), before our listener
+			// was attached (onStateChange has no replay). Fire once with the current
+			// state so the projection reflects freshly-connected accounts. The projector
+			// filters undefined sections and applyUpdate skips null/undefined, so passing
+			// the full section list is safe and idempotent.
+			onChange(playerId, [...STATE_SECTIONS], account);
+		}
+		return playerId;
+	}
+
 	async connect(): Promise<void> {
 		const filter = buildOwnedFilter(this.config.filter);
 		const accounts = await this.client.connectOwned({ filter });
 		for (const account of accounts) {
-			const playerId = account.player?.id;
-			if (!playerId) {
+			if (!account.player?.id) {
 				log.warn("Connected account has no player_id after connect; skipping index");
 				continue;
 			}
-			this.byPlayerId.set(playerId, account);
-			if (typeof account.id === "string") {
-				this.usernameToPlayerId.set(account.id.toLowerCase(), playerId);
-			}
-			const onChange = this.opts.onStateChange;
-			if (onChange) {
-				account.onStateChange((changed) => onChange(playerId, changed, account));
-				// Backfill: the lib seeds full state during connect(), before our listener
-				// was attached (onStateChange has no replay). Fire once with the current
-				// state so the projection reflects freshly-connected accounts. The projector
-				// filters undefined sections and applyUpdate skips null/undefined, so passing
-				// the full section list is safe and idempotent.
-				onChange(playerId, [...STATE_SECTIONS], account);
-			}
+			this.indexAndWire(account);
 		}
 		log.info(`Connected ${this.byPlayerId.size} account(s)`);
+	}
+
+	/** Connect a single stored account by store-key/username, indexing and wiring it like `connect()` does. */
+	async connectOne(idOrUsername: string): Promise<LibManagedAccount> {
+		this.connecting.add(idOrUsername.toLowerCase());
+		try {
+			const account = await this.client.connect(idOrUsername);
+			this.indexAndWire(account);
+			return account;
+		} finally {
+			this.connecting.delete(idOrUsername.toLowerCase());
+		}
+	}
+
+	/** Register a brand-new account, then index and wire it like `connect()` does. */
+	async register(
+		params: RegisterParams,
+	): Promise<{ account: LibManagedAccount; result: RegisterResult }> {
+		this.connecting.add(params.username.toLowerCase());
+		try {
+			const { account, result } = await this.client.register(params);
+			this.indexAndWire(account);
+			return { account, result };
+		} finally {
+			this.connecting.delete(params.username.toLowerCase());
+		}
+	}
+
+	/** List the player accounts the Clerk user owns (connected or not). */
+	listOwned(): Promise<ClerkPlayer[]> {
+		return this.client.listOwnedPlayers();
+	}
+
+	/** Whether a connectOne/register call for this id/username is currently in flight. */
+	isConnecting(idOrUsername: string): boolean {
+		return this.connecting.has(idOrUsername.toLowerCase());
 	}
 
 	/** Look up the player_id for a username (case-insensitive). */
@@ -93,6 +151,11 @@ export class LibAccountManager {
 				this.usernameToPlayerId.delete(username);
 			}
 		}
+	}
+
+	/** Alias for `disconnect()` — removes an account (evicts from the lib client, clears both indexes). */
+	async remove(playerId: string): Promise<void> {
+		await this.disconnect(playerId);
 	}
 
 	disconnectAll(): void {

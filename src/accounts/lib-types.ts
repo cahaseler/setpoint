@@ -4,6 +4,8 @@ import type {
 	GameState,
 	MutationResult,
 	QueryResult,
+	RegisterParams,
+	RegisterResult,
 	StateSection,
 } from "@spacemolt/lib";
 
@@ -58,6 +60,12 @@ export type LibAccountLike = Pick<
 /** The subset of the lib `SpacemoltClient` the account layer depends on. */
 export interface AccountClientLike {
 	connectOwned(opts: { filter?: (p: ClerkPlayer) => boolean }): Promise<LibManagedAccount[]>;
+	/** Connect one stored account by store-key/username. Requires creds already in the lib's credential store. */
+	connect(id: string): Promise<LibManagedAccount>;
+	/** Register a brand-new account: connect, register, and persist the generated credentials. */
+	register(params: RegisterParams): Promise<{ account: LibManagedAccount; result: RegisterResult }>;
+	/** List the player accounts the Clerk user owns. Requires a Clerk API key. */
+	listOwnedPlayers(): Promise<ClerkPlayer[]>;
 	accounts(): LibManagedAccount[];
 	account(id: string): LibManagedAccount | undefined;
 	remove(id: string): Promise<void>;
