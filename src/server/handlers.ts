@@ -433,6 +433,10 @@ export async function handleExecuteGoal(
 	};
 
 	const goalCtx = makeLibGoalContext(account, goalController.signal);
+	// Non-forced: escalates to a live refresh only if the cache is stale (idle
+	// account), so a one-off goal's precondition check doesn't silently no-op
+	// against externally-drifted state.
+	await goalCtx.refreshState();
 	const goalPromise = goal.execute(goalCtx);
 
 	ctx.executingGoals.set(actualId, {
@@ -612,6 +616,10 @@ export async function handleExecuteGoalAsync(
 			remainingSteps: [],
 		};
 		const goalCtx = makeLibGoalContext(account, jobController.signal);
+		// Non-forced: escalates to a live refresh only if the cache is stale (idle
+		// account), so a one-off goal's precondition check doesn't silently no-op
+		// against externally-drifted state.
+		await goalCtx.refreshState();
 		const jobPromise = goal
 			.execute(goalCtx)
 			.then(async (result) => {

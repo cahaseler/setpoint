@@ -1,5 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { ClerkPlayer, GameState } from "@spacemolt/lib";
+import { markStateFresh } from "../../src/dispatcher/state-freshness.js";
 import {
 	type HandlerContext,
 	handleAbortAccount,
@@ -1922,6 +1923,40 @@ describe("handleExecuteGoal", () => {
 		// Lock must be cleared regardless of outcome
 		expect(ctx.executingGoals.has("p1")).toBe(false);
 	});
+
+	test("refreshes state before executing when the cache is stale", async () => {
+		const account = makeAccount("p1");
+		markStateFresh(account, Date.now() - 1_000_000); // long past the freshness TTL
+		const ctx = makeContext({ accounts: [account] });
+		const req = new Request("http://localhost/accounts/p1/goal", {
+			method: "POST",
+			body: JSON.stringify({ type: "ensure-undocked" }),
+			headers: { "Content-Type": "application/json" },
+		});
+
+		const res = await handleExecuteGoal(req, { playerId: "p1" }, ctx);
+		expect(res.status).toBe(200);
+		await res.text(); // drain to let the goal (and its own post-completion refresh) finish
+		// 2 = 1 pre-execute refresh (stale cache) + 1 unconditional post-completion refresh.
+		expect(account.refreshCalls).toBe(2);
+	});
+
+	test("does not refresh state before executing when the cache is fresh", async () => {
+		const account = makeAccount("p1");
+		markStateFresh(account); // just marked — well within the TTL
+		const ctx = makeContext({ accounts: [account] });
+		const req = new Request("http://localhost/accounts/p1/goal", {
+			method: "POST",
+			body: JSON.stringify({ type: "ensure-undocked" }),
+			headers: { "Content-Type": "application/json" },
+		});
+
+		const res = await handleExecuteGoal(req, { playerId: "p1" }, ctx);
+		expect(res.status).toBe(200);
+		await res.text(); // drain to let the goal (and its own post-completion refresh) finish
+		// 1 = 0 pre-execute refresh (fresh cache, skipped) + 1 unconditional post-completion refresh.
+		expect(account.refreshCalls).toBe(1);
+	});
 });
 
 // ── Execute Goal Async ───────────────────────────────────────────────
@@ -2035,6 +2070,40 @@ describe("handleExecuteGoalAsync", () => {
 
 		const res = await handleExecuteGoalAsync(req, { playerId: "p1" }, ctx);
 		expect(res.status).toBe(409);
+	});
+
+	test("refreshes state before executing when the cache is stale", async () => {
+		const account = makeAccount("p1");
+		markStateFresh(account, Date.now() - 1_000_000); // long past the freshness TTL
+		const ctx = makeContext({ accounts: [account] });
+		const req = new Request("http://localhost/accounts/p1/goal/async", {
+			method: "POST",
+			body: JSON.stringify({ type: "ensure-undocked" }),
+			headers: { "Content-Type": "application/json" },
+		});
+
+		const res = await handleExecuteGoalAsync(req, { playerId: "p1" }, ctx);
+		expect(res.status).toBe(202);
+		// 2 = 1 pre-execute refresh (stale cache) + 1 unconditional post-completion refresh
+		// (the fake job's goal.execute()/.then() chain settles via microtasks before this
+		// await resolves, same as the sync handler).
+		expect(account.refreshCalls).toBe(2);
+	});
+
+	test("does not refresh state before executing when the cache is fresh", async () => {
+		const account = makeAccount("p1");
+		markStateFresh(account); // just marked — well within the TTL
+		const ctx = makeContext({ accounts: [account] });
+		const req = new Request("http://localhost/accounts/p1/goal/async", {
+			method: "POST",
+			body: JSON.stringify({ type: "ensure-undocked" }),
+			headers: { "Content-Type": "application/json" },
+		});
+
+		const res = await handleExecuteGoalAsync(req, { playerId: "p1" }, ctx);
+		expect(res.status).toBe(202);
+		// 1 = 0 pre-execute refresh (fresh cache, skipped) + 1 unconditional post-completion refresh.
+		expect(account.refreshCalls).toBe(1);
 	});
 });
 

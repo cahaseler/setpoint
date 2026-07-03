@@ -5,6 +5,7 @@ import {
 	STATE_SECTIONS,
 	type StateSection,
 } from "@spacemolt/lib";
+import { markStateFresh } from "../dispatcher/state-freshness.js";
 import { createLogger } from "../util/logger.js";
 import { type LibConfig, buildOwnedFilter } from "./lib-config.js";
 import type { AccountClientLike, LibManagedAccount } from "./lib-types.js";
@@ -55,7 +56,10 @@ export class LibAccountManager {
 		}
 		const onChange = this.opts.onStateChange;
 		if (onChange) {
-			account.onStateChange((changed) => onChange(playerId, changed, account));
+			account.onStateChange((changed) => {
+				markStateFresh(account);
+				onChange(playerId, changed, account);
+			});
 			// Backfill: the lib seeds full state during connect(), before our listener
 			// was attached (onStateChange has no replay). Fire once with the current
 			// state so the projection reflects freshly-connected accounts. The projector
@@ -63,6 +67,10 @@ export class LibAccountManager {
 			// the full section list is safe and idempotent.
 			onChange(playerId, [...STATE_SECTIONS], account);
 		}
+		// The lib seeds state during connect() without firing onStateChange (no
+		// replay), so mark freshness explicitly here — otherwise a freshly-connected
+		// account would read as stale immediately.
+		markStateFresh(account);
 		return playerId;
 	}
 

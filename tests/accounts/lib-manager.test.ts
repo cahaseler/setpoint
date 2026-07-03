@@ -2,6 +2,7 @@ import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import type { Account, ClerkPlayer } from "@spacemolt/lib";
 import { LibAccountManager } from "../../src/accounts/lib-manager.js";
 import type { LibManagedAccount } from "../../src/accounts/lib-types.js";
+import { STATE_FRESHNESS_TTL_MS, isStateStale } from "../../src/dispatcher/state-freshness.js";
 import { FakeAccount, FakeClient } from "./fakes.js";
 
 /**
@@ -241,6 +242,58 @@ describe("LibAccountManager", () => {
 			nowSpy.mockReturnValue(1_000_000 + 60_001); // past the TTL
 			await mgr.listOwned();
 			expect(client.listOwnedPlayersCallCount).toBe(2);
+		});
+	});
+
+	describe("state-freshness marking", () => {
+		afterEach(() => {
+			spyOn(Date, "now").mockRestore();
+		});
+
+		test("connect() records a real freshness timestamp (not just an untracked-is-fresh default)", async () => {
+			const { client, accounts } = setup([player("Alpha", "pid-a")]);
+			const mgr = new LibAccountManager(client, { clerkApiKey: "k" });
+			const nowSpy = spyOn(Date, "now").mockReturnValue(1_000_000);
+			await mgr.connect();
+			nowSpy.mockRestore();
+
+			const account = accounts.get("Alpha") as object;
+			// Fresh immediately after connect...
+			expect(isStateStale(account, undefined, 1_000_000 + 1_000)).toBe(false);
+			// ...but stale once the TTL has actually elapsed since the recorded mark.
+			// An untracked account (no markStateFresh call) would never go stale, so
+			// this proves a real timestamp was recorded at connect time.
+			expect(isStateStale(account, undefined, 1_000_000 + STATE_FRESHNESS_TTL_MS + 1)).toBe(true);
+		});
+
+		test("connectOne() records a real freshness timestamp (not just an untracked-is-fresh default)", async () => {
+			const { client, accounts } = setup([player("Alpha", "pid-a")]);
+			const mgr = new LibAccountManager(client, { clerkApiKey: "k" });
+			const nowSpy = spyOn(Date, "now").mockReturnValue(1_000_000);
+			await mgr.connectOne("Alpha");
+			nowSpy.mockRestore();
+
+			const account = accounts.get("Alpha") as object;
+			expect(isStateStale(account, undefined, 1_000_000 + 1_000)).toBe(false);
+			expect(isStateStale(account, undefined, 1_000_000 + STATE_FRESHNESS_TTL_MS + 1)).toBe(true);
+		});
+
+		test("an onStateChange emission re-marks the account fresh", async () => {
+			const { client, accounts } = setup([player("Alpha", "pid-a")]);
+			const mgr = new LibAccountManager(client, { clerkApiKey: "k" }, { onStateChange: () => {} });
+			await mgr.connect();
+
+			const account = accounts.get("Alpha");
+			if (!account) throw new Error("expected account");
+
+			// Re-mark at a controlled instant, then prove the mark actually moved to
+			// it (not just left at the earlier real-time connect() mark).
+			const nowSpy = spyOn(Date, "now").mockReturnValue(1_000_000);
+			account.emitStateChange(["ship"]);
+			nowSpy.mockRestore();
+
+			expect(isStateStale(account as object, undefined, 1_000_000 + 1_000)).toBe(false); // within TTL of the re-mark
+			expect(isStateStale(account as object, undefined, 1_000_000 + 40_000)).toBe(true); // past TTL of the re-mark
 		});
 	});
 });

@@ -1,5 +1,6 @@
 import type { Commands, GameState } from "@spacemolt/lib";
 import type { GoalResult } from "./goals.js";
+import { isStateStale } from "./state-freshness.js";
 
 /**
  * Narrow boundary over a lib `Account` for goal execution. The real `Account`
@@ -65,7 +66,7 @@ export function makeLibGoalContext(account: LibGoalAccount, signal?: AbortSignal
 			return account.state;
 		},
 		refreshState(opts?: { force?: boolean }): Promise<Readonly<GameState>> {
-			if (opts?.force) {
+			if (opts?.force || isStateStale(account)) {
 				return account.refresh();
 			}
 			return Promise.resolve(account.state);
