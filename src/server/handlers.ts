@@ -1,3 +1,4 @@
+import { type LoopType, loopPatchSchemas, loopSchemas } from "@setpoint/protocol";
 import type { SpacemoltClient } from "@spacemolt/lib";
 import { loadRegistrationConfig } from "../accounts/config.js";
 import type { LibAccountManager } from "../accounts/lib-manager.js";
@@ -13,20 +14,15 @@ import {
 	deprecatedTypeMessage,
 	formatGoalError,
 	getGoalTypes,
+	isZodLikeError,
 } from "./goal-registry.js";
 import type { JobManager } from "./job-manager.js";
 import type {
 	EnhancedMiningLoopApiOptions,
-	ExplorationLoopApiOptions,
-	GuardLoopApiOptions,
 	HaulingLoopApiOptions,
 	LoopManager,
 	LoopStatus,
 	MiningLoopApiOptions,
-	RoamingSalvageLoopApiOptions,
-	SalvageLoopApiOptions,
-	StorageTransferLoopApiOptions,
-	TowSalvageLoopApiOptions,
 	TradingLoopApiOptions,
 } from "./loop-manager.js";
 import { type RouteParams, errorResponse, jsonResponse } from "./router.js";
@@ -917,6 +913,18 @@ export async function handlePatchLoop(
 		}
 	}
 
+	// Validate field types/enums against the loop's zod partial schema (from
+	// `@setpoint/protocol`) — the flat PATCH body maps directly onto
+	// `loopPatchSchemas[type]`, unlike `handleStartLoop`'s `{ options: {...} }`
+	// wrapper.
+	if (isLoopType(current.type)) {
+		try {
+			loopPatchSchemas[current.type].parse(patch);
+		} catch (err) {
+			return errorResponse(formatLoopPatchError(err), 400);
+		}
+	}
+
 	const status = ctx.loopManager.patchLoopOptions(playerIdOf(account), patch);
 	if (!status) {
 		return errorResponse("No loop running on this account", 409);
@@ -993,21 +1001,9 @@ export async function handleStartLoop(
 		}
 	}
 
-	const supportedTypes = [
-		"mining",
-		"enhanced-mining",
-		"salvage",
-		"roaming-salvage",
-		"tow-salvage",
-		"trading",
-		"hauling",
-		"storage-transfer",
-		"exploration",
-		"guard",
-	];
-	if (typeof loopType !== "string" || !supportedTypes.includes(loopType)) {
+	if (typeof loopType !== "string" || !isLoopType(loopType)) {
 		return errorResponse(
-			`Unknown loop type: ${String(loopType)}. Supported: ${supportedTypes.join(", ")}`,
+			`Unknown loop type: ${String(loopType)}. Supported: ${getLoopTypes().join(", ")}`,
 			400,
 		);
 	}
@@ -1036,35 +1032,41 @@ export async function handleStartLoop(
 	try {
 		let status: LoopStatus;
 
+		// Each branch validates `opts` against the matching zod schema in
+		// `loopSchemas` (from `@setpoint/protocol`) before constructing the
+		// LoopManager options — the schema is the single source of truth for a
+		// loop's option shape, mirroring the goal-registry pattern.
 		if (loopType === "mining") {
-			const apiOptions = validateMiningOptions(opts);
+			const apiOptions = resolveListPrices(loopSchemas.mining.parse(opts)) as MiningLoopApiOptions;
 			status = ctx.loopManager.startMiningLoop(actualId, apiOptions, account);
 		} else if (loopType === "enhanced-mining") {
-			const apiOptions = validateEnhancedMiningOptions(opts);
+			const apiOptions = resolveListPrices(
+				loopSchemas["enhanced-mining"].parse(opts),
+			) as EnhancedMiningLoopApiOptions;
 			status = ctx.loopManager.startEnhancedMiningLoop(actualId, apiOptions, account);
 		} else if (loopType === "trading") {
-			const apiOptions = validateTradingOptions(opts);
+			const apiOptions = loopSchemas.trading.parse(opts) as TradingLoopApiOptions;
 			status = ctx.loopManager.startTradingLoop(actualId, apiOptions, account);
 		} else if (loopType === "hauling") {
-			const apiOptions = validateHaulingOptions(opts);
+			const apiOptions = loopSchemas.hauling.parse(opts) as HaulingLoopApiOptions;
 			status = ctx.loopManager.startHaulingLoop(actualId, apiOptions, account);
 		} else if (loopType === "storage-transfer") {
-			const apiOptions = validateStorageTransferOptions(opts);
+			const apiOptions = loopSchemas["storage-transfer"].parse(opts);
 			status = ctx.loopManager.startStorageTransferLoop(actualId, apiOptions, account);
 		} else if (loopType === "salvage") {
-			const apiOptions = validateSalvageOptions(opts);
+			const apiOptions = loopSchemas.salvage.parse(opts);
 			status = ctx.loopManager.startSalvageLoop(actualId, apiOptions, account);
 		} else if (loopType === "roaming-salvage") {
-			const apiOptions = validateRoamingSalvageOptions(opts);
+			const apiOptions = loopSchemas["roaming-salvage"].parse(opts);
 			status = ctx.loopManager.startRoamingSalvageLoop(actualId, apiOptions, account);
 		} else if (loopType === "tow-salvage") {
-			const apiOptions = validateTowSalvageOptions(opts);
+			const apiOptions = loopSchemas["tow-salvage"].parse(opts);
 			status = ctx.loopManager.startTowSalvageLoop(actualId, apiOptions, account);
 		} else if (loopType === "exploration") {
-			const apiOptions = validateExplorationOptions(opts);
+			const apiOptions = loopSchemas.exploration.parse(opts);
 			status = ctx.loopManager.startExplorationLoop(actualId, apiOptions, account);
 		} else if (loopType === "guard") {
-			const apiOptions = validateGuardOptions(opts);
+			const apiOptions = loopSchemas.guard.parse(opts);
 			status = ctx.loopManager.startGuardLoop(actualId, apiOptions, account);
 		} else {
 			throw new HttpError(`Unsupported loop type: ${loopType}`, 400);
@@ -1077,7 +1079,7 @@ export async function handleStartLoop(
 
 		return jsonResponse(status, 201);
 	} catch (err) {
-		const message = err instanceof Error ? err.message : "Failed to start loop";
+		const message = formatGoalError(err);
 		const status = message.includes("already running") ? 409 : 400;
 		return errorResponse(message, status);
 	}
@@ -1353,383 +1355,56 @@ export function handleDashboardData(
 
 // ── Validation helpers ─────────────────────────────────────────────
 
-function requireString(opts: Record<string, unknown>, key: string): string {
-	const value = opts[key];
-	if (typeof value !== "string") {
-		throw new Error(`options.${key} is required (string)`);
-	}
-	return value;
+/** All loop types recognized by `@setpoint/protocol`'s `loopSchemas`/`loopPatchSchemas`. */
+function getLoopTypes(): LoopType[] {
+	return Object.keys(loopSchemas) as LoopType[];
 }
 
-function validateDepositTarget(
-	opts: Record<string, unknown>,
-): { depositTarget: "personal" | "faction" } | Record<string, never> {
-	const val = opts["depositTarget"];
-	if (val === "personal" || val === "faction") {
-		return { depositTarget: val };
-	}
-	return {};
+/** Type guard narrowing a raw string to `LoopType` if it's a known, schema-backed loop type. */
+function isLoopType(type: string): type is LoopType {
+	return Object.hasOwn(loopSchemas, type);
 }
 
-function validateStorageTarget(
-	opts: Record<string, unknown>,
-): { storageTarget: "personal" | "faction" } | Record<string, never> {
-	const val = opts["storageTarget"];
-	if (val === "personal" || val === "faction") {
-		return { storageTarget: val };
+/**
+ * Format a `handlePatchLoop` validation error into a readable 400 message.
+ *
+ * Mirrors `formatGoalError` (see `goal-registry.ts`), but without the
+ * "options." path prefix — a loop PATCH body is a flat partial merged
+ * directly onto the live options, not wrapped in an `options` object like
+ * `handleStartLoop`'s body.
+ */
+function formatLoopPatchError(err: unknown): string {
+	if (isZodLikeError(err)) {
+		return err.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("; ");
 	}
-	return {};
+	return err instanceof Error ? err.message : "Invalid patch options";
 }
 
-function parseListPrices(
-	raw: unknown,
-): { listPrices: Record<string, number> } | Record<string, never> {
-	if (raw === undefined || raw === null || raw === "") return {};
-	let obj = raw;
-	if (typeof obj === "string") {
-		try {
-			obj = JSON.parse(obj);
-		} catch {
-			throw new Error("options.listPrices must be a valid JSON object of item_id → price");
-		}
+/**
+ * Normalize `listPrices` after zod validation: `loopSchemas.mining`/
+ * `loopSchemas["enhanced-mining"]` accept either an object of item_id → price
+ * or a JSON string of the same (for CLI/form convenience), but
+ * `LoopManager.startMiningLoop`/`startEnhancedMiningLoop` only accept the
+ * object form. A string value is parsed here; a non-object parse result
+ * throws the same validation-style error the old hand-rolled validator did.
+ */
+function resolveListPrices<T extends { listPrices?: Record<string, number> | string | undefined }>(
+	validated: T,
+): Omit<T, "listPrices"> & { listPrices?: Record<string, number> } {
+	const { listPrices, ...rest } = validated;
+	if (typeof listPrices !== "string") {
+		return { ...rest, ...(listPrices !== undefined ? { listPrices } : {}) };
 	}
-	if (typeof obj !== "object" || Array.isArray(obj)) {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(listPrices);
+	} catch {
+		throw new Error("options.listPrices must be a valid JSON object of item_id → price");
+	}
+	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
 		throw new Error("options.listPrices must be an object of item_id → price");
 	}
-	return { listPrices: obj as Record<string, number> };
-}
-
-function validateCashSource(
-	opts: Record<string, unknown>,
-): { cashSource: "faction"; minCredits?: number } | Record<string, never> {
-	const val = opts["cashSource"];
-	if (val === "faction") {
-		const minCredits = typeof opts["minCredits"] === "number" ? opts["minCredits"] : undefined;
-		return { cashSource: val, ...(minCredits !== undefined ? { minCredits } : {}) };
-	}
-	return {};
-}
-
-function validateMiningOptions(opts: Record<string, unknown>): MiningLoopApiOptions {
-	return {
-		miningSystemId: requireString(opts, "miningSystemId"),
-		beltPoiId: requireString(opts, "beltPoiId"),
-		sellSystemId: requireString(opts, "sellSystemId"),
-		sellStationPoiId: requireString(opts, "sellStationPoiId"),
-		sellBaseId: requireString(opts, "sellBaseId"),
-		...(typeof opts["fullThreshold"] === "number" ? { fullThreshold: opts["fullThreshold"] } : {}),
-		...(typeof opts["maxAttempts"] === "number" ? { maxAttempts: opts["maxAttempts"] } : {}),
-		...(typeof opts["repair"] === "boolean" ? { repair: opts["repair"] } : {}),
-		...validateDepositTarget(opts),
-		...(typeof opts["skipMarket"] === "boolean" ? { skipMarket: opts["skipMarket"] } : {}),
-		...validateCashSource(opts),
-		...(typeof opts["listPrice"] === "number" ? { listPrice: opts["listPrice"] } : {}),
-		...parseListPrices(opts["listPrices"]),
-		...(typeof opts["retryOnDepleted"] === "boolean"
-			? { retryOnDepleted: opts["retryOnDepleted"] }
-			: {}),
-		...(typeof opts["maxIterations"] === "number" ? { maxIterations: opts["maxIterations"] } : {}),
-	};
-}
-
-function validateEnhancedMiningOptions(
-	opts: Record<string, unknown>,
-): EnhancedMiningLoopApiOptions {
-	const junkItemIds = opts["junkItemIds"];
-	if (!Array.isArray(junkItemIds) || !junkItemIds.every((id) => typeof id === "string")) {
-		throw new Error("options.junkItemIds is required (string[])");
-	}
-
-	return {
-		miningSystemId: requireString(opts, "miningSystemId"),
-		beltPoiId: requireString(opts, "beltPoiId"),
-		sellSystemId: requireString(opts, "sellSystemId"),
-		sellStationPoiId: requireString(opts, "sellStationPoiId"),
-		sellBaseId: requireString(opts, "sellBaseId"),
-		junkItemIds: junkItemIds as string[],
-		...(typeof opts["fullThreshold"] === "number" ? { fullThreshold: opts["fullThreshold"] } : {}),
-		...(typeof opts["maxAttempts"] === "number" ? { maxAttempts: opts["maxAttempts"] } : {}),
-		...(typeof opts["maxJettisonRounds"] === "number"
-			? { maxJettisonRounds: opts["maxJettisonRounds"] }
-			: {}),
-		...(typeof opts["repair"] === "boolean" ? { repair: opts["repair"] } : {}),
-		...validateDepositTarget(opts),
-		...(typeof opts["skipMarket"] === "boolean" ? { skipMarket: opts["skipMarket"] } : {}),
-		...validateCashSource(opts),
-		...(typeof opts["listPrice"] === "number" ? { listPrice: opts["listPrice"] } : {}),
-		...parseListPrices(opts["listPrices"]),
-		...(typeof opts["retryOnDepleted"] === "boolean"
-			? { retryOnDepleted: opts["retryOnDepleted"] }
-			: {}),
-		...(typeof opts["maxIterations"] === "number" ? { maxIterations: opts["maxIterations"] } : {}),
-	};
-}
-
-function validateSalvageOptions(opts: Record<string, unknown>): SalvageLoopApiOptions {
-	return {
-		salvageSystemId: requireString(opts, "salvageSystemId"),
-		salvagePoiId: requireString(opts, "salvagePoiId"),
-		sellSystemId: requireString(opts, "sellSystemId"),
-		sellStationPoiId: requireString(opts, "sellStationPoiId"),
-		sellBaseId: requireString(opts, "sellBaseId"),
-		...(typeof opts["fullThreshold"] === "number" ? { fullThreshold: opts["fullThreshold"] } : {}),
-		...(typeof opts["maxAttempts"] === "number" ? { maxAttempts: opts["maxAttempts"] } : {}),
-		...(typeof opts["repair"] === "boolean" ? { repair: opts["repair"] } : {}),
-		...validateDepositTarget(opts),
-		...(typeof opts["skipMarket"] === "boolean" ? { skipMarket: opts["skipMarket"] } : {}),
-		...validateCashSource(opts),
-		...(typeof opts["maxIterations"] === "number" ? { maxIterations: opts["maxIterations"] } : {}),
-	};
-}
-
-function validateTowSalvageOptions(opts: Record<string, unknown>): TowSalvageLoopApiOptions {
-	const mode = opts["mode"];
-	if (mode !== "fixed") {
-		throw new Error('options.mode is required and must be "fixed"');
-	}
-	const disposition = opts["disposition"];
-	if (disposition !== undefined && disposition !== "scrap" && disposition !== "sell") {
-		throw new Error('options.disposition must be "scrap" or "sell"');
-	}
-	return {
-		mode: "fixed",
-		yardSystemId: requireString(opts, "yardSystemId"),
-		yardPoiId: requireString(opts, "yardPoiId"),
-		yardBaseId: requireString(opts, "yardBaseId"),
-		wreckSystemId: requireString(opts, "wreckSystemId"),
-		wreckPoiId: requireString(opts, "wreckPoiId"),
-		...(disposition !== undefined ? { disposition: disposition as "scrap" | "sell" } : {}),
-		...validateStorageTarget(opts),
-		...(typeof opts["maxIterations"] === "number" ? { maxIterations: opts["maxIterations"] } : {}),
-	};
-}
-
-function requireStationConfig(
-	opts: Record<string, unknown>,
-	key: string,
-): { systemId: string; poiId: string; baseId: string } {
-	const station = opts[key];
-	if (typeof station !== "object" || station === null || Array.isArray(station)) {
-		throw new Error(`options.${key} must be an object with systemId, poiId, baseId`);
-	}
-	const s = station as Record<string, unknown>;
-	return {
-		systemId: requireString(s, "systemId"),
-		poiId: requireString(s, "poiId"),
-		baseId: requireString(s, "baseId"),
-	};
-}
-
-function validateTradingItemsArray(opts: Record<string, unknown>): TradingLoopApiOptions["items"] {
-	const items = opts["items"];
-	if (!Array.isArray(items) || items.length === 0) {
-		throw new Error("options.items is required (non-empty array)");
-	}
-
-	return items.map((item, i) => {
-		if (typeof item !== "object" || item === null || Array.isArray(item)) {
-			throw new Error(`options.items[${i}] must be an object`);
-		}
-		const entry = item as Record<string, unknown>;
-		return {
-			itemId: requireString(entry, "itemId"),
-			maxBuyPrice: requireNumber(entry, "maxBuyPrice"),
-			minSellPrice: requireNumber(entry, "minSellPrice"),
-			...(typeof entry["maxQuantity"] === "number" ? { maxQuantity: entry["maxQuantity"] } : {}),
-		};
-	});
-}
-
-function requireNumber(opts: Record<string, unknown>, key: string): number {
-	const value = opts[key];
-	if (typeof value !== "number") {
-		throw new Error(`options.${key} is required (number)`);
-	}
-	return value;
-}
-
-function validateTradingOptions(opts: Record<string, unknown>): TradingLoopApiOptions {
-	const buyStation = requireStationConfig(opts, "buyStation");
-	const sellStationRaw = opts["sellStation"];
-	if (
-		typeof sellStationRaw !== "object" ||
-		sellStationRaw === null ||
-		Array.isArray(sellStationRaw)
-	) {
-		throw new Error("options.sellStation must be an object with systemId, stationPoiId, baseId");
-	}
-	const ss = sellStationRaw as Record<string, unknown>;
-	const sellStation = {
-		systemId: requireString(ss, "systemId"),
-		stationPoiId: requireString(ss, "stationPoiId"),
-		baseId: requireString(ss, "baseId"),
-	};
-
-	return {
-		buyStation,
-		sellStation,
-		items: validateTradingItemsArray(opts),
-		...(typeof opts["refuel"] === "boolean" ? { refuel: opts["refuel"] } : {}),
-		...(typeof opts["maxIterations"] === "number" ? { maxIterations: opts["maxIterations"] } : {}),
-	};
-}
-
-function validateHaulingOptions(opts: Record<string, unknown>): HaulingLoopApiOptions {
-	// Validate source
-	const sourceRaw = opts["source"];
-	if (typeof sourceRaw !== "object" || sourceRaw === null || Array.isArray(sourceRaw)) {
-		throw new Error("options.source must be an object");
-	}
-	const src = sourceRaw as Record<string, unknown>;
-	const validSourceTypes = ["personal-storage", "faction-storage", "market"];
-	const sourceType = requireString(src, "type");
-	if (!validSourceTypes.includes(sourceType)) {
-		throw new Error(`options.source.type must be one of: ${validSourceTypes.join(", ")}`);
-	}
-
-	const sourceItems = src["items"];
-	if (!Array.isArray(sourceItems) || sourceItems.length === 0) {
-		throw new Error("options.source.items is required (non-empty array)");
-	}
-	const parsedSourceItems = sourceItems.map((item, i) => {
-		if (typeof item !== "object" || item === null || Array.isArray(item)) {
-			throw new Error(`options.source.items[${i}] must be an object`);
-		}
-		const entry = item as Record<string, unknown>;
-		return {
-			itemId: requireString(entry, "itemId"),
-			...(typeof entry["quantity"] === "number" ? { quantity: entry["quantity"] } : {}),
-			...(typeof entry["maxPrice"] === "number" ? { maxPrice: entry["maxPrice"] } : {}),
-		};
-	});
-
-	const source: HaulingLoopApiOptions["source"] = {
-		systemId: requireString(src, "systemId"),
-		poiId: requireString(src, "poiId"),
-		baseId: requireString(src, "baseId"),
-		type: sourceType as HaulingLoopApiOptions["source"]["type"],
-		items: parsedSourceItems,
-	};
-
-	// Validate destination
-	const destRaw = opts["destination"];
-	if (typeof destRaw !== "object" || destRaw === null || Array.isArray(destRaw)) {
-		throw new Error("options.destination must be an object");
-	}
-	const dst = destRaw as Record<string, unknown>;
-	const validDestTypes = ["personal-storage", "faction-storage", "gift", "market"];
-	const destType = requireString(dst, "type");
-	if (!validDestTypes.includes(destType)) {
-		throw new Error(`options.destination.type must be one of: ${validDestTypes.join(", ")}`);
-	}
-
-	if (destType === "gift" && typeof dst["targetPlayer"] !== "string") {
-		throw new Error("options.destination.targetPlayer is required when type is 'gift'");
-	}
-
-	const destItems = dst["items"];
-	let parsedDestItems: HaulingLoopApiOptions["destination"]["items"];
-	if (Array.isArray(destItems)) {
-		parsedDestItems = destItems.map((item, i) => {
-			if (typeof item !== "object" || item === null || Array.isArray(item)) {
-				throw new Error(`options.destination.items[${i}] must be an object`);
-			}
-			const entry = item as Record<string, unknown>;
-			return {
-				itemId: requireString(entry, "itemId"),
-				...(typeof entry["minPrice"] === "number" ? { minPrice: entry["minPrice"] } : {}),
-			};
-		});
-	}
-
-	const destination: HaulingLoopApiOptions["destination"] = {
-		systemId: requireString(dst, "systemId"),
-		poiId: requireString(dst, "poiId"),
-		baseId: requireString(dst, "baseId"),
-		type: destType as HaulingLoopApiOptions["destination"]["type"],
-		...(typeof dst["targetPlayer"] === "string" ? { targetPlayer: dst["targetPlayer"] } : {}),
-		...(parsedDestItems !== undefined ? { items: parsedDestItems } : {}),
-	};
-
-	return {
-		source,
-		destination,
-		...(typeof opts["refuel"] === "boolean" ? { refuel: opts["refuel"] } : {}),
-		...(typeof opts["maxIterations"] === "number" ? { maxIterations: opts["maxIterations"] } : {}),
-	};
-}
-
-function validateStorageTransferOptions(
-	opts: Record<string, unknown>,
-): StorageTransferLoopApiOptions {
-	return {
-		systemId: requireString(opts, "systemId"),
-		stationPoiId: requireString(opts, "stationPoiId"),
-		baseId: requireString(opts, "baseId"),
-		...(typeof opts["refuel"] === "boolean" ? { refuel: opts["refuel"] } : {}),
-		...(typeof opts["excludeCredits"] === "boolean"
-			? { excludeCredits: opts["excludeCredits"] }
-			: {}),
-		...(typeof opts["maxIterations"] === "number" ? { maxIterations: opts["maxIterations"] } : {}),
-	};
-}
-
-function validateExplorationOptions(opts: Record<string, unknown>): ExplorationLoopApiOptions {
-	return {
-		systemId: requireString(opts, "systemId"),
-		stationPoiId: requireString(opts, "stationPoiId"),
-		baseId: requireString(opts, "baseId"),
-		...(typeof opts["allowLawless"] === "boolean" ? { allowLawless: opts["allowLawless"] } : {}),
-		...(typeof opts["minFuelReserve"] === "number"
-			? { minFuelReserve: opts["minFuelReserve"] }
-			: {}),
-		...(typeof opts["repairThreshold"] === "number"
-			? { repairThreshold: opts["repairThreshold"] }
-			: {}),
-		...(typeof opts["survey"] === "boolean" ? { survey: opts["survey"] } : {}),
-		...(typeof opts["minSubmittedAtTick"] === "number"
-			? { minSubmittedAtTick: opts["minSubmittedAtTick"] }
-			: {}),
-		...(typeof opts["maxIterations"] === "number" ? { maxIterations: opts["maxIterations"] } : {}),
-	};
-}
-
-function validateGuardOptions(opts: Record<string, unknown>): GuardLoopApiOptions {
-	return {
-		homeSystemId: requireString(opts, "homeSystemId"),
-		homeStationPoiId: requireString(opts, "homeStationPoiId"),
-		homeBaseId: requireString(opts, "homeBaseId"),
-		guardSystemId: requireString(opts, "guardSystemId"),
-		guardPoiId: requireString(opts, "guardPoiId"),
-		...(opts["cashSource"] === "faction" ? { cashSource: "faction" as const } : {}),
-		...(typeof opts["minCredits"] === "number" ? { minCredits: opts["minCredits"] } : {}),
-		...(typeof opts["repairThreshold"] === "number"
-			? { repairThreshold: opts["repairThreshold"] }
-			: {}),
-		...(typeof opts["maxIterations"] === "number" ? { maxIterations: opts["maxIterations"] } : {}),
-	};
-}
-
-function validateRoamingSalvageOptions(
-	opts: Record<string, unknown>,
-): RoamingSalvageLoopApiOptions {
-	return {
-		homeSystemId: requireString(opts, "homeSystemId"),
-		homeStationPoiId: requireString(opts, "homeStationPoiId"),
-		homeBaseId: requireString(opts, "homeBaseId"),
-		...(typeof opts["allowLawless"] === "boolean" ? { allowLawless: opts["allowLawless"] } : {}),
-		...(typeof opts["fullThreshold"] === "number" ? { fullThreshold: opts["fullThreshold"] } : {}),
-		...(typeof opts["minFuelReserve"] === "number"
-			? { minFuelReserve: opts["minFuelReserve"] }
-			: {}),
-		...(typeof opts["repair"] === "boolean" ? { repair: opts["repair"] } : {}),
-		...validateDepositTarget(opts),
-		...validateCashSource(opts),
-		...(typeof opts["maxLootAttempts"] === "number"
-			? { maxLootAttempts: opts["maxLootAttempts"] }
-			: {}),
-		...(typeof opts["maxIterations"] === "number" ? { maxIterations: opts["maxIterations"] } : {}),
-	};
+	return { ...rest, listPrices: parsed as Record<string, number> };
 }
 
 // ── Schema endpoints ─────────────────────────────────────────────────────────

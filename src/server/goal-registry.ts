@@ -456,13 +456,15 @@ export function getGoalTypes(): string[] {
 /**
  * Shape of a zod `ZodError`'s `issues` array. Duck-typed rather than checked
  * via `instanceof` because zod is a transitive dependency (through
- * `@setpoint/protocol`), not a direct dependency of the daemon.
+ * `@setpoint/protocol`), not a direct dependency of the daemon. Exported so
+ * other handlers (e.g. loop start/patch validation) can reuse the same
+ * duck-typed detection instead of re-declaring it.
  */
-interface ZodLikeError {
+export interface ZodLikeError {
 	issues: Array<{ path: PropertyKey[]; message: string }>;
 }
 
-function isZodLikeError(err: unknown): err is ZodLikeError {
+export function isZodLikeError(err: unknown): err is ZodLikeError {
 	return (
 		typeof err === "object" &&
 		err !== null &&

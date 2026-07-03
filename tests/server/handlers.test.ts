@@ -744,6 +744,27 @@ describe("handlePatchLoop", () => {
 		const res = await handlePatchLoop(req, { playerId: "p1" }, ctx);
 		expect(res.status).toBe(200);
 	});
+
+	test("returns 400 for a wrong-typed patch field value", async () => {
+		const account = makeAccount("p1");
+		const loopStatus: LoopStatus = {
+			type: "enhanced-mining",
+			startedAt: "2026-01-01T00:00:00.000Z",
+			running: true,
+			options: { junkItemIds: ["rock_dust"] },
+		};
+		const ctx = makeContext({ accounts: [account], loopStatus });
+
+		const req = new Request("http://localhost/accounts/p1/loop", {
+			method: "PATCH",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ junkItemIds: "not-an-array" }),
+		});
+		const res = await handlePatchLoop(req, { playerId: "p1" }, ctx);
+		const body = (await res.json()) as Record<string, unknown>;
+		expect(res.status).toBe(400);
+		expect(body["error"]).toContain("junkItemIds");
+	});
 });
 
 // ── Start Loop ───────────────────────────────────────────────────────
@@ -944,7 +965,7 @@ describe("handleStartLoop", () => {
 		expect(opts["minCredits"]).toBe(2000);
 	});
 
-	test("ignores cashSource personal (only faction is valid)", async () => {
+	test("rejects cashSource personal (only faction is valid)", async () => {
 		const account = makeAccount("p1");
 		const ctx = makeContext({ accounts: [account] });
 
@@ -965,11 +986,33 @@ describe("handleStartLoop", () => {
 		});
 
 		const res = await handleStartLoop(req, { playerId: "p1" }, ctx);
-		expect(res.status).toBe(201);
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as Record<string, unknown>;
+		expect(body["error"]).toContain("cashSource");
+	});
 
-		const calls = (ctx.loopManager.startMiningLoop as ReturnType<typeof mock>).mock.calls;
-		const opts = calls[0]?.[1] as Record<string, unknown>;
-		expect(opts["cashSource"]).toBeUndefined();
+	test("returns 400 with a zod-formatted message for a missing required mining option", async () => {
+		const account = makeAccount("p1");
+		const ctx = makeContext({ accounts: [account] });
+
+		const req = new Request("http://localhost/accounts/p1/loop", {
+			method: "POST",
+			body: JSON.stringify({
+				type: "mining",
+				options: {
+					beltPoiId: "belt-1",
+					sellSystemId: "sys-2",
+					sellStationPoiId: "station-1",
+					sellBaseId: "base-1",
+				},
+			}),
+			headers: { "Content-Type": "application/json" },
+		});
+
+		const res = await handleStartLoop(req, { playerId: "p1" }, ctx);
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as Record<string, unknown>;
+		expect(body["error"]).toBe("options.miningSystemId: Required");
 	});
 
 	test("starts salvage loop with required options", async () => {

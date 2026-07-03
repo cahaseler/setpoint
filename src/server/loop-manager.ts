@@ -1,5 +1,6 @@
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import type { LoopOptionsMap } from "@setpoint/protocol";
 import type { LibManagedAccount } from "../accounts/lib-types.js";
 import type { LoopResult, ProgressRef } from "../dispatcher/goals.js";
 import { makeLibGoalContext } from "../dispatcher/lib-goal-context.js";
@@ -97,7 +98,17 @@ interface ActiveLoop {
 	progress?: ProgressRef;
 }
 
-/** Options for starting a mining loop via the API. */
+/**
+ * Options for starting a mining loop via the API.
+ *
+ * Field-for-field this mirrors `@setpoint/protocol`'s `LoopOptionsMap["mining"]`
+ * (the zod-validated shape), with one deliberate narrowing: `listPrices` here
+ * is `Record<string, number>` only, whereas the protocol schema also accepts a
+ * JSON string (for CLI/form convenience). The handler normalizes a string
+ * `listPrices` into an object (via `parseListPrices`) after zod validation and
+ * before constructing this type, so this interface stays hand-written rather
+ * than aliasing `LoopOptionsMap["mining"]` directly.
+ */
 export interface MiningLoopApiOptions {
 	miningSystemId: string;
 	beltPoiId: string;
@@ -117,7 +128,12 @@ export interface MiningLoopApiOptions {
 	maxIterations?: number;
 }
 
-/** Options for starting an enhanced mining loop via the API. */
+/**
+ * Options for starting an enhanced mining loop via the API.
+ *
+ * Same `listPrices` narrowing rationale as {@link MiningLoopApiOptions} — kept
+ * hand-written rather than aliasing `LoopOptionsMap["enhanced-mining"]`.
+ */
 export interface EnhancedMiningLoopApiOptions {
 	miningSystemId: string;
 	beltPoiId: string;
@@ -139,7 +155,19 @@ export interface EnhancedMiningLoopApiOptions {
 	maxIterations?: number;
 }
 
-/** Options for starting a trading loop via the API. */
+/**
+ * Options for starting a trading loop via the API.
+ *
+ * Field-for-field this mirrors `@setpoint/protocol`'s `LoopOptionsMap["trading"]`,
+ * but is kept hand-written: `items`' optional sub-fields (`maxQuantity`) come
+ * back from zod typed as `T | undefined` rather than `T`, which
+ * `exactOptionalPropertyTypes` treats as incompatible with the dispatcher
+ * layer's own `TradingLoopOptions["items"]` shape (also `T`, no explicit
+ * `undefined`). `handleStartLoop` validates via `loopSchemas.trading.parse()`
+ * and casts the runtime-safe result to this type before calling
+ * `startTradingLoop` — a JSON-parsed body never has a key present with an
+ * explicit `undefined` value, so the cast reflects the real runtime shape.
+ */
 export interface TradingLoopApiOptions {
 	buyStation: {
 		systemId: string;
@@ -161,7 +189,14 @@ export interface TradingLoopApiOptions {
 	maxIterations?: number;
 }
 
-/** Options for starting a hauling loop via the API. */
+/**
+ * Options for starting a hauling loop via the API.
+ *
+ * Kept hand-written for the same reason as {@link TradingLoopApiOptions} —
+ * the nested `source.items`/`destination.items`/`destination.targetPlayer`
+ * optional sub-fields don't survive the zod round-trip under
+ * `exactOptionalPropertyTypes`.
+ */
 export interface HaulingLoopApiOptions {
 	source: {
 		systemId: string;
@@ -189,87 +224,47 @@ export interface HaulingLoopApiOptions {
 	maxIterations?: number;
 }
 
-/** Options for starting an exploration loop via the API. */
-export interface ExplorationLoopApiOptions {
-	systemId: string;
-	stationPoiId: string;
-	baseId: string;
-	allowLawless?: boolean;
-	minFuelReserve?: number;
-	repairThreshold?: number;
-	survey?: boolean;
-	minSubmittedAtTick?: number;
-	maxIterations?: number;
-}
+/**
+ * Options for starting an exploration loop via the API.
+ * Sourced from `@setpoint/protocol`'s `LoopOptionsMap` — the zod schema in
+ * `loopSchemas.exploration` is the single source of truth for this shape.
+ */
+export type ExplorationLoopApiOptions = LoopOptionsMap["exploration"];
 
-/** Options for starting a salvage loop via the API. */
-export interface SalvageLoopApiOptions {
-	salvageSystemId: string;
-	salvagePoiId: string;
-	sellSystemId: string;
-	sellStationPoiId: string;
-	sellBaseId: string;
-	fullThreshold?: number;
-	maxAttempts?: number;
-	repair?: boolean;
-	depositTarget?: "personal" | "faction";
-	skipMarket?: boolean;
-	cashSource?: "faction";
-	minCredits?: number;
-	maxIterations?: number;
-}
+/**
+ * Options for starting a salvage loop via the API.
+ * Sourced from `@setpoint/protocol`'s `LoopOptionsMap` — the zod schema in
+ * `loopSchemas.salvage` is the single source of truth for this shape.
+ */
+export type SalvageLoopApiOptions = LoopOptionsMap["salvage"];
 
-/** Options for starting a storage transfer loop via the API. */
-export interface StorageTransferLoopApiOptions {
-	systemId: string;
-	stationPoiId: string;
-	baseId: string;
-	refuel?: boolean;
-	excludeCredits?: boolean;
-	maxIterations?: number;
-}
+/**
+ * Options for starting a storage transfer loop via the API.
+ * Sourced from `@setpoint/protocol`'s `LoopOptionsMap` — the zod schema in
+ * `loopSchemas["storage-transfer"]` is the single source of truth for this shape.
+ */
+export type StorageTransferLoopApiOptions = LoopOptionsMap["storage-transfer"];
 
-/** Options for starting a roaming salvage loop via the API. */
-export interface RoamingSalvageLoopApiOptions {
-	homeSystemId: string;
-	homeStationPoiId: string;
-	homeBaseId: string;
-	allowLawless?: boolean;
-	fullThreshold?: number;
-	minFuelReserve?: number;
-	repair?: boolean;
-	depositTarget?: "personal" | "faction";
-	cashSource?: "faction";
-	minCredits?: number;
-	maxLootAttempts?: number;
-	maxIterations?: number;
-}
+/**
+ * Options for starting a roaming salvage loop via the API.
+ * Sourced from `@setpoint/protocol`'s `LoopOptionsMap` — the zod schema in
+ * `loopSchemas["roaming-salvage"]` is the single source of truth for this shape.
+ */
+export type RoamingSalvageLoopApiOptions = LoopOptionsMap["roaming-salvage"];
 
-/** Options for starting a guard loop via the API. */
-export interface GuardLoopApiOptions {
-	homeSystemId: string;
-	homeStationPoiId: string;
-	homeBaseId: string;
-	guardSystemId: string;
-	guardPoiId: string;
-	cashSource?: "faction";
-	minCredits?: number;
-	repairThreshold?: number;
-	maxIterations?: number;
-}
+/**
+ * Options for starting a guard loop via the API.
+ * Sourced from `@setpoint/protocol`'s `LoopOptionsMap` — the zod schema in
+ * `loopSchemas.guard` is the single source of truth for this shape.
+ */
+export type GuardLoopApiOptions = LoopOptionsMap["guard"];
 
-/** Options for starting a tow-salvage loop via the API. */
-export interface TowSalvageLoopApiOptions {
-	mode: "fixed";
-	yardSystemId: string;
-	yardPoiId: string;
-	yardBaseId: string;
-	wreckSystemId: string;
-	wreckPoiId: string;
-	disposition?: "scrap" | "sell";
-	storageTarget?: "personal" | "faction";
-	maxIterations?: number;
-}
+/**
+ * Options for starting a tow-salvage loop via the API.
+ * Sourced from `@setpoint/protocol`'s `LoopOptionsMap` — the zod schema in
+ * `loopSchemas["tow-salvage"]` is the single source of truth for this shape.
+ */
+export type TowSalvageLoopApiOptions = LoopOptionsMap["tow-salvage"];
 
 /**
  * Manages active loops for accounts.
