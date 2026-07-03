@@ -93,7 +93,6 @@ describe("SetpointClient.accounts", () => {
 			{
 				status: 202,
 				body: {
-					player_id: null,
 					username: "Player1",
 					status: "connecting",
 					message: "Account queued for connection",
@@ -105,7 +104,6 @@ describe("SetpointClient.accounts", () => {
 		const result = await client.accounts.add("Player1");
 
 		expect(result).toEqual({
-			player_id: null,
 			username: "Player1",
 			status: "connecting",
 			message: "Account queued for connection",
@@ -123,6 +121,8 @@ describe("SetpointClient.accounts", () => {
 					player_id: "p1",
 					username: "Player1",
 					password: "generated-password",
+					empire: "solarian",
+					status: "connected",
 					message: "Account registered and connected",
 				},
 			},
@@ -135,6 +135,8 @@ describe("SetpointClient.accounts", () => {
 			player_id: "p1",
 			username: "Player1",
 			password: "generated-password",
+			empire: "solarian",
+			status: "connected",
 			message: "Account registered and connected",
 		});
 		expect(fetchCalls[0]?.url).toBe("http://127.0.0.1:7580/accounts/register");

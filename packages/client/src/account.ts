@@ -11,9 +11,26 @@ import type {
 	LoopType,
 	V2GameState,
 } from "@setpoint/protocol";
+import type { GetSystemResponse } from "@spacemolt/lib";
 import type { SetpointClient } from "./client.js";
+import { GoalFailedError } from "./errors.js";
 import { type WaitForJobOptions, waitForJob } from "./jobs.js";
 import { type RawApi, createRawApi } from "./raw.js";
+
+/**
+ * True for the daemon's sync-goal failure body — `{error: string}` with no
+ * `success` field. `handleExecuteGoal` streams this shape at HTTP 200 when
+ * the goal throws (see `GoalFailedError`'s doc comment), so `goal()` must
+ * check the body shape rather than trusting `response.ok`.
+ */
+function isGoalFailureBody(body: unknown): body is { error: string } {
+	return (
+		typeof body === "object" &&
+		body !== null &&
+		typeof (body as Record<string, unknown>)["error"] === "string" &&
+		!("success" in (body as Record<string, unknown>))
+	);
+}
 
 export interface AbortOptions {
 	/** Fire abort signals and clean up in-memory state immediately, instead of just reporting status. */
@@ -111,6 +128,35 @@ export class AccountStateApi {
 	}
 }
 
+/**
+ * System/POI-map API scoped to a single account. Mirrors the daemon's
+ * `GET /accounts/:id/system[/:systemId]` route (`handleGetSystem` in
+ * `src/server/handlers.ts`).
+ */
+export class AccountSystemApi {
+	constructor(
+		private readonly client: SetpointClient,
+		private readonly id: string,
+	) {}
+
+	/**
+	 * Gets system/POI map data. With no `systemId`, returns the account's
+	 * current system (`get_system` always reports the player's own system).
+	 * With a `systemId`, the daemon returns that system directly if the
+	 * account is there, another connected account's live view if one is in
+	 * that system, or a reshaped faction-intel snapshot as a fallback —
+	 * `handleGetSystem` normalizes all three to (approximately) this shape.
+	 */
+	async get(systemId?: string): Promise<GetSystemResponse> {
+		const path =
+			systemId === undefined
+				? `/accounts/${encodeURIComponent(this.id)}/system`
+				: `/accounts/${encodeURIComponent(this.id)}/system/${encodeURIComponent(systemId)}`;
+		const result = await this.client.request("GET", path);
+		return result as GetSystemResponse;
+	}
+}
+
 /** Goal API scoped to a single account, identified by player_id or username. */
 export class AccountApi {
 	/** Loop sub-API for this account (`sp.account(id).loop`). */
@@ -119,12 +165,16 @@ export class AccountApi {
 	/** Game-state sub-API for this account (`sp.account(id).state`). */
 	readonly state: AccountStateApi;
 
+	/** System/POI-map sub-API for this account (`sp.account(id).system`). */
+	readonly system: AccountSystemApi;
+
 	constructor(
 		private readonly client: SetpointClient,
 		private readonly id: string,
 	) {
 		this.loop = new AccountLoopApi(client, id);
 		this.state = new AccountStateApi(client, id);
+		this.system = new AccountSystemApi(client, id);
 	}
 
 	/**
@@ -151,6 +201,9 @@ export class AccountApi {
 				timeoutMs: 0,
 			},
 		);
+		if (isGoalFailureBody(result)) {
+			throw new GoalFailedError(result.error);
+		}
 		return result as GoalResult;
 	}
 
@@ -233,8 +286,8 @@ export interface ConnectedAccountSummary {
 export interface PendingAccountSummary {
 	player_id: string | null;
 	username: string;
+	empire: string;
 	status: string;
-	error: string | null;
 	credits: null;
 	ship: null;
 	location: null;
@@ -283,7 +336,6 @@ export type AccountDetail = ConnectedAccountDetail | PendingAccountDetail;
 
 /** Response of `POST /accounts` (`handleAddAccount`). */
 export interface AddAccountResult {
-	player_id: string | null;
 	username: string;
 	status: string;
 	message: string;
@@ -299,6 +351,8 @@ export interface RegisterAccountResult {
 	player_id: string;
 	username: string;
 	password: string;
+	empire: string;
+	status: string;
 	message: string;
 }
 

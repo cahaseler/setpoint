@@ -24,6 +24,23 @@ export class DeprecatedGoalError extends SetpointHttpError {
 	}
 }
 
+/**
+ * Thrown when a synchronous goal (`account.goal()`) fails during execution.
+ *
+ * `handleExecuteGoal` (`src/server/handlers.ts`) commits an HTTP 200 response
+ * before the goal runs, then streams the goal's outcome once it settles. A
+ * failed goal streams `{error: string}` — NOT a `GoalResult` — over that same
+ * 200 response, so the client can't distinguish success from failure by
+ * status code alone. `AccountApi.goal()` detects that shape and throws this
+ * instead of resolving, matching `runToCompletion`'s throw-on-failure behavior.
+ */
+export class GoalFailedError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "GoalFailedError";
+	}
+}
+
 /** Thrown when the server is not reachable (ECONNREFUSED, ECONNRESET, etc.), after retries are exhausted. */
 export class ConnectionError extends Error {
 	constructor(

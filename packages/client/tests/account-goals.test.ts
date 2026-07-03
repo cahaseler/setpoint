@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { GoalResult, JobRecord } from "@setpoint/protocol";
 import { SetpointClient } from "../src/client.js";
+import { GoalFailedError } from "../src/errors.js";
 
 describe("AccountApi", () => {
 	const originalFetch = globalThis.fetch;
@@ -64,6 +65,33 @@ describe("AccountApi", () => {
 		await client.account("Player One").goal("ensure-fueled", {});
 
 		expect(fetchCalls[0]?.url).toBe("http://127.0.0.1:7580/accounts/Player%20One/goal");
+	});
+
+	test("goal() throws GoalFailedError when the daemon streams {error} at HTTP 200", async () => {
+		// handleExecuteGoal commits a 200 before the goal runs, then streams
+		// {error: "..."} (not a GoalResult) if the goal throws — this is the
+		// shape old tests couldn't catch, since they only ever mocked 200 +
+		// a well-formed GoalResult.
+		mockFetchSequence([{ status: 200, body: { error: "Unknown destination" } }]);
+		const client = new SetpointClient();
+
+		await expect(
+			client.account("Player1").goal("navigate-to-system", { targetSystemId: "sol" }),
+		).rejects.toThrow(GoalFailedError);
+		await expect(
+			client.account("Player1").goal("navigate-to-system", { targetSystemId: "sol" }),
+		).rejects.toThrow("Unknown destination");
+	});
+
+	test("goal() still returns normally on a well-formed successful GoalResult", async () => {
+		mockFetchSequence([{ status: 200, body: goalResult }]);
+		const client = new SetpointClient();
+
+		const result = await client
+			.account("Player1")
+			.goal("navigate-to-system", { targetSystemId: "sol" });
+
+		expect(result).toEqual(goalResult);
 	});
 
 	test("goalAsync() POSTs /accounts/:id/goal/async and returns {job_id}", async () => {
