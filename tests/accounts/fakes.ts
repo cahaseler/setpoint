@@ -1,10 +1,42 @@
-import type { ClerkPlayer, GameState, StateSection } from "@spacemolt/lib";
-import type { AccountClientLike, LibAccountLike } from "../../src/accounts/lib-types.js";
+import type {
+	ClerkPlayer,
+	Commands,
+	GameState,
+	MutationResult,
+	QueryResult,
+	StateSection,
+} from "@spacemolt/lib";
+import type { AccountClientLike, LibManagedAccount } from "../../src/accounts/lib-types.js";
 
-export class FakeAccount implements LibAccountLike {
+/** Generic recording proxy: any `commands.<group>.<action>(...)` call resolves to an empty MutationResult. */
+function makeFakeCommands(): Commands {
+	const groupProxy = new Proxy(
+		{},
+		{
+			get: (_group, action) => {
+				if (typeof action !== "string") return undefined;
+				return (): Promise<MutationResult> =>
+					Promise.resolve({ command: action, tick: 0, delta: {} });
+			},
+		},
+	);
+	const commandsProxy = new Proxy(
+		{},
+		{
+			get: (_target, group) => {
+				if (typeof group !== "string") return undefined;
+				return groupProxy;
+			},
+		},
+	);
+	return commandsProxy as unknown as Commands;
+}
+
+export class FakeAccount implements LibManagedAccount {
 	closed = false;
 	private _state: GameState;
 	private listener: ((changed: StateSection[]) => void) | null = null;
+	readonly commands: Commands = makeFakeCommands();
 	constructor(
 		private readonly playerId: string,
 		readonly id: string,
@@ -12,7 +44,7 @@ export class FakeAccount implements LibAccountLike {
 	) {
 		this._state = initialState;
 	}
-	get player(): { id: string } {
+	get player(): { id: string; username?: string; empire?: string } {
 		return { id: this.playerId };
 	}
 	get state(): Readonly<GameState> {
@@ -28,6 +60,26 @@ export class FakeAccount implements LibAccountLike {
 	onStateChange(listener: (changed: StateSection[]) => void): void {
 		this.listener = listener;
 	}
+	refresh(): Promise<Readonly<GameState>> {
+		return Promise.resolve(this._state);
+	}
+	query(_tool: string, action: string, _payload?: Record<string, unknown>): Promise<QueryResult> {
+		return Promise.resolve({ result: action, structuredContent: {} });
+	}
+	send(
+		_tool: string,
+		action: string,
+		_payload?: Record<string, unknown>,
+	): Promise<QueryResult | MutationResult> {
+		return Promise.resolve({ command: action, tick: 0, delta: {} });
+	}
+	mutate(
+		_tool: string,
+		action: string,
+		_payload?: Record<string, unknown>,
+	): Promise<MutationResult> {
+		return Promise.resolve({ command: action, tick: 0, delta: {} });
+	}
 	close(): void {
 		this.closed = true;
 	}
@@ -40,7 +92,7 @@ export class FakeClient implements AccountClientLike {
 		private readonly players: ClerkPlayer[],
 		private readonly accountsByUsername: Map<string, FakeAccount>,
 	) {}
-	connectOwned(opts: { filter?: (p: ClerkPlayer) => boolean }): Promise<LibAccountLike[]> {
+	connectOwned(opts: { filter?: (p: ClerkPlayer) => boolean }): Promise<LibManagedAccount[]> {
 		this.lastFilter = opts.filter;
 		const selected = opts.filter ? this.players.filter(opts.filter) : this.players;
 		for (const player of selected) {
@@ -51,10 +103,10 @@ export class FakeClient implements AccountClientLike {
 		}
 		return Promise.resolve([...this.connected.values()]);
 	}
-	accounts(): LibAccountLike[] {
+	accounts(): LibManagedAccount[] {
 		return [...this.connected.values()];
 	}
-	account(id: string): LibAccountLike | undefined {
+	account(id: string): LibManagedAccount | undefined {
 		return this.connected.get(id);
 	}
 	remove(id: string): Promise<void> {

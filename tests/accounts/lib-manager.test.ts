@@ -1,7 +1,18 @@
 import { describe, expect, test } from "bun:test";
-import type { ClerkPlayer } from "@spacemolt/lib";
+import type { Account, ClerkPlayer } from "@spacemolt/lib";
 import { LibAccountManager } from "../../src/accounts/lib-manager.js";
+import type { LibManagedAccount } from "../../src/accounts/lib-types.js";
 import { FakeAccount, FakeClient } from "./fakes.js";
+
+/**
+ * Compile-time-only proof that the real lib `Account` structurally satisfies
+ * `LibManagedAccount`. Never called; exists so a future `@spacemolt/lib` bump
+ * that narrows `Account` fails typecheck here instead of silently drifting.
+ */
+function _accountSatisfiesLibManagedAccount(account: Account): LibManagedAccount {
+	return account;
+}
+void _accountSatisfiesLibManagedAccount;
 
 const player = (username: string, id: string, over: Partial<ClerkPlayer> = {}): ClerkPlayer => ({
 	id,

@@ -1,13 +1,13 @@
 import { STATE_SECTIONS, type StateSection } from "@spacemolt/lib";
 import { createLogger } from "../util/logger.js";
 import { type LibConfig, buildOwnedFilter } from "./lib-config.js";
-import type { AccountClientLike, LibAccountLike } from "./lib-types.js";
+import type { AccountClientLike, LibManagedAccount } from "./lib-types.js";
 
 const log = createLogger("lib-account-mgr");
 
 export interface LibAccountManagerOptions {
 	/** Called on every account state change: (playerId, changed sections, the account). Phase 2 wires the SQLite projector here. */
-	onStateChange?: (playerId: string, changed: StateSection[], account: LibAccountLike) => void;
+	onStateChange?: (playerId: string, changed: StateSection[], account: LibManagedAccount) => void;
 }
 
 /**
@@ -16,7 +16,7 @@ export interface LibAccountManagerOptions {
  * username, and wires each account's state-change stream to the optional hook.
  */
 export class LibAccountManager {
-	private readonly byPlayerId = new Map<string, LibAccountLike>();
+	private readonly byPlayerId = new Map<string, LibManagedAccount>();
 	private readonly usernameToPlayerId = new Map<string, string>();
 
 	constructor(
@@ -57,16 +57,16 @@ export class LibAccountManager {
 		return this.usernameToPlayerId.get(username.toLowerCase());
 	}
 
-	getByPlayerId(playerId: string): LibAccountLike | undefined {
+	getByPlayerId(playerId: string): LibManagedAccount | undefined {
 		return this.byPlayerId.get(playerId);
 	}
 
-	getByUsername(username: string): LibAccountLike | undefined {
+	getByUsername(username: string): LibManagedAccount | undefined {
 		const pid = this.playerIdForUsername(username);
 		return pid ? this.byPlayerId.get(pid) : undefined;
 	}
 
-	getAll(): LibAccountLike[] {
+	getAll(): LibManagedAccount[] {
 		return [...this.byPlayerId.values()];
 	}
 
