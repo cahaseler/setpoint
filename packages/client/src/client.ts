@@ -1,7 +1,9 @@
 /** Transport core for `@setpoint/client` — fetch-based HTTP with retry/timeout. */
 
-import { AccountApi } from "./account.js";
+import type { JobRecord, LoopStatus, V2GameState } from "@setpoint/protocol";
+import { AccountApi, AccountsApi } from "./account.js";
 import { ConnectionError, DeprecatedGoalError, SetpointHttpError, TimeoutError } from "./errors.js";
+import { JobApi } from "./jobs.js";
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:7580";
 const DEFAULT_RETRY_DELAY_MS = 1000;
@@ -18,15 +20,55 @@ export interface RequestOptions {
 	timeoutMs?: number;
 }
 
+/** Daemon health, as returned by `GET /health` (`handleHealth`). */
+export interface HealthStatus {
+	status: "ok";
+	uptime: number;
+	startedAt: string;
+	accounts: number;
+}
+
+/** A single account's dashboard entry, as returned by `GET /dashboard/data` (`handleDashboardData`). */
+export interface DashboardAccountEntry {
+	player_id: string;
+	username: string;
+	state: V2GameState | null;
+	loop: LoopStatus | null;
+	hasRunningJob: boolean;
+	runningJob: unknown;
+	hasExecutingGoal: boolean;
+	executingGoal: unknown;
+	recentJobs: JobRecord[];
+}
+
+/** Dashboard data, as returned by `GET /dashboard/data` (`handleDashboardData`). */
+export interface DashboardData {
+	startedAt: string;
+	uptimeMs: number;
+	accounts: DashboardAccountEntry[];
+}
+
+export type LogLevel = "debug" | "info" | "warn" | "error";
+
+/** Response shape shared by `GET /log-level` and `POST /log-level` (`handleGetLogLevel`/`handleSetLogLevel`). */
+export interface LogLevelResult {
+	level: LogLevel;
+	previous?: LogLevel;
+}
+
 export class SetpointClient {
-	private readonly baseUrl: string;
+	readonly baseUrl: string;
 	private readonly timeoutMs: number | undefined;
 	private readonly retryDelayMs: number;
+
+	/** Top-level accounts collection API (`sp.accounts`). */
+	readonly accounts: AccountsApi;
 
 	constructor(options: SetpointClientOptions = {}) {
 		this.baseUrl = options.baseUrl ?? DEFAULT_BASE_URL;
 		this.timeoutMs = options.timeoutMs;
 		this.retryDelayMs = options.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
+		this.accounts = new AccountsApi(this);
 	}
 
 	/**
@@ -100,5 +142,34 @@ export class SetpointClient {
 	/** Returns the account-scoped goal API for the given account id (player_id or username). */
 	account(id: string): AccountApi {
 		return new AccountApi(this, id);
+	}
+
+	/** Returns the direct job lookup/wait API for the given async job id. */
+	job(jobId: string): JobApi {
+		return new JobApi(this, jobId);
+	}
+
+	/** Daemon health and uptime. */
+	async health(): Promise<HealthStatus> {
+		const result = await this.request("GET", "/health");
+		return result as HealthStatus;
+	}
+
+	/** Full dashboard data for all accounts. */
+	async dashboard(): Promise<DashboardData> {
+		const result = await this.request("GET", "/dashboard/data");
+		return result as DashboardData;
+	}
+
+	/** Gets the daemon's current log level. */
+	async logLevel(): Promise<LogLevelResult>;
+	/** Sets the daemon's log level. */
+	async logLevel(level: LogLevel): Promise<LogLevelResult>;
+	async logLevel(level?: LogLevel): Promise<LogLevelResult> {
+		const result =
+			level === undefined
+				? await this.request("GET", "/log-level")
+				: await this.request("POST", "/log-level", { body: { level } });
+		return result as LogLevelResult;
 	}
 }

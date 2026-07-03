@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import type { HealthStatus } from "../src/client.js";
 import { SetpointClient } from "../src/client.js";
 import {
 	ConnectionError,
@@ -147,5 +148,58 @@ describe("SetpointClient", () => {
 		await client.request("GET", "/health");
 
 		expect(fetchCalls[0]?.url).toBe("http://127.0.0.1:7580/health");
+	});
+
+	test("health() GETs /health and returns the health status", async () => {
+		const status: HealthStatus = {
+			status: "ok",
+			uptime: 1234,
+			startedAt: new Date().toISOString(),
+			accounts: 2,
+		};
+		mockFetch(200, status);
+		const client = new SetpointClient();
+
+		const result = await client.health();
+
+		expect(result).toEqual(status);
+		expect(fetchCalls[0]?.url).toBe("http://127.0.0.1:7580/health");
+		expect(fetchCalls[0]?.init?.method).toBe("GET");
+	});
+
+	test("dashboard() GETs /dashboard/data and returns the dashboard data", async () => {
+		const dashboard = { startedAt: new Date().toISOString(), uptimeMs: 1000, accounts: [] };
+		mockFetch(200, dashboard);
+		const client = new SetpointClient();
+
+		const result = await client.dashboard();
+
+		expect(result).toEqual(dashboard);
+		expect(fetchCalls[0]?.url).toBe("http://127.0.0.1:7580/dashboard/data");
+		expect(fetchCalls[0]?.init?.method).toBe("GET");
+	});
+
+	test("logLevel() with no args GETs /log-level", async () => {
+		mockFetch(200, { level: "info" });
+		const client = new SetpointClient();
+
+		const result = await client.logLevel();
+
+		expect(result).toEqual({ level: "info" });
+		expect(fetchCalls[0]?.url).toBe("http://127.0.0.1:7580/log-level");
+		expect(fetchCalls[0]?.init?.method).toBe("GET");
+		expect(fetchCalls[0]?.init?.body).toBeUndefined();
+	});
+
+	test("logLevel(level) POSTs /log-level with {level}", async () => {
+		mockFetch(200, { level: "debug", previous: "info" });
+		const client = new SetpointClient();
+
+		const result = await client.logLevel("debug");
+
+		expect(result).toEqual({ level: "debug", previous: "info" });
+		expect(fetchCalls[0]?.url).toBe("http://127.0.0.1:7580/log-level");
+		expect(fetchCalls[0]?.init?.method).toBe("POST");
+		expect(fetchCalls[0]?.init?.body).toBe(JSON.stringify({ level: "debug" }));
 	});
 });

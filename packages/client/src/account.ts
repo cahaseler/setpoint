@@ -1,12 +1,15 @@
-/** Account-scoped goal and loop API for `@setpoint/client`. */
+/** Account-scoped goal/loop/state API, plus the top-level accounts collection API, for `@setpoint/client`. */
 
 import type {
+	Empire,
 	GoalOptionsMap,
 	GoalResult,
 	GoalType,
+	JobRecord,
 	LoopOptionsMap,
 	LoopStatus,
 	LoopType,
+	V2GameState,
 } from "@setpoint/protocol";
 import type { SetpointClient } from "./client.js";
 import { type WaitForJobOptions, waitForJob } from "./jobs.js";
@@ -69,16 +72,58 @@ export class AccountLoopApi {
 	}
 }
 
+/**
+ * Game-state API scoped to a single account. Mirrors the daemon's
+ * `GET /accounts/:id/state[/:section]` and `POST /accounts/:id/state/refresh`
+ * routes (`src/server/handlers.ts`).
+ */
+export class AccountStateApi {
+	constructor(
+		private readonly client: SetpointClient,
+		private readonly id: string,
+	) {}
+
+	/** Gets the full local game state (as fresh as the last mutation response). */
+	async get(): Promise<V2GameState> {
+		const result = await this.client.request(
+			"GET",
+			`/accounts/${encodeURIComponent(this.id)}/state`,
+		);
+		return result as V2GameState;
+	}
+
+	/** Gets a single state section (e.g. `"ship"`, `"cargo"`, `"location"`). */
+	async section(name: string): Promise<unknown> {
+		return this.client.request(
+			"GET",
+			`/accounts/${encodeURIComponent(this.id)}/state/${encodeURIComponent(name)}`,
+		);
+	}
+
+	/** Forces a live `get_state` call against the game server and returns the refreshed state. */
+	async refresh(): Promise<V2GameState> {
+		const result = await this.client.request(
+			"POST",
+			`/accounts/${encodeURIComponent(this.id)}/state/refresh`,
+		);
+		return result as V2GameState;
+	}
+}
+
 /** Goal API scoped to a single account, identified by player_id or username. */
 export class AccountApi {
 	/** Loop sub-API for this account (`sp.account(id).loop`). */
 	readonly loop: AccountLoopApi;
+
+	/** Game-state sub-API for this account (`sp.account(id).state`). */
+	readonly state: AccountStateApi;
 
 	constructor(
 		private readonly client: SetpointClient,
 		private readonly id: string,
 	) {
 		this.loop = new AccountLoopApi(client, id);
+		this.state = new AccountStateApi(client, id);
 	}
 
 	/**
@@ -124,7 +169,11 @@ export class AccountApi {
 		opts?: WaitForJobOptions,
 	): Promise<GoalResult> {
 		const { job_id } = await this.goalAsync(type, options);
-		return waitForJob(this.client, job_id, opts);
+		const job = await waitForJob(this.client, job_id, opts);
+		if (job.status === "failed") {
+			throw new Error(job.error ?? `Job ${job_id} failed`);
+		}
+		return job.result as GoalResult;
 	}
 
 	/** Releases the account from all in-progress work (loop, sync goal, or async job). */
@@ -137,5 +186,156 @@ export class AccountApi {
 			},
 		);
 		return result as { message: string };
+	}
+}
+
+// ── Top-level accounts collection (`sp.accounts`) ────────────────────
+
+/** Slimmed ship summary, as embedded in account list/detail responses. */
+export interface AccountShipSummary {
+	hull: number;
+	max_hull: number;
+	fuel: number;
+	max_fuel: number;
+	cargo_used?: number;
+	cargo_capacity?: number;
+}
+
+/** Slimmed location summary, as embedded in account list/detail responses. */
+export interface AccountLocationSummary {
+	system: string | undefined;
+	poi: string | undefined;
+	docked: string | null;
+}
+
+/** One entry in `GET /accounts` (`handleListAccounts`) for a connected account. */
+export interface ConnectedAccountSummary {
+	player_id: string;
+	username: string;
+	status: "connected";
+	credits: number | null;
+	ship: AccountShipSummary | null;
+	location: AccountLocationSummary | null;
+	loop: LoopStatus | null;
+}
+
+/** One entry in `GET /accounts` (`handleListAccounts`) for an account still queued for connection. */
+export interface PendingAccountSummary {
+	player_id: string | null;
+	username: string;
+	status: string;
+	error: string | null;
+	credits: null;
+	ship: null;
+	location: null;
+	loop: null;
+}
+
+export type AccountSummary = ConnectedAccountSummary | PendingAccountSummary;
+
+/** Response of `GET /accounts` (`handleListAccounts`). */
+export interface AccountsListResult {
+	accounts: AccountSummary[];
+}
+
+/** Slimmed state snapshot embedded in `GET /accounts/:id` (`handleGetAccount`). */
+export interface AccountDetailState {
+	credits: number | undefined;
+	ship: { hull: number; max_hull: number; fuel: number; max_fuel: number } | null;
+	location: AccountLocationSummary | null;
+}
+
+/** `GET /accounts/:id` (`handleGetAccount`) response for a connected account. */
+export interface ConnectedAccountDetail {
+	player_id: string;
+	username: string;
+	status: "connected";
+	state: AccountDetailState | null;
+	loop: LoopStatus | null;
+	hasRunningJob: boolean;
+	runningJob: unknown;
+	hasExecutingGoal: boolean;
+	executingGoal: unknown;
+	recentJobs: JobRecord[];
+}
+
+/** `GET /accounts/:id` (`handleGetAccount`) response for an account still queued for connection. */
+export interface PendingAccountDetail {
+	player_id: string | null;
+	username: string;
+	status: string;
+	error: string | null;
+	state: null;
+	loop: null;
+}
+
+export type AccountDetail = ConnectedAccountDetail | PendingAccountDetail;
+
+/** Response of `POST /accounts` (`handleAddAccount`). */
+export interface AddAccountResult {
+	player_id: string | null;
+	username: string;
+	status: string;
+	message: string;
+}
+
+export interface RegisterAccountOptions {
+	username: string;
+	empire: Empire;
+}
+
+/** Response of `POST /accounts/register` (`handleRegisterAccount`). */
+export interface RegisterAccountResult {
+	player_id: string;
+	username: string;
+	password: string;
+	message: string;
+}
+
+/** Response of `DELETE /accounts/:id` (`handleDeleteAccount`). */
+export interface RemoveAccountResult {
+	message: string;
+	player_id?: string;
+	username?: string;
+}
+
+/**
+ * Top-level accounts collection API (`sp.accounts`). Mirrors the daemon's
+ * `GET|POST /accounts`, `GET|DELETE /accounts/:id`, and
+ * `POST /accounts/register` routes (`src/server/handlers.ts`).
+ */
+export class AccountsApi {
+	constructor(private readonly client: SetpointClient) {}
+
+	/** Lists all connected and pending accounts. */
+	async list(): Promise<AccountsListResult> {
+		const result = await this.client.request("GET", "/accounts");
+		return result as AccountsListResult;
+	}
+
+	/** Gets details for a single account, by player_id or username. */
+	async get(id: string): Promise<AccountDetail> {
+		const result = await this.client.request("GET", `/accounts/${encodeURIComponent(id)}`);
+		return result as AccountDetail;
+	}
+
+	/** Queues an account for background connection (HTTP 202). */
+	async add(username: string): Promise<AddAccountResult> {
+		const result = await this.client.request("POST", "/accounts", { body: { username } });
+		return result as AddAccountResult;
+	}
+
+	/** Registers a brand-new account with the game server and connects it. */
+	async register(options: RegisterAccountOptions): Promise<RegisterAccountResult> {
+		const result = await this.client.request("POST", "/accounts/register", {
+			body: { username: options.username, empire: options.empire },
+		});
+		return result as RegisterAccountResult;
+	}
+
+	/** Disconnects and removes an account, by player_id or username. */
+	async remove(id: string): Promise<RemoveAccountResult> {
+		const result = await this.client.request("DELETE", `/accounts/${encodeURIComponent(id)}`);
+		return result as RemoveAccountResult;
 	}
 }
