@@ -198,7 +198,7 @@ async function resumeJobsForAccount(
  * Resume any persisted loops from a previous daemon run.
  * Reads loop configs from disk and restarts them on the appropriate accounts.
  */
-async function resumeLoops(
+export async function resumeLoops(
 	loopManager: LoopManager,
 	manager: LibAccountManager,
 	configDir: string,
@@ -222,6 +222,7 @@ async function resumeLoops(
 		"tow-salvage": loopManager.startTowSalvageLoop.bind(loopManager) as StartFn,
 		exploration: loopManager.startExplorationLoop.bind(loopManager) as StartFn,
 		guard: loopManager.startGuardLoop.bind(loopManager) as StartFn,
+		"roaming-salvage": loopManager.startRoamingSalvageLoop.bind(loopManager) as StartFn,
 	};
 
 	for (const config of configs) {
@@ -250,7 +251,9 @@ async function resumeLoops(
 	}
 }
 
-main().catch((err) => {
-	log.error(`Fatal error: ${errorMessage(err)}`);
-	process.exit(1);
-});
+if (import.meta.main) {
+	main().catch((err) => {
+		log.error(`Fatal error: ${errorMessage(err)}`);
+		process.exit(1);
+	});
+}
