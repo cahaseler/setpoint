@@ -44,18 +44,21 @@ and/or add an authenticating proxy.
 
 ## Credentials on disk
 
-Account credentials are stored as **plaintext JSON** under `config/accounts/*.json`
-(username, password, player_id). The `config/` directory is gitignored and is
-never committed. Protect it with restrictive file permissions:
+The daemon does not store per-account passwords at all. It authenticates via
+`@spacemolt/lib`'s Clerk integration: `config/dispatcher.json` holds a single
+**plaintext Clerk API key** (`clerkApiKey`), which owns and authenticates every
+account tied to it — effectively a master credential for your whole fleet. The
+`config/` directory is gitignored and is never committed. Protect it with
+restrictive file permissions:
 
 ```bash
 chmod 700 config
-chmod 600 config/accounts/*.json
+chmod 600 config/dispatcher.json
 ```
 
-The account-registration endpoint returns the newly generated password in its
-HTTP response body — necessary so you can save it, but another reason the API
-must stay off the network.
+The account-registration endpoint still returns the newly generated per-account
+password in its HTTP response body — necessary so you can save it, but another
+reason the API must stay off the network.
 
 ## Logs
 

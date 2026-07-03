@@ -12,8 +12,8 @@ That makes it a **substrate for your own tools.** Point a script, an LLM agent, 
 
 ```bash
 bun install
-# Configure accounts in config/accounts/<name>.json:
-# { "username": "...", "password": "...", "player_id": "..." }
+# Configure config/dispatcher.json: { "clerkApiKey": "ak_..." }
+# All accounts owned by that Clerk API key connect automatically.
 bun run start            # Start daemon (default port 7580, localhost only)
 bun run smctl health     # Verify daemon is running
 ```
@@ -61,7 +61,7 @@ All commands are available via `smctl`. Options `--port <n>`, `--json '<json>'`,
 | Method | Path | Body | Description |
 |--------|------|------|-------------|
 | GET | `/accounts` | — | List all accounts |
-| POST | `/accounts` | `{ username, password, player_id }` | Add existing account |
+| POST | `/accounts` | `{ username }` | Connect an already-owned account |
 | GET | `/accounts/:playerId` | — | Get account details and state summary |
 | DELETE | `/accounts/:playerId` | — | Disconnect and remove account |
 | POST | `/accounts/register` | `{ username, empire }` | Register new account (uses `registration_code` from `config/registration.json`) |

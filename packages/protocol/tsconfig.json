@@ -1,0 +1,12 @@
+{
+	"compilerOptions": {
+		"strict": true,
+		"noUncheckedIndexedAccess": true,
+		"exactOptionalPropertyTypes": true,
+		"module": "preserve",
+		"moduleResolution": "bundler",
+		"types": ["bun"],
+		"skipLibCheck": true
+	},
+	"include": ["src/**/*.ts", "tests/**/*.ts"]
+}

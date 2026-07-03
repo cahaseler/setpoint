@@ -1,2 +1,13 @@
 #!/bin/sh
-bun run check
+# Format/lint the tree with Biome, then re-stage any files it rewrote that were
+# already staged. `bun run check` runs `biome ... --write`, which fixes files in
+# the working tree but does not touch the index — so without re-staging, a commit
+# captures the pre-format staged content while the corrected version dangles.
+# Only re-stage files that were already staged (never sweep in unrelated changes).
+staged=$(git diff --cached --name-only --diff-filter=ACM)
+
+bun run check || exit 1
+
+if [ -n "$staged" ]; then
+	printf '%s\n' "$staged" | xargs git add --
+fi

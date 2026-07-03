@@ -1,7 +1,5 @@
 import { afterAll, beforeAll, describe, expect, mock, test } from "bun:test";
-import type { ManagedAccount } from "../../src/accounts/manager.js";
-import type { AccountManager } from "../../src/accounts/manager.js";
-import type { GameEndpoints } from "../../src/api/endpoints.js";
+import type { GameState } from "@spacemolt/lib";
 import type { HandlerContext } from "../../src/server/handlers.js";
 import {
 	handleAddAccount,
@@ -11,7 +9,6 @@ import {
 	handleGetAccount,
 	handleGetJob,
 	handleGetLoop,
-	handleGetSessionId,
 	handleGetState,
 	handleGetStateSection,
 	handleHealth,
@@ -24,6 +21,7 @@ import { Router } from "../../src/server/router.js";
 import { createMemoryDatabase } from "../../src/state/database.js";
 import type { StateStore } from "../../src/state/store.js";
 import type { StoredGameState } from "../../src/state/store.js";
+import { FakeLibManagedAccount, makeFakeLibManager } from "../dispatcher/lib-fakes.js";
 
 // ── Test Data ────────────────────────────────────────────────────────
 
@@ -65,15 +63,9 @@ const TEST_STATE: StoredGameState = {
 function makeMockAccount(
 	playerId: string,
 	username: string,
-	sessionId = "sess-mock",
-): ManagedAccount {
-	return {
-		config: { username, password: "pass", player_id: playerId },
-		session: { disconnect: mock(() => {}), sessionId } as unknown as ManagedAccount["session"],
-		endpoints: {
-			getState: mock(() => Promise.resolve({})),
-		} as unknown as GameEndpoints,
-	};
+	state?: GameState,
+): FakeLibManagedAccount {
+	return new FakeLibManagedAccount({ playerId, username, ...(state ? { state } : {}) });
 }
 
 // ── Server Setup ─────────────────────────────────────────────────────
@@ -81,37 +73,15 @@ function makeMockAccount(
 describe("Server integration", () => {
 	let server: ReturnType<typeof Bun.serve>;
 	let base: string;
-	const accounts = [makeMockAccount("p1", "MockPilot"), makeMockAccount("p2", "SecondPilot")];
+	// Seed p1's push-fed cache with TEST_STATE so goal execution (which reads
+	// account.state) sees a fueled ship; read handlers get state from the store stub.
+	const accounts = [
+		makeMockAccount("p1", "MockPilot", TEST_STATE as unknown as GameState),
+		makeMockAccount("p2", "SecondPilot"),
+	];
 
 	beforeAll(() => {
-		const accountMap = new Map(accounts.map((a) => [a.config.player_id, a]));
-
-		const manager = {
-			get size() {
-				return accountMap.size;
-			},
-			getAll: mock(() => [...accountMap.values()]),
-			getByPlayerId: mock((id: string) => accountMap.get(id)),
-			getByUsername: mock((username: string) => {
-				const lower = username.toLowerCase();
-				for (const a of accountMap.values()) {
-					if (a.config.username.toLowerCase() === lower) return a;
-				}
-				return undefined;
-			}),
-			connectAccount: mock((config: { player_id: string; username: string }) => {
-				const account = makeMockAccount(config.player_id, config.username);
-				accountMap.set(config.player_id, account);
-				return Promise.resolve(account);
-			}),
-			disconnectAccount: mock((id: string) => {
-				accountMap.delete(id);
-			}),
-			getAllPending: mock(() => []),
-			getPending: mock(() => undefined),
-			getPendingByPlayerId: mock(() => undefined),
-			removePending: mock(() => true),
-		} as unknown as AccountManager;
+		const manager = makeFakeLibManager(accounts);
 
 		const store = {
 			getState: mock((id: string) => (id === "p1" ? TEST_STATE : null)),
@@ -141,7 +111,6 @@ describe("Server integration", () => {
 		router.get("/accounts/:playerId", handleGetAccount);
 		router.post("/accounts", handleAddAccount);
 		router.delete("/accounts/:playerId", handleDeleteAccount);
-		router.get("/accounts/:playerId/session", handleGetSessionId);
 		router.get("/accounts/:playerId/state", handleGetState);
 		router.get("/accounts/:playerId/state/:section", handleGetStateSection);
 		router.get("/accounts/:playerId/loop", handleGetLoop);
@@ -201,31 +170,6 @@ describe("Server integration", () => {
 
 	test("GET /accounts/:playerId returns 404 for unknown", async () => {
 		const res = await fetch(`${base}/accounts/nope`);
-		expect(res.status).toBe(404);
-	});
-
-	// ── Session ──────────────────────────────────────────────────────
-
-	test("GET /accounts/:playerId/session returns session_id", async () => {
-		const res = await fetch(`${base}/accounts/p1/session`);
-		const body = (await res.json()) as Record<string, unknown>;
-
-		expect(res.status).toBe(200);
-		expect(body["session_id"]).toBe("sess-mock");
-		expect(body["player_id"]).toBe("p1");
-		expect(body["username"]).toBe("MockPilot");
-	});
-
-	test("GET /accounts/:playerId/session resolves by username", async () => {
-		const res = await fetch(`${base}/accounts/MockPilot/session`);
-		const body = (await res.json()) as Record<string, unknown>;
-
-		expect(res.status).toBe(200);
-		expect(body["session_id"]).toBe("sess-mock");
-	});
-
-	test("GET /accounts/:playerId/session returns 404 for unknown", async () => {
-		const res = await fetch(`${base}/accounts/nobody/session`);
 		expect(res.status).toBe(404);
 	});
 

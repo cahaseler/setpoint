@@ -1,7 +1,7 @@
 /** Command registry and handlers for the smctl CLI. */
 
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { errorMessage } from "../util/errors.js";
 import { ConnectionError, type DaemonClient, TimeoutError } from "./client.js";
 import type { CliOutput } from "./output.js";
@@ -11,8 +11,6 @@ export interface CommandContext {
 	output: CliOutput;
 	/** Raw JSON body from --json flag or --stdin. */
 	jsonBody: unknown | undefined;
-	/** Whether --output-json was passed (for raw commands). */
-	outputJson?: boolean;
 	/** Whether --async was passed (for goal command). */
 	asyncMode?: boolean;
 	/** Whether --force was passed (for abort command). */
@@ -148,8 +146,8 @@ const commands: Command[] = [
 		pattern: "raw",
 		positionals: ["playerId"],
 		handler: handleRaw,
-		usage: "smctl raw <player> <command> [args...]",
-		description: "Run spacemolt CLI with managed session",
+		usage: "smctl raw <player> <action> [args...]",
+		description: "Raw game API passthrough via the daemon's managed session",
 		variadic: true,
 	},
 	{
@@ -307,15 +305,12 @@ export function getUsageText(): string {
 	lines.push("  --json <string>   JSON body for POST commands");
 	lines.push("  --stdin           Read JSON body from stdin");
 	lines.push(
-		"  --output-json     Pass --json to spacemolt CLI for JSON output (raw commands only)",
-	);
-	lines.push(
 		"  --async           Submit goal in background, return job_id immediately (goal only)",
 	);
 	lines.push(
 		"",
-		"Raw command delegates to the spacemolt CLI with the account's managed session.",
-		"Binary resolution: SPACEMOLT_CLI env → ./spacemolt next to smctl → spacemolt on PATH.",
+		"Raw command posts to the daemon's /accounts/:playerId/raw passthrough using the account's managed session.",
+		"Args after the action are key=value pairs (-> params.key) or a single bare value (-> params.id).",
 		"",
 		"Run 'smctl help <topic>' for detailed help on goals, loops, mining, salvage, trading, hauling, storage-transfer, exploration, or guard.",
 	);
@@ -474,103 +469,47 @@ async function handleJobStatus(ctx: CommandContext, args: string[]): Promise<voi
 	await sendAndOutput(ctx, () => ctx.client.get(`/jobs/${encodeURIComponent(jobId)}`));
 }
 
+/**
+ * Coerce a raw CLI arg value to a number when it looks numeric, matching the
+ * old spacemolt CLI's `key=value` parsing behavior. Non-numeric strings pass
+ * through unchanged.
+ */
+function coerceRawValue(value: string): string | number {
+	if (value.length > 0 && !Number.isNaN(Number(value))) {
+		return Number(value);
+	}
+	return value;
+}
+
 async function handleRaw(ctx: CommandContext, args: string[]): Promise<void> {
 	const playerId = args[0] as string;
 	const cliArgs = args.slice(1);
 
 	if (cliArgs.length === 0) {
-		ctx.output.usageError("Usage: smctl raw <player> <command> [args...]");
+		return ctx.output.usageError("Usage: smctl raw <player> <action> [args...]");
 	}
 
-	// Resolve spacemolt binary
-	const binary = resolveSpacemoltBinary();
-	if (!binary) {
-		return ctx.output.usageError(
-			"spacemolt CLI not found. Set SPACEMOLT_CLI env var or add 'spacemolt' to PATH.",
-		);
+	const action = cliArgs[0] as string;
+	const params: Record<string, unknown> = {};
+	for (const arg of cliArgs.slice(1)) {
+		const eqIndex = arg.indexOf("=");
+		if (eqIndex === -1) {
+			// Bare positional — the old spacemolt CLI treated this as the target id
+			// (e.g. `travel sol_asteroid_belt`).
+			params["id"] = coerceRawValue(arg);
+		} else {
+			const key = arg.slice(0, eqIndex);
+			params[key] = coerceRawValue(arg.slice(eqIndex + 1));
+		}
 	}
 
-	// Get session token from daemon — this validates the session via a game API call.
-	let sessionId: string;
-	try {
-		const { status, data } = await ctx.client.get(
-			`/accounts/${encodeURIComponent(playerId)}/session`,
+	await sendAndOutput(ctx, () =>
+		ctx.client.post(
+			`/accounts/${encodeURIComponent(playerId)}/raw`,
+			{ toolGroup: "spacemolt", action, params },
 			{ requestTimeoutMs: GAME_API_TIMEOUT_MS },
-		);
-		if (status === 404) {
-			return ctx.output.clientError({ error: "Account not found or not connected" });
-		}
-		if (status === 503) {
-			return ctx.output.serverError({
-				error: "Account session not available (may be reconnecting)",
-			});
-		}
-		if (status < 200 || status >= 300) {
-			return ctx.output.serverError(data);
-		}
-		const typed = data as Record<string, unknown>;
-		sessionId = typed["session_id"] as string;
-	} catch (err) {
-		if (err instanceof TimeoutError) {
-			return ctx.output.timeoutError(err.message);
-		}
-		if (err instanceof ConnectionError) {
-			return ctx.output.connectionError(err.message);
-		}
-		throw err;
-	}
-
-	// Spawn spacemolt CLI with session token
-	const spawnArgs = [binary, "--session", sessionId, ...cliArgs];
-	if (ctx.outputJson) {
-		spawnArgs.push("--json");
-	}
-	// Point the spacemolt CLI at the daemon's transparent proxy so its game-API
-	// traffic egresses with our User-Agent + compression + bandwidth tracking,
-	// rather than going straight to game.spacemolt.com under the binary's default
-	// (Bun/x.y.z) User-Agent uncompressed.
-	const proc = Bun.spawn(spawnArgs, {
-		stdio: ["inherit", "inherit", "inherit"],
-		env: { ...process.env, SPACEMOLT_URL: ctx.client.gameProxyUrl() },
-	});
-
-	const exitCode = await proc.exited;
-	process.exit(exitCode);
-}
-
-/** Resolve the spacemolt CLI binary path. Always returns an absolute path. */
-function resolveSpacemoltBinary(): string | undefined {
-	// 1. SPACEMOLT_CLI env var
-	const envPath = process.env["SPACEMOLT_CLI"];
-	if (envPath && existsSync(envPath)) {
-		return resolve(envPath);
-	}
-
-	// 2. Check next to the smctl binary and one level up (dist/ → project root).
-	// In compiled Bun binaries, argv[0]/argv[1] are virtual paths — use execPath instead.
-	const searchDirs: string[] = [];
-	const binaryDir = resolve(dirname(process.execPath));
-	searchDirs.push(binaryDir, join(binaryDir, ".."));
-
-	for (const dir of searchDirs) {
-		const absPath = resolve(dir, "spacemolt");
-		if (existsSync(absPath)) {
-			return absPath;
-		}
-	}
-
-	// 3. spacemolt on PATH — check with `which`
-	try {
-		const result = Bun.spawnSync(["which", "spacemolt"]);
-		const whichPath = result.stdout.toString().trim();
-		if (result.exitCode === 0 && whichPath.length > 0) {
-			return whichPath;
-		}
-	} catch {
-		// which not available or failed
-	}
-
-	return undefined;
+		),
+	);
 }
 
 async function handleLogLevel(ctx: CommandContext, args: string[]): Promise<void> {

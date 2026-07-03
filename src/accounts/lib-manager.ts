@@ -1,0 +1,199 @@
+import {
+	type ClerkPlayer,
+	type RegisterParams,
+	type RegisterResult,
+	STATE_SECTIONS,
+	type StateSection,
+} from "@spacemolt/lib";
+import { markStateFresh } from "../dispatcher/state-freshness.js";
+import { createLogger } from "../util/logger.js";
+import { type LibConfig, buildOwnedFilter } from "./lib-config.js";
+import type { AccountClientLike, LibManagedAccount } from "./lib-types.js";
+
+const log = createLogger("lib-account-mgr");
+
+/** How long a `listOwned()` result is trusted before refreshing from Clerk. Keeps a polling dashboard from hammering Clerk's API on every GET /accounts request. */
+const OWNED_LIST_TTL_MS = 60_000;
+
+export interface LibAccountManagerOptions {
+	/** Called on every account state change: (playerId, changed sections, the account). Phase 2 wires the SQLite projector here. */
+	onStateChange?: (playerId: string, changed: StateSection[], account: LibManagedAccount) => void;
+}
+
+/**
+ * Owns the lib client and the connected accounts. `connect()` calls
+ * `connectOwned` with the configured filter, indexes accounts by player_id and
+ * username, and wires each account's state-change stream to the optional hook.
+ */
+export class LibAccountManager {
+	private readonly byPlayerId = new Map<string, LibManagedAccount>();
+	private readonly usernameToPlayerId = new Map<string, string>();
+	/** Usernames/ids with an in-flight connectOne/register call. */
+	private readonly connecting = new Set<string>();
+	/** Cached `listOwned()` result and the time it was fetched, for the TTL below. */
+	private ownedListCache: { players: ClerkPlayer[]; fetchedAt: number } | undefined;
+
+	constructor(
+		private readonly client: AccountClientLike,
+		private readonly config: LibConfig,
+		private readonly opts: LibAccountManagerOptions = {},
+	) {}
+
+	/**
+	 * Index a newly-connected account by player_id and username, wire its
+	 * onStateChange stream to the optional hook, and backfill the projector
+	 * with the account's current state. Shared by `connect()`, `connectOne()`,
+	 * and `register()` so every connection path gets identical treatment.
+	 */
+	private indexAndWire(account: LibManagedAccount): string {
+		const playerId = account.player?.id;
+		if (!playerId) {
+			throw new Error("Connected account has no player_id after connect");
+		}
+		this.byPlayerId.set(playerId, account);
+		if (typeof account.id === "string") {
+			this.usernameToPlayerId.set(account.id.toLowerCase(), playerId);
+		}
+		const onChange = this.opts.onStateChange;
+		if (onChange) {
+			account.onStateChange((changed) => {
+				markStateFresh(account);
+				onChange(playerId, changed, account);
+			});
+			// Backfill: the lib seeds full state during connect(), before our listener
+			// was attached (onStateChange has no replay). Fire once with the current
+			// state so the projection reflects freshly-connected accounts. The projector
+			// filters undefined sections and applyUpdate skips null/undefined, so passing
+			// the full section list is safe and idempotent.
+			onChange(playerId, [...STATE_SECTIONS], account);
+		}
+		// The lib seeds state during connect() without firing onStateChange (no
+		// replay), so mark freshness explicitly here — otherwise a freshly-connected
+		// account would read as stale immediately.
+		markStateFresh(account);
+		return playerId;
+	}
+
+	async connect(): Promise<void> {
+		const filter = buildOwnedFilter(this.config.filter);
+		const accounts = await this.client.connectOwned({ filter });
+		for (const account of accounts) {
+			if (!account.player?.id) {
+				log.warn("Connected account has no player_id after connect; skipping index");
+				continue;
+			}
+			this.indexAndWire(account);
+		}
+		log.info(`Connected ${this.byPlayerId.size} account(s)`);
+	}
+
+	/** Connect a single stored account by store-key/username, indexing and wiring it like `connect()` does. */
+	async connectOne(idOrUsername: string): Promise<LibManagedAccount> {
+		this.connecting.add(idOrUsername.toLowerCase());
+		try {
+			const account = await this.client.connect(idOrUsername);
+			this.indexAndWire(account);
+			return account;
+		} finally {
+			this.connecting.delete(idOrUsername.toLowerCase());
+		}
+	}
+
+	/** Register a brand-new account, then index and wire it like `connect()` does. */
+	async register(
+		params: RegisterParams,
+	): Promise<{ account: LibManagedAccount; result: RegisterResult }> {
+		this.connecting.add(params.username.toLowerCase());
+		try {
+			const { account, result } = await this.client.register(params);
+			this.indexAndWire(account);
+			return { account, result };
+		} finally {
+			this.connecting.delete(params.username.toLowerCase());
+		}
+	}
+
+	/**
+	 * List the player accounts the Clerk user owns (connected or not). Cached for
+	 * `OWNED_LIST_TTL_MS` so a polling dashboard doesn't trigger a Clerk network
+	 * call on every request. If a refresh fails and a stale cached value exists,
+	 * that value is returned instead of throwing — the `GET /accounts` handler
+	 * already degrades to connected-only accounts on error, so a stale-but-known
+	 * owned list is strictly better than dropping to nothing.
+	 */
+	async listOwned(): Promise<ClerkPlayer[]> {
+		const cache = this.ownedListCache;
+		if (cache && Date.now() - cache.fetchedAt < OWNED_LIST_TTL_MS) {
+			return cache.players;
+		}
+		try {
+			const players = await this.client.listOwnedPlayers();
+			this.ownedListCache = { players, fetchedAt: Date.now() };
+			return players;
+		} catch (err) {
+			if (cache) {
+				return cache.players;
+			}
+			throw err;
+		}
+	}
+
+	/** Whether a connectOne/register call for this id/username is currently in flight. */
+	isConnecting(idOrUsername: string): boolean {
+		return this.connecting.has(idOrUsername.toLowerCase());
+	}
+
+	/** Look up the player_id for a username (case-insensitive). */
+	private playerIdForUsername(username: string): string | undefined {
+		return this.usernameToPlayerId.get(username.toLowerCase());
+	}
+
+	getByPlayerId(playerId: string): LibManagedAccount | undefined {
+		return this.byPlayerId.get(playerId);
+	}
+
+	getByUsername(username: string): LibManagedAccount | undefined {
+		const pid = this.playerIdForUsername(username);
+		return pid ? this.byPlayerId.get(pid) : undefined;
+	}
+
+	getAll(): LibManagedAccount[] {
+		return [...this.byPlayerId.values()];
+	}
+
+	get size(): number {
+		return this.byPlayerId.size;
+	}
+
+	async disconnect(playerId: string): Promise<void> {
+		const account = this.byPlayerId.get(playerId);
+		if (!account) {
+			return;
+		}
+		// Evict from the lib client registry too (closes + drops), so the manager
+		// and the client can't diverge into a stale-closed-account leak. Fall back
+		// to a direct close if the account has no id.
+		if (typeof account.id === "string") {
+			await this.client.remove(account.id);
+		} else {
+			account.close();
+		}
+		this.byPlayerId.delete(playerId);
+		for (const [username, pid] of this.usernameToPlayerId) {
+			if (pid === playerId) {
+				this.usernameToPlayerId.delete(username);
+			}
+		}
+	}
+
+	/** Alias for `disconnect()` — removes an account (evicts from the lib client, clears both indexes). */
+	async remove(playerId: string): Promise<void> {
+		await this.disconnect(playerId);
+	}
+
+	disconnectAll(): void {
+		this.client.closeAll();
+		this.byPlayerId.clear();
+		this.usernameToPlayerId.clear();
+	}
+}

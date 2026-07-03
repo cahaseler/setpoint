@@ -1,51 +1,33 @@
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { ManagedAccount } from "../accounts/manager.js";
-import type { GoalContext, LoopResult, ProgressRef } from "../dispatcher/goals.js";
-import { runEnhancedMiningLoop } from "../dispatcher/loops/enhanced-mining-loop.js";
-import type { EnhancedMiningLoopOptions } from "../dispatcher/loops/enhanced-mining-loop.js";
-import { runExplorationLoop } from "../dispatcher/loops/exploration-loop.js";
-import type { ExplorationLoopOptions } from "../dispatcher/loops/exploration-loop.js";
-import { runGuardLoop } from "../dispatcher/loops/guard-loop.js";
-import type { GuardLoopOptions } from "../dispatcher/loops/guard-loop.js";
-import { runHaulingLoop } from "../dispatcher/loops/hauling-loop.js";
-import type { HaulingLoopOptions } from "../dispatcher/loops/hauling-loop.js";
-import { runMiningLoop } from "../dispatcher/loops/mining-loop.js";
-import type { MiningLoopOptions } from "../dispatcher/loops/mining-loop.js";
-import { runRoamingSalvageLoop } from "../dispatcher/loops/roaming-salvage-loop.js";
-import type { RoamingSalvageLoopOptions } from "../dispatcher/loops/roaming-salvage-loop.js";
-import { runSalvageLoop } from "../dispatcher/loops/salvage-loop.js";
-import type { SalvageLoopOptions } from "../dispatcher/loops/salvage-loop.js";
-import { runStorageTransferLoop } from "../dispatcher/loops/storage-transfer-loop.js";
-import type { StorageTransferLoopOptions } from "../dispatcher/loops/storage-transfer-loop.js";
-import { runTowSalvageLoop } from "../dispatcher/loops/tow-salvage-loop.js";
-import type { TowSalvageLoopOptions } from "../dispatcher/loops/tow-salvage-loop.js";
-import { runTradingLoop } from "../dispatcher/loops/trading-loop.js";
-import type { TradingLoopOptions } from "../dispatcher/loops/trading-loop.js";
-import type { StateStore, StoredGameState } from "../state/store.js";
+import type { LoopOptionsMap } from "@setpoint/protocol";
+import type { LibManagedAccount } from "../accounts/lib-types.js";
+import type { LoopResult, ProgressRef } from "../dispatcher/goals.js";
+import { makeLibGoalContext } from "../dispatcher/lib-goal-context.js";
+import { runEnhancedMiningLoop } from "../dispatcher/lib-loops/enhanced-mining-loop.js";
+import type { EnhancedMiningLoopOptions } from "../dispatcher/lib-loops/enhanced-mining-loop.js";
+import { runExplorationLoop } from "../dispatcher/lib-loops/exploration-loop.js";
+import type { ExplorationLoopOptions } from "../dispatcher/lib-loops/exploration-loop.js";
+import { runGuardLoop } from "../dispatcher/lib-loops/guard-loop.js";
+import type { GuardLoopOptions } from "../dispatcher/lib-loops/guard-loop.js";
+import { runHaulingLoop } from "../dispatcher/lib-loops/hauling-loop.js";
+import type { HaulingLoopOptions } from "../dispatcher/lib-loops/hauling-loop.js";
+import { runMiningLoop } from "../dispatcher/lib-loops/mining-loop.js";
+import type { MiningLoopOptions } from "../dispatcher/lib-loops/mining-loop.js";
+import { runRoamingSalvageLoop } from "../dispatcher/lib-loops/roaming-salvage-loop.js";
+import type { RoamingSalvageLoopOptions } from "../dispatcher/lib-loops/roaming-salvage-loop.js";
+import { runSalvageLoop } from "../dispatcher/lib-loops/salvage-loop.js";
+import type { SalvageLoopOptions } from "../dispatcher/lib-loops/salvage-loop.js";
+import { runStorageTransferLoop } from "../dispatcher/lib-loops/storage-transfer-loop.js";
+import type { StorageTransferLoopOptions } from "../dispatcher/lib-loops/storage-transfer-loop.js";
+import { runTowSalvageLoop } from "../dispatcher/lib-loops/tow-salvage-loop.js";
+import type { TowSalvageLoopOptions } from "../dispatcher/lib-loops/tow-salvage-loop.js";
+import { runTradingLoop } from "../dispatcher/lib-loops/trading-loop.js";
+import type { TradingLoopOptions } from "../dispatcher/lib-loops/trading-loop.js";
 import { errorMessage } from "../util/errors.js";
 import { createLogger } from "../util/logger.js";
 
 const log = createLogger("loop-mgr");
-
-/**
- * How long a mutation-derived store snapshot is trusted before refreshState
- * forces a live get_state. The store is authoritative for changes the daemon
- * itself makes (every mutation carries post-action state), but it cannot see
- * changes from outside our mutations — a mobile station relocating a docked
- * ship, another tool, or game-side events. Within an active goal/loop, back-to-
- * back mutations keep the store warm so this rarely triggers; the live read
- * fires only on cold start, an idle account, or genuine external drift, which
- * is exactly when trusting the cache would silently act on a stale position.
- */
-const STATE_FRESHNESS_TTL_MS = 30_000;
-
-/** Whether a store snapshot is recent enough to trust without a live get_state. */
-function isStateFresh(state: StoredGameState, ttlMs: number): boolean {
-	const updatedMs = Date.parse(state.updatedAt);
-	if (Number.isNaN(updatedMs)) return false;
-	return Date.now() - updatedMs < ttlMs;
-}
 
 /**
  * Recursively walk a parsed JSON value and replace any string that appears in
@@ -116,7 +98,17 @@ interface ActiveLoop {
 	progress?: ProgressRef;
 }
 
-/** Options for starting a mining loop via the API. */
+/**
+ * Options for starting a mining loop via the API.
+ *
+ * Field-for-field this mirrors `@setpoint/protocol`'s `LoopOptionsMap["mining"]`
+ * (the zod-validated shape), with one deliberate narrowing: `listPrices` here
+ * is `Record<string, number>` only, whereas the protocol schema also accepts a
+ * JSON string (for CLI/form convenience). The handler normalizes a string
+ * `listPrices` into an object (via `parseListPrices`) after zod validation and
+ * before constructing this type, so this interface stays hand-written rather
+ * than aliasing `LoopOptionsMap["mining"]` directly.
+ */
 export interface MiningLoopApiOptions {
 	miningSystemId: string;
 	beltPoiId: string;
@@ -136,7 +128,12 @@ export interface MiningLoopApiOptions {
 	maxIterations?: number;
 }
 
-/** Options for starting an enhanced mining loop via the API. */
+/**
+ * Options for starting an enhanced mining loop via the API.
+ *
+ * Same `listPrices` narrowing rationale as {@link MiningLoopApiOptions} — kept
+ * hand-written rather than aliasing `LoopOptionsMap["enhanced-mining"]`.
+ */
 export interface EnhancedMiningLoopApiOptions {
 	miningSystemId: string;
 	beltPoiId: string;
@@ -158,7 +155,19 @@ export interface EnhancedMiningLoopApiOptions {
 	maxIterations?: number;
 }
 
-/** Options for starting a trading loop via the API. */
+/**
+ * Options for starting a trading loop via the API.
+ *
+ * Field-for-field this mirrors `@setpoint/protocol`'s `LoopOptionsMap["trading"]`,
+ * but is kept hand-written: `items`' optional sub-fields (`maxQuantity`) come
+ * back from zod typed as `T | undefined` rather than `T`, which
+ * `exactOptionalPropertyTypes` treats as incompatible with the dispatcher
+ * layer's own `TradingLoopOptions["items"]` shape (also `T`, no explicit
+ * `undefined`). `handleStartLoop` validates via `loopSchemas.trading.parse()`
+ * and casts the runtime-safe result to this type before calling
+ * `startTradingLoop` — a JSON-parsed body never has a key present with an
+ * explicit `undefined` value, so the cast reflects the real runtime shape.
+ */
 export interface TradingLoopApiOptions {
 	buyStation: {
 		systemId: string;
@@ -180,7 +189,14 @@ export interface TradingLoopApiOptions {
 	maxIterations?: number;
 }
 
-/** Options for starting a hauling loop via the API. */
+/**
+ * Options for starting a hauling loop via the API.
+ *
+ * Kept hand-written for the same reason as {@link TradingLoopApiOptions} —
+ * the nested `source.items`/`destination.items`/`destination.targetPlayer`
+ * optional sub-fields don't survive the zod round-trip under
+ * `exactOptionalPropertyTypes`.
+ */
 export interface HaulingLoopApiOptions {
 	source: {
 		systemId: string;
@@ -208,178 +224,47 @@ export interface HaulingLoopApiOptions {
 	maxIterations?: number;
 }
 
-/** Options for starting an exploration loop via the API. */
-export interface ExplorationLoopApiOptions {
-	systemId: string;
-	stationPoiId: string;
-	baseId: string;
-	allowLawless?: boolean;
-	minFuelReserve?: number;
-	repairThreshold?: number;
-	survey?: boolean;
-	minSubmittedAtTick?: number;
-	maxIterations?: number;
-}
-
-/** Options for starting a salvage loop via the API. */
-export interface SalvageLoopApiOptions {
-	salvageSystemId: string;
-	salvagePoiId: string;
-	sellSystemId: string;
-	sellStationPoiId: string;
-	sellBaseId: string;
-	fullThreshold?: number;
-	maxAttempts?: number;
-	repair?: boolean;
-	depositTarget?: "personal" | "faction";
-	skipMarket?: boolean;
-	cashSource?: "faction";
-	minCredits?: number;
-	maxIterations?: number;
-}
-
-/** Options for starting a storage transfer loop via the API. */
-export interface StorageTransferLoopApiOptions {
-	systemId: string;
-	stationPoiId: string;
-	baseId: string;
-	refuel?: boolean;
-	excludeCredits?: boolean;
-	maxIterations?: number;
-}
-
-/** Options for starting a roaming salvage loop via the API. */
-export interface RoamingSalvageLoopApiOptions {
-	homeSystemId: string;
-	homeStationPoiId: string;
-	homeBaseId: string;
-	allowLawless?: boolean;
-	fullThreshold?: number;
-	minFuelReserve?: number;
-	repair?: boolean;
-	depositTarget?: "personal" | "faction";
-	cashSource?: "faction";
-	minCredits?: number;
-	maxLootAttempts?: number;
-	maxIterations?: number;
-}
-
-/** Options for starting a guard loop via the API. */
-export interface GuardLoopApiOptions {
-	homeSystemId: string;
-	homeStationPoiId: string;
-	homeBaseId: string;
-	guardSystemId: string;
-	guardPoiId: string;
-	cashSource?: "faction";
-	minCredits?: number;
-	repairThreshold?: number;
-	maxIterations?: number;
-}
-
-/** Options for starting a tow-salvage loop via the API. */
-export interface TowSalvageLoopApiOptions {
-	mode: "fixed";
-	yardSystemId: string;
-	yardPoiId: string;
-	yardBaseId: string;
-	wreckSystemId: string;
-	wreckPoiId: string;
-	disposition?: "scrap" | "sell";
-	storageTarget?: "personal" | "faction";
-	maxIterations?: number;
-}
+/**
+ * Options for starting an exploration loop via the API.
+ * Sourced from `@setpoint/protocol`'s `LoopOptionsMap` — the zod schema in
+ * `loopSchemas.exploration` is the single source of truth for this shape.
+ */
+export type ExplorationLoopApiOptions = LoopOptionsMap["exploration"];
 
 /**
- * Build a GoalContext wired to a real account and state store.
- *
- * The refreshState callback calls the live get_state API before reading from
- * the store. This ensures accurate location even when the store is stale after
- * a mid-execution failure where no mutation response updated the location.
- * get_state is a free query (no tick cost) and goes through the onResponse
- * pipeline which updates the store automatically.
+ * Options for starting a salvage loop via the API.
+ * Sourced from `@setpoint/protocol`'s `LoopOptionsMap` — the zod schema in
+ * `loopSchemas.salvage` is the single source of truth for this shape.
  */
-export function buildGoalContext(
-	account: ManagedAccount,
-	store: StateStore,
-	signal?: AbortSignal,
-): GoalContext {
-	return {
-		endpoints: account.endpoints,
-		...(signal ? { signal } : {}),
-		state: store.getState(account.config.player_id) ?? {
-			player: undefined,
-			ship: undefined,
-			cargo: undefined,
-			location: undefined,
-			modules: undefined,
-			skills: undefined,
-			missions: undefined,
-			queue: undefined,
-			updatedAt: new Date().toISOString(),
-		},
-		readLocalState: () => {
-			const fresh = store.getState(account.config.player_id);
-			if (!fresh) {
-				throw new Error(`No state available for ${account.config.player_id}`);
-			}
-			return fresh;
-		},
-		refreshState: async (opts?: { force?: boolean }) => {
-			const cached = store.getState(account.config.player_id);
+export type SalvageLoopApiOptions = LoopOptionsMap["salvage"];
 
-			// Trust the mutation-derived store. Every mutation response carries the
-			// complete, authoritative post-action state for the sections it touches
-			// (dev-confirmed; validated over ~232k comparisons — cargo/ship/location
-			// track exactly), so the store is fresh after every action without a live
-			// get_state. Calling get_state would also risk clobbering fresh mutation-
-			// state with the game's intermittently-stale get_state snapshot. Hit the
-			// wire only when we actually need it: cold start (no state yet), mid-
-			// transit (only a fresh read tells us when a jump/travel lands), or a
-			// stale snapshot (older than the TTL — the store may have drifted from the
-			// ship's true position via changes we never saw, so a precondition check
-			// must not trust it and silently no-op).
-			if (
-				!opts?.force &&
-				cached &&
-				!cached.location?.in_transit &&
-				isStateFresh(cached, STATE_FRESHNESS_TTL_MS)
-			) {
-				return cached;
-			}
+/**
+ * Options for starting a storage transfer loop via the API.
+ * Sourced from `@setpoint/protocol`'s `LoopOptionsMap` — the zod schema in
+ * `loopSchemas["storage-transfer"]` is the single source of truth for this shape.
+ */
+export type StorageTransferLoopApiOptions = LoopOptionsMap["storage-transfer"];
 
-			await account.endpoints.getState();
-			let fresh = store.getState(account.config.player_id);
-			if (!fresh) {
-				throw new Error("No state available after refresh");
-			}
+/**
+ * Options for starting a roaming salvage loop via the API.
+ * Sourced from `@setpoint/protocol`'s `LoopOptionsMap` — the zod schema in
+ * `loopSchemas["roaming-salvage"]` is the single source of truth for this shape.
+ */
+export type RoamingSalvageLoopApiOptions = LoopOptionsMap["roaming-salvage"];
 
-			// Wait for transit to complete — goals cannot operate while the ship
-			// is mid-jump or mid-travel. Poll get_state until in_transit clears.
-			const TRANSIT_POLL_MS = 2_000;
-			const TRANSIT_TIMEOUT_MS = 120_000;
-			let waited = 0;
-			while (fresh.location?.in_transit && waited < TRANSIT_TIMEOUT_MS) {
-				if (signal?.aborted) {
-					log.debug("Transit poll aborted by signal");
-					return fresh;
-				}
-				log.debug(
-					`Ship in transit (${fresh.location.transit_type ?? "unknown"}), waiting ${TRANSIT_POLL_MS}ms...`,
-				);
-				await new Promise<void>((r) => setTimeout(r, TRANSIT_POLL_MS));
-				await account.endpoints.getState();
-				fresh = store.getState(account.config.player_id);
-				if (!fresh) {
-					throw new Error("No state available after refresh");
-				}
-				waited += TRANSIT_POLL_MS;
-			}
+/**
+ * Options for starting a guard loop via the API.
+ * Sourced from `@setpoint/protocol`'s `LoopOptionsMap` — the zod schema in
+ * `loopSchemas.guard` is the single source of truth for this shape.
+ */
+export type GuardLoopApiOptions = LoopOptionsMap["guard"];
 
-			return fresh;
-		},
-	};
-}
+/**
+ * Options for starting a tow-salvage loop via the API.
+ * Sourced from `@setpoint/protocol`'s `LoopOptionsMap` — the zod schema in
+ * `loopSchemas["tow-salvage"]` is the single source of truth for this shape.
+ */
+export type TowSalvageLoopApiOptions = LoopOptionsMap["tow-salvage"];
 
 /**
  * Manages active loops for accounts.
@@ -491,8 +376,7 @@ export class LoopManager {
 	startMiningLoop(
 		playerId: string,
 		options: MiningLoopApiOptions,
-		account: ManagedAccount,
-		store: StateStore,
+		account: LibManagedAccount,
 	): LoopStatus {
 		if (this.isRunning(playerId)) {
 			throw new Error("A loop is already running on this account. Stop it first.");
@@ -502,7 +386,7 @@ export class LoopManager {
 		this.loops.delete(playerId);
 
 		const controller = new AbortController();
-		const ctx = buildGoalContext(account, store);
+		const ctx = makeLibGoalContext(account);
 
 		const stepRef: StepRef = { last: undefined };
 		const loopOptions: MiningLoopOptions = {
@@ -564,8 +448,7 @@ export class LoopManager {
 	startEnhancedMiningLoop(
 		playerId: string,
 		options: EnhancedMiningLoopApiOptions,
-		account: ManagedAccount,
-		store: StateStore,
+		account: LibManagedAccount,
 	): LoopStatus {
 		if (this.isRunning(playerId)) {
 			throw new Error("A loop is already running on this account. Stop it first.");
@@ -574,7 +457,7 @@ export class LoopManager {
 		this.loops.delete(playerId);
 
 		const controller = new AbortController();
-		const ctx = buildGoalContext(account, store);
+		const ctx = makeLibGoalContext(account);
 
 		const stepRef: StepRef = { last: undefined };
 		const loopOptions: EnhancedMiningLoopOptions = {
@@ -640,8 +523,7 @@ export class LoopManager {
 	startSalvageLoop(
 		playerId: string,
 		options: SalvageLoopApiOptions,
-		account: ManagedAccount,
-		store: StateStore,
+		account: LibManagedAccount,
 	): LoopStatus {
 		if (this.isRunning(playerId)) {
 			throw new Error("A loop is already running on this account. Stop it first.");
@@ -650,7 +532,7 @@ export class LoopManager {
 		this.loops.delete(playerId);
 
 		const controller = new AbortController();
-		const ctx = buildGoalContext(account, store);
+		const ctx = makeLibGoalContext(account);
 
 		const stepRef: StepRef = { last: undefined };
 		const loopOptions: SalvageLoopOptions = {
@@ -707,8 +589,7 @@ export class LoopManager {
 	startTradingLoop(
 		playerId: string,
 		options: TradingLoopApiOptions,
-		account: ManagedAccount,
-		store: StateStore,
+		account: LibManagedAccount,
 	): LoopStatus {
 		if (this.isRunning(playerId)) {
 			throw new Error("A loop is already running on this account. Stop it first.");
@@ -717,7 +598,7 @@ export class LoopManager {
 		this.loops.delete(playerId);
 
 		const controller = new AbortController();
-		const ctx = buildGoalContext(account, store);
+		const ctx = makeLibGoalContext(account);
 
 		const stepRef: StepRef = { last: undefined };
 		const loopOptions: TradingLoopOptions = {
@@ -766,8 +647,7 @@ export class LoopManager {
 	startHaulingLoop(
 		playerId: string,
 		options: HaulingLoopApiOptions,
-		account: ManagedAccount,
-		store: StateStore,
+		account: LibManagedAccount,
 	): LoopStatus {
 		if (this.isRunning(playerId)) {
 			throw new Error("A loop is already running on this account. Stop it first.");
@@ -776,7 +656,7 @@ export class LoopManager {
 		this.loops.delete(playerId);
 
 		const controller = new AbortController();
-		const ctx = buildGoalContext(account, store);
+		const ctx = makeLibGoalContext(account);
 
 		const stepRef: StepRef = { last: undefined };
 		const loopOptions: HaulingLoopOptions = {
@@ -824,8 +704,7 @@ export class LoopManager {
 	startStorageTransferLoop(
 		playerId: string,
 		options: StorageTransferLoopApiOptions,
-		account: ManagedAccount,
-		store: StateStore,
+		account: LibManagedAccount,
 	): LoopStatus {
 		if (this.isRunning(playerId)) {
 			throw new Error("A loop is already running on this account. Stop it first.");
@@ -834,7 +713,7 @@ export class LoopManager {
 		this.loops.delete(playerId);
 
 		const controller = new AbortController();
-		const ctx = buildGoalContext(account, store);
+		const ctx = makeLibGoalContext(account);
 
 		const stepRef: StepRef = { last: undefined };
 		const loopOptions: StorageTransferLoopOptions = {
@@ -883,8 +762,7 @@ export class LoopManager {
 	startExplorationLoop(
 		playerId: string,
 		options: ExplorationLoopApiOptions,
-		account: ManagedAccount,
-		store: StateStore,
+		account: LibManagedAccount,
 	): LoopStatus {
 		if (this.isRunning(playerId)) {
 			throw new Error("A loop is already running on this account. Stop it first.");
@@ -893,7 +771,7 @@ export class LoopManager {
 		this.loops.delete(playerId);
 
 		const controller = new AbortController();
-		const ctx = buildGoalContext(account, store);
+		const ctx = makeLibGoalContext(account);
 
 		const stepRef: StepRef = { last: undefined };
 		const loopOptions: ExplorationLoopOptions = {
@@ -949,8 +827,7 @@ export class LoopManager {
 	startGuardLoop(
 		playerId: string,
 		options: GuardLoopApiOptions,
-		account: ManagedAccount,
-		store: StateStore,
+		account: LibManagedAccount,
 	): LoopStatus {
 		if (this.isRunning(playerId)) {
 			throw new Error("A loop is already running on this account. Stop it first.");
@@ -959,7 +836,7 @@ export class LoopManager {
 		this.loops.delete(playerId);
 
 		const controller = new AbortController();
-		const ctx = buildGoalContext(account, store);
+		const ctx = makeLibGoalContext(account);
 
 		const stepRef: StepRef = { last: undefined };
 		const loopOptions: GuardLoopOptions = {
@@ -1014,8 +891,7 @@ export class LoopManager {
 	startRoamingSalvageLoop(
 		playerId: string,
 		options: RoamingSalvageLoopApiOptions,
-		account: ManagedAccount,
-		store: StateStore,
+		account: LibManagedAccount,
 	): LoopStatus {
 		if (this.isRunning(playerId)) {
 			throw new Error("A loop is already running on this account. Stop it first.");
@@ -1024,7 +900,7 @@ export class LoopManager {
 		this.loops.delete(playerId);
 
 		const controller = new AbortController();
-		const ctx = buildGoalContext(account, store);
+		const ctx = makeLibGoalContext(account);
 
 		const stepRef: StepRef = { last: undefined };
 		const loopOptions: RoamingSalvageLoopOptions = {
@@ -1080,8 +956,7 @@ export class LoopManager {
 	startTowSalvageLoop(
 		playerId: string,
 		options: TowSalvageLoopApiOptions,
-		account: ManagedAccount,
-		store: StateStore,
+		account: LibManagedAccount,
 	): LoopStatus {
 		if (this.isRunning(playerId)) {
 			throw new Error("A loop is already running on this account. Stop it first.");
@@ -1089,7 +964,7 @@ export class LoopManager {
 		this.loops.delete(playerId);
 
 		const controller = new AbortController();
-		const ctx = buildGoalContext(account, store);
+		const ctx = makeLibGoalContext(account);
 		const stepRef: StepRef = { last: undefined };
 
 		const loopOptions: TowSalvageLoopOptions = {

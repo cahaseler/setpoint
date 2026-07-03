@@ -1,10 +1,8 @@
 import type { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, test } from "bun:test";
-import type { components } from "../../src/generated/api-types.js";
+import type { V2GameState } from "@spacemolt/lib";
 import { createMemoryDatabase } from "../../src/state/database.js";
 import { StateStore } from "../../src/state/store.js";
-
-type V2GameState = components["schemas"]["V2GameState"];
 
 let db: Database;
 let store: StateStore;

@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { resumeLoops } from "../../src/index.js";
 import { LoopManager } from "../../src/server/loop-manager.js";
+import { FakeLibManagedAccount, makeFakeLibManager } from "../dispatcher/lib-fakes.js";
 
 const tempDir = join(import.meta.dir, "..", "..", "test-config-temp");
 
@@ -119,5 +121,30 @@ describe("loop-persistence", () => {
 		expect(configs.length).toBe(1);
 		expect(configs[0]?.playerId).toBe("good-player");
 		expect(configs[0]?.type).toBe("hauling");
+	});
+
+	test("resumeLoops resumes a persisted roaming-salvage config on restart", async () => {
+		const options = {
+			homeSystemId: "sol",
+			homeStationPoiId: "sol_station",
+			homeBaseId: "sol_base",
+		};
+		const loopManager = new LoopManager();
+		await loopManager.saveLoopConfig("player-roamer", "roaming-salvage", options, tempDir);
+
+		const account = new FakeLibManagedAccount({ playerId: "player-roamer", username: "Roamer" });
+		const libManager = makeFakeLibManager([account]);
+		const calls: Array<{ playerId: string; options: unknown }> = [];
+		// Shadow the real start method so resume doesn't kick off an actual loop.
+		loopManager.startRoamingSalvageLoop = ((playerId: string, opts: unknown) => {
+			calls.push({ playerId, options: opts });
+			return { running: true } as ReturnType<LoopManager["startRoamingSalvageLoop"]>;
+		}) as LoopManager["startRoamingSalvageLoop"];
+
+		await resumeLoops(loopManager, libManager, tempDir);
+
+		expect(calls.length).toBe(1);
+		expect(calls[0]?.playerId).toBe("player-roamer");
+		expect(calls[0]?.options).toEqual(options);
 	});
 });

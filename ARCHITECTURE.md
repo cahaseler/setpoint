@@ -7,9 +7,10 @@ the full API/CLI reference, see [`README.md`](./README.md).
 ## 1. Overview
 
 setpoint is a long-running [Bun](https://bun.sh) + TypeScript daemon that
-manages multiple SpaceMolt game accounts at once. For each account it maintains a
-live API session, mirrors the account's game state into a local SQLite database,
-and exposes a local HTTP API (and a thin CLI, `smctl`) for automation.
+manages multiple SpaceMolt game accounts at once. It connects every account over
+WebSocket v2 through `@spacemolt/lib` (Clerk-authenticated — one API key owns
+every account), mirrors each account's live state cache into a local SQLite
+database, and exposes a local HTTP API (and a thin CLI, `smctl`) for automation.
 
 The central design idea is a **declarative model**: callers specify a desired
 end-state, not a sequence of API calls. Instead of "undock, jump to sol, dock at
@@ -28,61 +29,76 @@ The system is built in three layers of increasing scope:
    dock + refuel).
 3. **Loops** — repeating behaviours (mine until full → sell → repeat).
 
-Every account is fully isolated: it has its own session, its own state rows, and
-at most one running loop. Accounts never share sessions, state, or queues.
+Every account is fully isolated: it has its own lib connection, its own state
+rows, and at most one running loop. Accounts never share a connection, state, or
+queues.
 
 ### Why these constraints shape the design
 
-The SpaceMolt game server imposes two facts that drive most of the architecture:
+The SpaceMolt game server imposes a fact that drives most of the goal-engine
+design:
 
-- **Mutations are tick-bound and rate-limited.** The server executes at most one
-  mutation per 10-second game tick per account, and blocks the HTTP response
-  until that tick runs. Queries (`get_state`, `get_cargo`, `get_nearby`, …) are
-  unlimited. This is why setpoint tracks a `ticksUsed` count on every goal
-  result and prefers reading cached local state over re-querying.
-- **Sessions are in-memory and ephemeral.** The game server holds sessions in
-  memory with a 30-minute inactivity timeout, and restarts regularly (killing all
-  sessions). Per-IP rate limits cap session creation and auth attempts. This is
-  why session creation is staggered, keepalive runs on a timer, and 401s trigger
-  a shared, paced recovery rather than an immediate re-login storm.
+- **Mutations are tick-bound.** The server executes at most one mutation per
+  10-second game tick per account, and a mutation doesn't resolve until that
+  tick actually runs (which can be many ticks later for travel/jump). Queries
+  (`get_status`, `get_cargo`, `get_nearby`, …) are unlimited. This is why
+  setpoint tracks a `ticksUsed` count on every goal result and prefers reading
+  cached local state over re-querying.
+
+Connection lifecycle — auth, reconnect, keepalive, rate-limit pacing for
+connects and auth — is entirely `@spacemolt/lib`'s responsibility, not
+setpoint's. `@spacemolt/lib` auto-reconnects and re-authenticates on unexpected
+drops (a `session_replaced` close or a deliberate `close()` is terminal;
+transient drops retry with backoff) and staggers connects to respect the
+server's login rate limits. setpoint's `LibAccountManager` sits on top of this
+and does not implement any of it itself (see §4).
 
 ## 2. The layered goal engine
 
-All three layers share a single contract defined in
-[`src/dispatcher/goals.ts`](./src/dispatcher/goals.ts):
+The shared result/option types live in
+[`src/dispatcher/goals.ts`](./src/dispatcher/goals.ts) (`GoalResult`,
+`CompoundGoalResult`, `LoopResult`, `LoopOptions`, unchanged by the lib
+migration). The goal contract itself is defined in
+[`src/dispatcher/lib-goal-context.ts`](./src/dispatcher/lib-goal-context.ts):
 
 ```ts
-interface Goal {
+interface LibGoal {
   readonly name: string;
-  execute(ctx: GoalContext): Promise<GoalResult>;
+  execute(ctx: LibGoalContext): Promise<GoalResult>;
 }
 ```
 
 A `GoalResult` reports `success`, a human-readable `message`, whether the goal was
 `alreadySatisfied`, and `ticksUsed` (mutation actions consumed). The
-`GoalContext` gives a goal everything it needs to act:
+`LibGoalContext` gives a goal everything it needs to act:
 
-- `endpoints` — typed API wrappers (see §5).
-- `state` — a snapshot of current game state, read from the local store.
-- `readLocalState()` — re-read the store with no API call. Safe immediately after
-  a mutation, because the store is updated by the response pipeline before the
-  mutation promise resolves.
-- `refreshState()` — fetch fresh state from the API (used for initial sync or
-  when transit polling is required).
+- `account` — the lib account: `account.state` (the live, push-fed state cache)
+  and `account.commands` (the lib's full generated, typed command surface —
+  `commands.spacemolt.dock()`, `commands.spacemolt_market.view_market(...)`, etc.).
+- `state` — a live getter over `account.state`, never a stale snapshot.
+- `refreshState(opts?)` — returns the push-fed cache for free unless the cache is
+  stale (see `STATE_FRESHNESS_TTL_MS` in
+  [`src/dispatcher/state-freshness.ts`](./src/dispatcher/state-freshness.ts)) or
+  `{ force: true }` is passed, in which case it runs a live `account.refresh()`
+  (a `get_status` re-seed). Primitives force a refresh where a mutation's delta is
+  known to be incomplete (e.g. jumps carry no reliable position).
 - `signal` — an `AbortSignal` for external cancellation.
 
 The goal-naming convention follows the declarative model: goals are named for the
 desired state, not the action taken — `navigate-to-system` rather than `jump`,
-`ensure-fueled` rather than `refuel`.
+`ensure-fueled` rather than `refuel`. Implementation classes are prefixed `Lib`
+(`LibNavigateToSystem`, `LibDockAt`, …) to distinguish them from types shared with
+`@setpoint/protocol`.
 
 ### Primitives
 
-Primitives live in [`src/dispatcher/primitives/`](./src/dispatcher/primitives/).
+Primitives live in
+[`src/dispatcher/lib-primitives/`](./src/dispatcher/lib-primitives/).
 Each is a single declarative goal that: (1) checks whether the desired state is
 already satisfied, (2) validates prerequisites, (3) takes the minimal API action,
 and (4) returns a result.
 
-Example — [`navigate-to-system.ts`](./src/dispatcher/primitives/navigate-to-system.ts):
+Example — [`navigate-to-system.ts`](./src/dispatcher/lib-primitives/navigate-to-system.ts):
 
 - If the ship is already in the target system, it returns `alreadySatisfied`
   immediately.
@@ -96,37 +112,49 @@ Example — [`navigate-to-system.ts`](./src/dispatcher/primitives/navigate-to-sy
 Other primitives in this layer include `dock-at`, `go-to-poi`, `ensure-fueled`,
 `ensure-repaired`, `ensure-undocked`, `buy-items`, `sell-or-deposit-cargo`,
 `jettison-cargo`, the mission goals (`accept-mission`, `complete-mission`,
-`abandon-mission`), module goals (`install-mod`, `uninstall-mod`), and the
+`abandon-mission`), module goals (`install-mod`, `uninstall-mod`), the
 faction-storage goals (`deposit-to-faction-storage`,
-`withdraw-from-faction-storage`, `gift-to-player`).
+`load-from-faction-storage`, `ensure-credits-from-faction`, `gift-to-player`),
+and salvage-related goals (`tow-wreck`, `dispose-towed-wreck`, `scan`).
 
 ### Compound goals
 
-Compound goals live in [`src/dispatcher/compounds/`](./src/dispatcher/compounds/).
-A compound assembles primitives into a multi-step sequence and runs them in order
-via the sequence runner ([`src/dispatcher/sequence.ts`](./src/dispatcher/sequence.ts)),
-short-circuiting if any step fails. The result type
+Compound goals live in
+[`src/dispatcher/lib-compounds/`](./src/dispatcher/lib-compounds/). A compound
+assembles primitives into a multi-step sequence and runs them in order via the
+sequence runner
+([`src/dispatcher/lib-sequence.ts`](./src/dispatcher/lib-sequence.ts):
+`runLibSequence`), short-circuiting if any step fails. The result type
 (`CompoundGoalResult`) carries the per-step results so callers can see exactly
-which step ran and what it returned.
+which step ran and what it returned. Unlike the pre-migration sequence runner,
+there is no wire refresh between steps — each mutation's delta lands on
+`account.state` before the step's `await` resolves, so the next step reads
+current state for free; a primitive forces a live refresh itself where a delta
+is known to be incomplete.
 
-Example — [`mining-run.ts`](./src/dispatcher/compounds/mining-run.ts) composes:
+Example — [`mining-run.ts`](./src/dispatcher/lib-compounds/mining-run.ts)
+(`LibMiningRun`) composes:
 
-1. `NavigateToSystem` — jump to the target system.
-2. `GoToPoi` — travel to the asteroid belt.
-3. `EnsureUndocked` — undock (can't mine while docked).
-4. `MineUntilFull` — mine until cargo reaches the fullness threshold.
+1. `LibNavigateToSystem` — jump to the target system.
+2. `LibGoToPoi` — travel to the asteroid belt.
+3. `LibEnsureUndocked` — undock (can't mine while docked).
+4. `LibMineUntilFull` — mine until cargo reaches the fullness threshold.
 
-It refreshes state between the travel phase and the mining phase, and reports the
-combined `ticksUsed` and whether all steps were already satisfied. Other compounds
-include `prepare-at-station`, `sell-at-station`, `buy-at-station`,
-`load-at-station`, `unload-at-station`, `enhanced-mining-run`, `mine-with-jettison`,
-and `fuel-rescue`.
+It refreshes state itself between the travel phase and the mining phase (a
+compound-level choice, not something `runLibSequence` does automatically), and
+reports the combined `ticksUsed` and whether all steps were already satisfied.
+Other compounds include `prepare-at-station`, `sell-at-station`,
+`buy-at-station`, `load-at-station`, `unload-at-station`,
+`enhanced-mining-run`, `mine-with-jettison`, `fuel-rescue`, `loot-run`,
+`loot-until-full`, and the towed-wreck compounds (`process-towed-wreck`,
+`drain-towed-wreck`).
 
 ### Loops
 
-Loops live in [`src/dispatcher/loops/`](./src/dispatcher/loops/) and are driven by
-the generic loop engine in [`src/dispatcher/loops.ts`](./src/dispatcher/loops.ts).
-`runLoop(factory, ctx, options)` repeatedly:
+Loops live in [`src/dispatcher/lib-loops/`](./src/dispatcher/lib-loops/) and are
+driven by the generic loop engine in
+[`src/dispatcher/lib-loops.ts`](./src/dispatcher/lib-loops.ts). `runLibLoop(factory,
+ctx, options)` repeatedly:
 
 1. Checks the abort signal and the optional `shouldContinue` predicate.
 2. Builds a fresh goal from `factory(currentState)` (so each iteration plans from
@@ -139,12 +167,16 @@ the generic loop engine in [`src/dispatcher/loops.ts`](./src/dispatcher/loops.ts
 6. A successful iteration resets the consecutive-failure counter.
 
 Cancellation and `shouldContinue` stops are treated as successful completions, not
-failures. `RateLimitError`s override the retry delay with the server's
-`retry-after` value, and retry delays are abortable so a stop request takes effect
+failures. Unlike the pre-migration loop engine, `runLibLoop` never sees a
+rate-limit error to special-case: `@spacemolt/lib` absorbs `rate_limited`
+responses beneath the command layer and retries them against the server's
+own pacing, so a thrown error reaching the loop is always a genuine failure paced
+by `retryDelayMs`. Retry delays are abortable so a stop request takes effect
 promptly. The engine keeps only the most recent 100 iteration results in memory.
 
-Loop definitions (e.g. `mining-loop`, `enhanced-mining-loop`, `trading-loop`,
-`hauling-loop`, `storage-transfer-loop`) supply the per-iteration
+Loop definitions (e.g. `mining-loop`, `enhanced-mining-loop`, `salvage-loop`,
+`roaming-salvage-loop`, `tow-salvage-loop`, `trading-loop`, `hauling-loop`,
+`storage-transfer-loop`, `exploration-loop`, `guard-loop`) supply the per-iteration
 goal factory. The user-facing loop types and their option schemas are documented
 in the README. Loop configs are persisted to disk (`config/loops/<player_id>.json`)
 when a loop starts and auto-resume on daemon restart; the file is removed when the
@@ -152,114 +184,112 @@ loop stops or completes.
 
 ## 3. State model
 
-The local SQLite database is always kept as fresh as the last API response, so
-reads never need to hit the game server (and never cost a tick).
+`@spacemolt/lib` maintains the real state: a live, push-fed cache per account
+(`account.state`), seeded by `get_status` on connect and updated in real time
+from mutation deltas and server push events. Goals and loops read this cache
+directly through `LibGoalContext` — no wire call, no SQLite involved.
+
+The local SQLite database is a **read-only mirror** of that cache, kept
+solely so the HTTP API's state endpoints
+(`GET /accounts/:playerId/state[/:section]`) can serve state without going
+through an account's live lib object.
 
 ### Storage
 
 The schema ([`src/state/database.ts`](./src/state/database.ts)) is a single
 `game_state` table keyed by `account_id`, with one JSON text column per state
 section: `player`, `ship`, `cargo`, `location`, `modules`, `skills`, `missions`,
-`queue`, plus `updated_at` and the persisted `session_id` /
-`session_expires_at`. A separate `jobs` table tracks async goal jobs. WAL mode is
-enabled for concurrent reads.
+`queue`, plus `updated_at`. (The table also still has legacy `session_id` /
+`session_expires_at` columns and store methods from the pre-migration
+session-based system; nothing in the running daemon writes or reads them
+anymore.) A separate `jobs` table tracks async goal jobs. WAL mode is enabled
+for concurrent reads.
 
 The store ([`src/state/store.ts`](./src/state/store.ts)) wraps the table.
 `applyUpdate` performs **partial updates**: only sections that are present
-(non-`undefined`, non-`null`) in an incoming `V2GameState` are written, so a query
-that returns only `cargo` does not clobber the stored `ship`. The store also
-persists and reads session info for resumption across restarts.
+(non-`undefined`, non-`null`) in an incoming state object are written, so an
+update that only carries `cargo` does not clobber the stored `ship`.
 
-### The updater flow
+### The projector flow
 
-Every mutation response's `structuredContent` contains a partial `V2GameState`.
-The flow that keeps the database current:
+The flow that keeps the SQLite mirror current:
 
-1. The `Session` calls every registered response callback after each successful
-   API call (`onResponse`, in [`src/api/session.ts`](./src/api/session.ts)).
-2. The account manager wires each session's `onResponse` to
-   `StateUpdater.processResponse(accountId, structuredContent)`
-   ([`src/accounts/manager.ts`](./src/accounts/manager.ts)).
-3. The updater ([`src/state/updater.ts`](./src/state/updater.ts)) extracts the
-   `V2GameState` fields, calls `store.applyUpdate`, and emits a
-   `StateChangeEvent` listing the changed sections so other components can react.
+1. `LibAccountManager` (`src/accounts/lib-manager.ts`) wires each account's
+   `onStateChange(sections)` stream — via
+   `makeProjectingOnStateChange` in
+   [`src/state/attach-projector.ts`](./src/state/attach-projector.ts) — to the
+   projector, and backfills it once at connect time (the lib seeds state during
+   `connect()` without firing `onStateChange`, so a freshly-connected account
+   would otherwise read as unprojected).
+2. `StateProjector.project()` ([`src/state/projector.ts`](./src/state/projector.ts))
+   reads the changed sections off `account.state` and calls
+   `store.applyUpdate()`.
 
-The updater also handles two special shapes: travel responses (which carry
-location changes — destination POI and auto-undock — outside the standard
-`V2GameState` shape) and login responses (which deliver full initial
-player/ship/system state in a different top-level structure).
+Because the cache updates *before* a mutation's `await` resolves, a goal reading
+`ctx.state` right after a mutation sees the new value with no extra round-trip.
+The raw passthrough endpoint calls `account.send()` directly — its response also
+flows through the same live cache, so the projected mirror stays current for
+raw calls too.
 
-Because this callback runs *before* a mutation's promise resolves, a goal can call
-`readLocalState()` right after a mutation and see the updated values without an
-extra API round-trip. The raw passthrough endpoint also runs responses through the
-updater, so even direct API calls keep the cache current.
+## 4. Connection lifecycle
 
-## 4. Session lifecycle
+`@spacemolt/lib`'s `SpacemoltClient`/`Account` own the entire WebSocket
+connection lifecycle — auth, reconnect, backoff, and rate-limit pacing for
+connects and login are the lib's responsibility, not setpoint's.
 
-A `Session` ([`src/api/session.ts`](./src/api/session.ts)) owns one account's
-connection to the game server and moves through the states `disconnected →
-connecting → active → recovering`.
+- **Connect.** `SpacemoltClient({ clerkApiKey })` mints a short-lived, single-use
+  WS token per account from the Clerk key and connects over
+  `wss://game.spacemolt.com/ws/v2`. `connectOwned()` looks up and connects every
+  account the key owns (optionally filtered), staggering connects internally so
+  a large fleet doesn't trip the login rate limit.
+- **Reconnect.** The lib auto-reconnects and re-authenticates on unexpected
+  drops, restoring subscriptions. Reconnect is close-code-aware: a
+  `session_replaced` close (someone else logged in as that player) or a
+  deliberate `close()` is terminal; transient drops (e.g. a server restart)
+  retry with backoff.
+- **Rate-limited mutations.** `rate_limited` responses are retried automatically
+  beneath `account.commands`/`account.send()`, honoring the server's pacing —
+  setpoint's own code never sees this as an error to handle.
 
-- **Connect.** `connect()` creates an API session, logs in, captures initial
-  state from the login response, and starts a keepalive timer.
-- **Keepalive.** Because the server times out idle sessions after 30 minutes, a
-  timer polls `get_state` at a fixed interval (default 10 minutes) to bump
-  `LastSeen` and refresh the recorded expiry. The poll response also flows through
-  the state updater, so keepalive doubles as a periodic state refresh.
-- **401 recovery.** When an action raises `SessionExpiredError` (typically after a
-  server restart dropped the session), the session triggers `ensureRecovered()`,
-  which reconnects and retries the action once. Recovery is guarded by a shared
-  promise so concurrent callers join a single recovery rather than racing to
-  create multiple sessions, and `RateLimitError`s during recovery wait the
-  server's `retry-after` without consuming a recovery attempt.
-- **Resume across daemon restarts.** Session IDs and expiries are persisted to
-  the store. On startup, `tryResume()` validates a stored session with a single
-  `get_state` query; if it succeeds, the daemon reuses the session (no auth call,
-  no rate-limit cost). If it fails, the account falls back to a full connect.
-- **Busy-ship polling.** The game server returns `action_in_progress` or
-  `in_transit` when the ship is mid-action or mid-jump. The session polls through
-  these (every ~12s, up to ~25 attempts) until the action resolves, which also
-  covers reconnecting while a ship is still travelling server-side.
+### `LibAccountManager`
 
-### Rate-limit pacing and isolation
+`LibAccountManager` (`src/accounts/lib-manager.ts`) is a thin layer on top of the
+lib client — it does not implement any connection-lifecycle logic itself:
 
-The account manager ([`src/accounts/manager.ts`](./src/accounts/manager.ts))
-serialises auth calls through a shared `AuthRateLimiter` (an `AuthSlot`
-implementation) so concurrent reconnects are spaced at least `staggerDelayMs`
-apart (default 6.5s, sized for the 10 auth/min limit). Startup connection
-(`connectAll`) staggers session creation the same way, but **skips the stagger for
-accounts with a resumable stored session**, since resume uses only a query. Each
-account gets its own `Session` and `GameEndpoints`, keyed by `player_id` — there
-is no shared session, state, or queue between accounts.
+- `connect()` calls `connectOwned()` with the configured filter, indexes the
+  returned accounts by `player_id` and username, and wires each one's
+  `onStateChange` to the state projector (see §3).
+- `connectOne(idOrUsername)` connects a single stored account the same way, for
+  `POST /accounts` (which returns 202 immediately and connects in the
+  background — see `src/server/handlers.ts`'s `handleAddAccount`).
+- `register(params)` registers a brand-new account and wires it identically.
+- `listOwned()` lists the Clerk-owned players (connected or not), cached for 60s
+  so a polling dashboard doesn't hit Clerk on every `GET /accounts`.
+- `disconnect`/`remove` evict an account from both the lib client and the
+  manager's own indexes, so the two can't diverge into a stale-closed-account
+  leak.
 
-Accounts can also be added at runtime via a background queue
-(`queueAccount` / `queueByCredentials`): the API returns immediately and the
-manager connects accounts one at a time with the stagger delay between them.
+Each account gets its own lib `Account` connection, keyed by `player_id` — there
+is no shared connection, state, or queue between accounts.
 
 ## 5. HTTP API and CLI layering
 
 The API access path is layered so each level has a single responsibility:
 
 ```
-SpaceMoltClient → Session → GameEndpoints → goals → server handlers → Router
-        (HTTP)    (auth/      (typed         (declarative)  (HTTP API)
-                   recovery)   wrappers)
+@spacemolt/lib (Account/Commands) → goals (LibGoalContext) → server handlers → Router
+   (WS transport, auth, state cache)   (declarative)            (HTTP API)
 ```
 
-- **`SpaceMoltClient`** ([`src/api/client.ts`](./src/api/client.ts)) — the
-  low-level HTTP client. It builds requests, parses the response envelope
-  (`result`, `structuredContent`, `notifications`, `session`, `error`), and
-  classifies errors (`ApiError`, `RateLimitError`, `SessionExpiredError`,
-  `HttpError`). It does **not** manage sessions.
-- **`Session`** — adds the `X-Session-Id` header, observes responses (state
-  updates), and handles expiry/recovery and busy-ship polling.
-- **`GameEndpoints`** ([`src/api/endpoints.ts`](./src/api/endpoints.ts)) — typed
-  wrappers over individual game actions (`jump`, `dock`, `refuel`, `findRoute`,
-  …), using types generated from the OpenAPI spec.
-- **Goals** — the declarative layer described in §2, which calls endpoints.
+- **`@spacemolt/lib`** — owns the WebSocket transport, Clerk auth, reconnect,
+  and the live state cache (see §3, §4). setpoint treats it as a typed,
+  self-managing client and never reimplements any of this.
+- **Goals** — the declarative layer described in §2, which reads `account.state`
+  and calls `account.commands`/`account.send()` directly.
 - **Server handlers** ([`src/server/handlers.ts`](./src/server/handlers.ts)) —
-  translate HTTP requests into goal/loop/raw operations and read state from the
-  store.
+  resolve the target account (`resolveAccount()`), translate HTTP requests into
+  goal/loop/raw operations via `makeLibGoalContext`, and read state from the
+  SQLite store for the state endpoints.
 - **`Router`** ([`src/server/router.ts`](./src/server/router.ts)) — path matching;
   routes are registered in [`src/server/index.ts`](./src/server/index.ts).
 
@@ -275,49 +305,54 @@ command maps to one daemon endpoint: `src/cli/commands.ts` dispatches to
 `DaemonClient` ([`src/cli/client.ts`](./src/cli/client.ts)), which issues the HTTP
 request and formats the JSON response. `DaemonClient` distinguishes connection
 failures (daemon unreachable — retried) from timeouts (daemon slow — reported
-immediately), and uses a longer request timeout for sync goals than for ordinary
-commands. Because the CLI is a pure wrapper, every command corresponds exactly to
-an HTTP route, and tests assert the URL/method each command calls.
+immediately); several commands that block on a game action (sync `goal`, `raw`,
+`accounts register`, `accounts remove`, forced `abort`) disable the timeout
+entirely rather than using the 30s default (`GAME_API_TIMEOUT_MS` in
+`src/cli/commands.ts`). Because the CLI is a pure wrapper, every command
+corresponds exactly to an HTTP route, and tests assert the URL/method each
+command calls.
 
 The `raw` passthrough (`POST /accounts/:playerId/raw`, and the `smctl raw`
-command) sends a call straight to the game API through the managed session for
-operations not yet wrapped in a goal. Its response still flows through the state
-updater.
+command) calls `account.send()` directly for operations not yet wrapped in a
+goal, normalizing the query/mutation response shapes into
+`{ result, structuredContent }` (mutations also carry `tick`/`command`). Live
+push events are not relayed here — they arrive on the account's event stream,
+not on command responses.
 
 ## 6. Project structure
 
 ```
 setpoint/
 ├── ARCHITECTURE.md                 # This document
-├── README.md                       # Usage, CLI, and HTTP API reference
+├── README.md / SETUP.md / CONTRIBUTING.md / SECURITY.md
 ├── biome.json                      # Linter + formatter config
 ├── tsconfig.json                   # TypeScript (strict) config
 ├── package.json
 ├── scripts/
 │   └── bump-version.ts             # Patch-version bump used by deploy
+├── packages/                       # Bun workspace packages
+│   ├── protocol/                   # @setpoint/protocol — shared goal/loop/game-state types + zod schemas
+│   └── client/                     # @setpoint/client — typed HTTP client for the daemon's API
 ├── src/
-│   ├── index.ts                    # Entry point — boot DB, manager, server; connect accounts
-│   ├── generated/
-│   │   └── api-types.ts            # Auto-generated from the OpenAPI spec (never hand-edited)
-│   ├── api/                        # SpaceMolt API client layer
-│   │   ├── client.ts               # Low-level HTTP client, envelope parsing, error classification
-│   │   ├── session.ts              # Session lifecycle, keepalive, 401 recovery, busy-ship polling
-│   │   └── endpoints.ts            # Typed per-action endpoint wrappers
+│   ├── index.ts                    # Entry point — boot DB, projector, manager, server; connect accounts
 │   ├── accounts/                   # Multi-account management
-│   │   ├── manager.ts              # Account lifecycle, connection queue, rate-limit staggering
-│   │   └── config.ts               # Account config schema, loading, credential parsing
-│   ├── state/                      # Game state tracking
+│   │   ├── lib-manager.ts          # Account lifecycle via @spacemolt/lib's Clerk-based connectOwned
+│   │   ├── lib-config.ts           # Parses config/dispatcher.json (clerkApiKey, accountsFilter)
+│   │   └── config.ts               # Loads config/registration.json (registration_code)
+│   ├── state/                      # Game state tracking (read-only SQLite projection of the lib cache)
 │   │   ├── database.ts             # SQLite schema (game_state + jobs)
 │   │   ├── store.ts                # Per-account state store, partial updates
-│   │   └── updater.ts              # Applies API responses to state, emits change events
-│   ├── dispatcher/                 # Declarative goal engine
-│   │   ├── goals.ts                # Goal / GoalContext / GoalResult contracts and helpers
-│   │   ├── sequence.ts             # Sequential goal execution
-│   │   ├── sequence-goal.ts        # Sequence wrapped as a Goal
-│   │   ├── loops.ts                # Generic loop engine (runLoop)
-│   │   ├── primitives/             # Single-action goals (navigate, dock, refuel, buy, sell, …)
-│   │   ├── compounds/              # Multi-step goal sequences (mining-run, sell-at-station, …)
-│   │   └── loops/                  # Loop definitions (mining, trading, hauling, …)
+│   │   ├── projector.ts            # Writes lib-cache state changes into the SQLite store
+│   │   └── attach-projector.ts     # Wires an account's onStateChange stream to the projector
+│   ├── dispatcher/                 # Declarative goal engine (runs on @spacemolt/lib)
+│   │   ├── goals.ts                # Shared goal result/status types (GoalResult, LoopResult, …)
+│   │   ├── lib-goal-context.ts     # LibGoalContext + LibGoalAccount boundary; makeLibGoalContext
+│   │   ├── lib-sequence.ts         # runLibSequence — compound step runner
+│   │   ├── lib-loops.ts            # runLibLoop — loop execution engine
+│   │   ├── state-freshness.ts      # Age-based refreshState escalation (STATE_FRESHNESS_TTL_MS)
+│   │   ├── lib-primitives/         # Single-action goals (navigate, dock, refuel, buy, sell, …)
+│   │   ├── lib-compounds/          # Multi-step goal sequences (mining-run, sell-at-station, …)
+│   │   └── lib-loops/              # Loop definitions (mining, trading, hauling, …)
 │   ├── server/                     # Local HTTP API
 │   │   ├── index.ts                # Server startup and route registration
 │   │   ├── router.ts               # Route matching
@@ -334,8 +369,8 @@ setpoint/
 │       ├── logger.ts               # Logging + token redaction
 │       ├── errors.ts               # Typed error classes
 │       └── bandwidth-tracker.ts    # Request/byte accounting
-├── tests/                          # Mirrors src/ structure; fixtures under tests/fixtures/
-├── config/                         # Runtime config (gitignored): accounts/, loops/, registration
+├── tests/                          # Mirrors src/ structure; packages/*/tests hold package-local tests
+├── config/                         # Runtime config (gitignored): dispatcher.json, registration.json, loops/
 └── data/                           # SQLite database (gitignored)
 ```
 
@@ -350,7 +385,7 @@ also exposes:
   registered goal and loop types.
 - `GET /accounts/:playerId/system` and
   `GET /accounts/:playerId/system/:systemId` — system data queried through a
-  specific account's session.
+  specific account's lib connection.
 - `POST /accounts/:playerId/goal/async` and `GET /jobs/:jobId` — submit a goal as
   a background job and poll its result.
 - `DELETE /accounts/:playerId/abort` — release an account from all in-progress
@@ -363,36 +398,33 @@ lock, retry, or timeout issue.
 
 | Constant | Value | Location | Purpose |
 |----------|-------|----------|---------|
-| `ACTION_IN_PROGRESS_WAIT_MS` | 12s | `src/api/session.ts` | Wait before re-polling when the game server reports a pending action (or in-transit). |
-| `MAX_ACTION_IN_PROGRESS_RETRIES` | 25 | `src/api/session.ts` | Max busy-ship polls before giving up (covers a worst-case reconnect mid-travel). |
-| `keepaliveIntervalMs` | 10min | `src/api/session.ts` | Interval between keepalive `get_state` polls. |
-| Session inactivity timeout | 30min | game server | Idle sessions are dropped server-side; keepalive prevents this. |
-| `staggerDelayMs` | 6.5s | `src/accounts/manager.ts` | Min spacing between auth calls / session creations (10 auth/min limit). |
-| Loop `retryDelayMs` | 30s | `src/dispatcher/loops.ts` | Delay before retrying a failed loop iteration (overridden by `retry-after` on rate limits). |
-| Loop `maxConsecutiveFailures` | 10 | `src/dispatcher/loops.ts` | Consecutive iteration failures before a loop stops. |
-| `DaemonClient.requestTimeoutMs` | 30s default, 5min for sync goals | `src/cli/client.ts` | CLI per-request timeout. |
-| `SpaceMoltClient` retry delay | 5s | `src/api/client.ts` | Delay between retries on 5xx errors. |
+| Loop `retryDelayMs` | 30s | `src/dispatcher/lib-loops.ts` | Delay before retrying a failed loop iteration. `@spacemolt/lib` already retries `rate_limited` mutations beneath the command layer, so a `runLibLoop` retry only fires for a genuine goal failure, never a rate-limit response. |
+| Loop `maxConsecutiveFailures` | 10 | `src/dispatcher/lib-loops.ts` | Consecutive iteration failures before a loop stops. |
+| `DaemonClient.requestTimeoutMs` | 30s default; unbounded (no timeout) for sync goals, `raw`, `accounts register`, `accounts remove`, and forced `abort` | `src/cli/client.ts` (default), `GAME_API_TIMEOUT_MS` in `src/cli/commands.ts` (per-command override) | CLI per-request timeout. |
 | Server `idleTimeout` | 255s | `src/server/index.ts` | Bun server-level idle timeout; long goals must use the async endpoint. |
 
 A "slow" mutation response (≈1 minute wall clock) is usually a command queued
-behind a ship in transit — `jump` holds the HTTP response for the full,
-distance-based transit, and a further mutation submitted during transit is held
-server-side until arrival. Queries always return instantly. When a failure takes
-several seconds that should have been instant, a timeout-plus-retry cycle is
-involved; work backwards from the timing to identify which constant matches.
+behind a ship in transit — `@spacemolt/lib` hides the two-phase mutation
+protocol, so an awaited `jump` doesn't resolve until the ship actually arrives,
+which can be the full distance-based transit time. Queries always return
+instantly. When a failure takes several seconds that should have been instant, a
+timeout-plus-retry cycle is involved; work backwards from the timing to identify
+which constant matches.
 
 ## Conventions for contributors
 
-- **Types are generated, never hand-written.** All request/response types come
-  from the OpenAPI spec via `bun run generate`, which reads a vendored
-  `openapi/spacemolt-v2.json` if present and otherwise fetches the live spec.
-  Regenerate rather than editing `src/generated/`.
-- **Every mutation response updates state.** No mutation path should bypass the
-  state updater.
-- **Per-account isolation is invariant.** Sessions, state, and queues must never
-  be shared across accounts.
-- **Respect rate limits proactively.** Pace auth/session calls rather than relying
-  on 429 responses to slow down.
+- **Types are never hand-written.** All request/response types come from the
+  `@spacemolt/lib` package — there is no local type generation. Update types by
+  bumping the `@spacemolt/lib` dependency.
+- **The lib's push-fed cache is the source of truth.** The SQLite store is a
+  read-only mirror of it, kept current by wiring every account's
+  `onStateChange` to the `StateProjector`. No code path should read stale state
+  by bypassing `account.state`.
+- **Per-account isolation is invariant.** Connections, state, and queues must
+  never be shared across accounts.
+- **Respect rate limits proactively.** `@spacemolt/lib` already paces
+  auth/connects and retries `rate_limited` mutations; don't add a second layer
+  of pacing on top of it.
 - **Goals are idempotent.** A goal that is already satisfied returns success
   without an API call.
 

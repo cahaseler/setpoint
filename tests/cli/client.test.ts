@@ -240,13 +240,4 @@ describe("DaemonClient", () => {
 		// Access private field via bracket notation for testing
 		expect((client as unknown as Record<string, unknown>)["requestTimeoutMs"]).toBe(30_000);
 	});
-
-	test("gameProxyUrl points at the daemon's game-API proxy on the configured port", () => {
-		expect(new DaemonClient({ port: 7580 }).gameProxyUrl()).toBe(
-			"http://localhost:7580/gameproxy/api/v2",
-		);
-		expect(new DaemonClient({ port: 9000 }).gameProxyUrl()).toBe(
-			"http://localhost:9000/gameproxy/api/v2",
-		);
-	});
 });

@@ -35,6 +35,8 @@ spacemolt
 # Claude Code
 .claude/
 .superpowers/
+# Internal planning/design docs — kept local, never published
+docs/superpowers/
 
 # Sandbox/environment artifacts
 .bash_profile

@@ -1,9 +1,7 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { ManagedAccount } from "../../src/accounts/manager.js";
-import type { GameEndpoints } from "../../src/api/endpoints.js";
-import { LoopManager, buildGoalContext } from "../../src/server/loop-manager.js";
+import { LoopManager } from "../../src/server/loop-manager.js";
 import type {
 	EnhancedMiningLoopApiOptions,
 	ExplorationLoopApiOptions,
@@ -14,192 +12,15 @@ import type {
 	StorageTransferLoopApiOptions,
 	TradingLoopApiOptions,
 } from "../../src/server/loop-manager.js";
-import type { StoredGameState } from "../../src/state/store.js";
+import { FakeLibManagedAccount } from "../dispatcher/lib-fakes.js";
 
 const TEST_CONFIG_DIR = join(import.meta.dir, "..", "..", "test-config-temp", "loop-mgr");
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
-function makeState(overrides: Partial<StoredGameState> = {}): StoredGameState {
-	return {
-		player: undefined,
-		ship: undefined,
-		cargo: undefined,
-		location: undefined,
-		modules: undefined,
-		skills: undefined,
-		missions: undefined,
-		queue: undefined,
-		updatedAt: new Date().toISOString(),
-		...overrides,
-	};
+function makeAccount(playerId = "p1"): FakeLibManagedAccount {
+	return new FakeLibManagedAccount({ playerId, username: "TestPlayer" });
 }
-
-function makeStore(state: StoredGameState | null = null) {
-	return {
-		getState: mock(() => state),
-		getSection: mock(() => undefined),
-		upsertSection: mock(() => {}),
-		deleteAccount: mock(() => {}),
-		getAllAccountIds: mock(() => []),
-	};
-}
-
-function makeAccount(playerId = "p1"): ManagedAccount {
-	return {
-		config: { username: "TestPlayer", password: "pass", player_id: playerId },
-		session: {} as ManagedAccount["session"],
-		endpoints: {
-			getState: mock(() => Promise.resolve({} as ReturnType<GameEndpoints["getState"]>)),
-		} as unknown as GameEndpoints,
-	};
-}
-
-// ── buildGoalContext ─────────────────────────────────────────────────
-
-describe("buildGoalContext", () => {
-	test("returns context with existing state from store", () => {
-		const state = makeState({ player: { credits: 100 } as StoredGameState["player"] });
-		const store = makeStore(state);
-		const account = makeAccount();
-
-		const ctx = buildGoalContext(account, store as never);
-		expect(ctx.endpoints).toBe(account.endpoints);
-		expect(ctx.state).toBe(state);
-	});
-
-	test("returns empty state when store has none", () => {
-		const store = makeStore(null);
-		const account = makeAccount();
-
-		const ctx = buildGoalContext(account, store as never);
-		expect(ctx.state.player).toBeUndefined();
-		expect(ctx.state.updatedAt).toBeDefined();
-	});
-
-	test("refreshState returns the cached store state without a live getState (stationary)", async () => {
-		const freshState = makeState({ player: { credits: 999 } as StoredGameState["player"] });
-		const store = makeStore(freshState);
-		const account = makeAccount();
-		const ctx = buildGoalContext(account, store as never);
-
-		const refresh = ctx.refreshState;
-		if (!refresh) throw new Error("refreshState should be defined");
-		const refreshed = await refresh();
-
-		// The mutation-derived store is trusted — no live get_state call.
-		expect(account.endpoints.getState).not.toHaveBeenCalled();
-		expect(refreshed).toBe(freshState);
-	});
-
-	test("refreshState falls back to a live getState when the store is empty (cold start)", async () => {
-		const store = makeStore(null);
-		const account = makeAccount();
-
-		const ctx = buildGoalContext(account, store as never);
-
-		const refresh = ctx.refreshState;
-		if (!refresh) throw new Error("refreshState should be defined");
-		await expect(refresh()).rejects.toThrow("No state available after refresh");
-		expect(account.endpoints.getState).toHaveBeenCalledTimes(1);
-	});
-
-	test("refreshState does a live getState when the cached state is stale (beyond TTL)", async () => {
-		// Reproduces the silent-no-op bug: the store says the ship is already at the
-		// target (zaniah), but that snapshot is stale — the ship actually moved away
-		// (e.g. a mobile station relocated it) without a mutation the daemon observed.
-		// A stale cache must NOT be trusted; refreshState must read live.
-		const stale = makeState({
-			location: { system_id: "zaniah", in_transit: false } as StoredGameState["location"],
-			updatedAt: new Date(Date.now() - 10 * 60_000).toISOString(), // 10 minutes old
-		});
-		const live = makeState({
-			location: { system_id: "frontier", in_transit: false } as StoredGameState["location"],
-		});
-		let refreshed = false;
-		const store = {
-			...makeStore(null),
-			getState: mock(() => (refreshed ? live : stale)),
-		};
-		const account = makeAccount();
-		const getStateMock = mock(() => {
-			refreshed = true;
-			return Promise.resolve({} as ReturnType<GameEndpoints["getState"]>);
-		});
-		account.endpoints = { getState: getStateMock } as unknown as GameEndpoints;
-		const ctx = buildGoalContext(account, store as never);
-
-		const refresh = ctx.refreshState;
-		if (!refresh) throw new Error("refreshState should be defined");
-		const result = await refresh();
-
-		// Stale cache → live read, returning the ship's true position.
-		expect(getStateMock).toHaveBeenCalledTimes(1);
-		expect(result).toBe(live);
-		expect(result.location?.system_id).toBe("frontier");
-	});
-
-	test("refreshState({ force: true }) does a live getState even when the cache is fresh", async () => {
-		// force bypasses the freshness shortcut — used after multi-hop jumps, whose
-		// responses carry no state, so the fresh-looking store still lags reality.
-		const stale = makeState({
-			location: { system_id: "sol", in_transit: false } as StoredGameState["location"],
-		});
-		const live = makeState({
-			location: { system_id: "target", in_transit: false } as StoredGameState["location"],
-		});
-		let refreshed = false;
-		const store = {
-			...makeStore(null),
-			getState: mock(() => (refreshed ? live : stale)),
-		};
-		const account = makeAccount();
-		const getStateMock = mock(() => {
-			refreshed = true;
-			return Promise.resolve({} as ReturnType<GameEndpoints["getState"]>);
-		});
-		account.endpoints = { getState: getStateMock } as unknown as GameEndpoints;
-		const ctx = buildGoalContext(account, store as never);
-
-		const refresh = ctx.refreshState;
-		if (!refresh) throw new Error("refreshState should be defined");
-		const result = await refresh({ force: true });
-
-		expect(getStateMock).toHaveBeenCalledTimes(1);
-		expect(result).toBe(live);
-	});
-
-	test("refreshState hits getState and waits when the cached state is mid-transit", async () => {
-		const inTransit = makeState({
-			location: { in_transit: true } as StoredGameState["location"],
-		});
-		const arrived = makeState({
-			location: { in_transit: false } as StoredGameState["location"],
-		});
-		let arrivedNow = false;
-		const store = {
-			...makeStore(null),
-			getState: mock(() => (arrivedNow ? arrived : inTransit)),
-		};
-		const account = makeAccount();
-		const getStateMock = mock(() => {
-			arrivedNow = true;
-			return Promise.resolve({} as ReturnType<GameEndpoints["getState"]>);
-		});
-		account.endpoints = { getState: getStateMock } as unknown as GameEndpoints;
-		const ctx = buildGoalContext(account, store as never);
-
-		const refresh = ctx.refreshState;
-		if (!refresh) throw new Error("refreshState should be defined");
-		const refreshed = await refresh();
-
-		// Mid-transit: must hit the wire and wait for arrival.
-		expect(getStateMock).toHaveBeenCalled();
-		expect(refreshed).toBe(arrived);
-	});
-});
-
-// ── LoopManager ──────────────────────────────────────────────────────
 
 describe("LoopManager", () => {
 	let manager: LoopManager;
@@ -225,12 +46,10 @@ describe("LoopManager", () => {
 
 describe("LoopManager start*Loop methods", () => {
 	let manager: LoopManager;
-	let store: ReturnType<typeof makeStore>;
-	let account: ManagedAccount;
+	let account: FakeLibManagedAccount;
 
 	beforeEach(() => {
 		manager = new LoopManager();
-		store = makeStore(makeState());
 		account = makeAccount("p1");
 	});
 
@@ -245,7 +64,7 @@ describe("LoopManager start*Loop methods", () => {
 			sellBaseId: "sol-base",
 			maxIterations: 0,
 		};
-		const status = manager.startMiningLoop("p1", options, account, store as never);
+		const status = manager.startMiningLoop("p1", options, account);
 		expect(status.type).toBe("mining");
 		expect(status.running).toBe(true);
 		expect(manager.isRunning("p1")).toBe(true);
@@ -259,10 +78,8 @@ describe("LoopManager start*Loop methods", () => {
 			sellStationPoiId: "sol-station",
 			sellBaseId: "sol-base",
 		};
-		manager.startMiningLoop("p1", options, account, store as never);
-		expect(() => manager.startMiningLoop("p1", options, account, store as never)).toThrow(
-			"already running",
-		);
+		manager.startMiningLoop("p1", options, account);
+		expect(() => manager.startMiningLoop("p1", options, account)).toThrow("already running");
 	});
 
 	// Enhanced mining
@@ -277,7 +94,7 @@ describe("LoopManager start*Loop methods", () => {
 			junkItemIds: ["rock", "debris"],
 			maxIterations: 0,
 		};
-		const status = manager.startEnhancedMiningLoop("p1", options, account, store as never);
+		const status = manager.startEnhancedMiningLoop("p1", options, account);
 		expect(status.type).toBe("enhanced-mining");
 		expect(status.running).toBe(true);
 		expect(manager.isRunning("p1")).toBe(true);
@@ -292,8 +109,8 @@ describe("LoopManager start*Loop methods", () => {
 			sellBaseId: "sol-base",
 			junkItemIds: [],
 		};
-		manager.startEnhancedMiningLoop("p1", options, account, store as never);
-		expect(() => manager.startEnhancedMiningLoop("p1", options, account, store as never)).toThrow(
+		manager.startEnhancedMiningLoop("p1", options, account);
+		expect(() => manager.startEnhancedMiningLoop("p1", options, account)).toThrow(
 			"already running",
 		);
 	});
@@ -309,7 +126,7 @@ describe("LoopManager start*Loop methods", () => {
 			sellBaseId: "sol-base",
 			maxIterations: 0,
 		};
-		const status = manager.startSalvageLoop("p1", options, account, store as never);
+		const status = manager.startSalvageLoop("p1", options, account);
 		expect(status.type).toBe("salvage");
 		expect(status.running).toBe(true);
 		expect(manager.isRunning("p1")).toBe(true);
@@ -323,10 +140,8 @@ describe("LoopManager start*Loop methods", () => {
 			sellStationPoiId: "sol-station",
 			sellBaseId: "sol-base",
 		};
-		manager.startSalvageLoop("p1", options, account, store as never);
-		expect(() => manager.startSalvageLoop("p1", options, account, store as never)).toThrow(
-			"already running",
-		);
+		manager.startSalvageLoop("p1", options, account);
+		expect(() => manager.startSalvageLoop("p1", options, account)).toThrow("already running");
 	});
 
 	// Trading
@@ -338,7 +153,7 @@ describe("LoopManager start*Loop methods", () => {
 			items: [{ itemId: "iron_ore", maxBuyPrice: 10, minSellPrice: 20 }],
 			maxIterations: 0,
 		};
-		const status = manager.startTradingLoop("p1", options, account, store as never);
+		const status = manager.startTradingLoop("p1", options, account);
 		expect(status.type).toBe("trading");
 		expect(status.running).toBe(true);
 		expect(manager.isRunning("p1")).toBe(true);
@@ -350,10 +165,8 @@ describe("LoopManager start*Loop methods", () => {
 			sellStation: { systemId: "sol", stationPoiId: "sell-station", baseId: "sell-base" },
 			items: [{ itemId: "iron_ore", maxBuyPrice: 10, minSellPrice: 20 }],
 		};
-		manager.startTradingLoop("p1", options, account, store as never);
-		expect(() => manager.startTradingLoop("p1", options, account, store as never)).toThrow(
-			"already running",
-		);
+		manager.startTradingLoop("p1", options, account);
+		expect(() => manager.startTradingLoop("p1", options, account)).toThrow("already running");
 	});
 
 	// Hauling
@@ -375,7 +188,7 @@ describe("LoopManager start*Loop methods", () => {
 			},
 			maxIterations: 0,
 		};
-		const status = manager.startHaulingLoop("p1", options, account, store as never);
+		const status = manager.startHaulingLoop("p1", options, account);
 		expect(status.type).toBe("hauling");
 		expect(status.running).toBe(true);
 		expect(manager.isRunning("p1")).toBe(true);
@@ -397,10 +210,8 @@ describe("LoopManager start*Loop methods", () => {
 				type: "personal-storage",
 			},
 		};
-		manager.startHaulingLoop("p1", options, account, store as never);
-		expect(() => manager.startHaulingLoop("p1", options, account, store as never)).toThrow(
-			"already running",
-		);
+		manager.startHaulingLoop("p1", options, account);
+		expect(() => manager.startHaulingLoop("p1", options, account)).toThrow("already running");
 	});
 
 	// Storage transfer
@@ -412,7 +223,7 @@ describe("LoopManager start*Loop methods", () => {
 			baseId: "sol-base",
 			maxIterations: 0,
 		};
-		const status = manager.startStorageTransferLoop("p1", options, account, store as never);
+		const status = manager.startStorageTransferLoop("p1", options, account);
 		expect(status.type).toBe("storage-transfer");
 		expect(status.running).toBe(true);
 		expect(manager.isRunning("p1")).toBe(true);
@@ -424,8 +235,8 @@ describe("LoopManager start*Loop methods", () => {
 			stationPoiId: "sol-station",
 			baseId: "sol-base",
 		};
-		manager.startStorageTransferLoop("p1", options, account, store as never);
-		expect(() => manager.startStorageTransferLoop("p1", options, account, store as never)).toThrow(
+		manager.startStorageTransferLoop("p1", options, account);
+		expect(() => manager.startStorageTransferLoop("p1", options, account)).toThrow(
 			"already running",
 		);
 	});
@@ -439,7 +250,7 @@ describe("LoopManager start*Loop methods", () => {
 			baseId: "sol-base",
 			maxIterations: 0,
 		};
-		const status = manager.startExplorationLoop("p1", options, account, store as never);
+		const status = manager.startExplorationLoop("p1", options, account);
 		expect(status.type).toBe("exploration");
 		expect(status.running).toBe(true);
 		expect(manager.isRunning("p1")).toBe(true);
@@ -451,10 +262,8 @@ describe("LoopManager start*Loop methods", () => {
 			stationPoiId: "sol-station",
 			baseId: "sol-base",
 		};
-		manager.startExplorationLoop("p1", options, account, store as never);
-		expect(() => manager.startExplorationLoop("p1", options, account, store as never)).toThrow(
-			"already running",
-		);
+		manager.startExplorationLoop("p1", options, account);
+		expect(() => manager.startExplorationLoop("p1", options, account)).toThrow("already running");
 	});
 
 	// Guard
@@ -468,7 +277,7 @@ describe("LoopManager start*Loop methods", () => {
 			guardPoiId: "belt-1",
 			maxIterations: 0,
 		};
-		const status = manager.startGuardLoop("p1", options, account, store as never);
+		const status = manager.startGuardLoop("p1", options, account);
 		expect(status.type).toBe("guard");
 		expect(status.running).toBe(true);
 		expect(manager.isRunning("p1")).toBe(true);
@@ -482,10 +291,8 @@ describe("LoopManager start*Loop methods", () => {
 			guardSystemId: "frontier",
 			guardPoiId: "belt-1",
 		};
-		manager.startGuardLoop("p1", options, account, store as never);
-		expect(() => manager.startGuardLoop("p1", options, account, store as never)).toThrow(
-			"already running",
-		);
+		manager.startGuardLoop("p1", options, account);
+		expect(() => manager.startGuardLoop("p1", options, account)).toThrow("already running");
 	});
 
 	// getStatus while running
@@ -499,7 +306,7 @@ describe("LoopManager start*Loop methods", () => {
 			sellBaseId: "sol-base",
 			maxIterations: 0,
 		};
-		manager.startMiningLoop("p1", options, account, store as never);
+		manager.startMiningLoop("p1", options, account);
 		const status = manager.getStatus("p1");
 		expect(status).toBeDefined();
 		expect(status?.running).toBe(true);
@@ -521,7 +328,7 @@ describe("LoopManager start*Loop methods", () => {
 			items: [{ itemId: "iron_ore", maxBuyPrice: 10, minSellPrice: 20 }],
 			maxIterations: 0,
 		};
-		manager.startTradingLoop("p1", options, account, store as never);
+		manager.startTradingLoop("p1", options, account);
 		// Promise is still pending (resolves on next microtask) → abortLoop returns true
 		expect(manager.abortLoop("p1")).toBe(true);
 	});
@@ -534,7 +341,7 @@ describe("LoopManager start*Loop methods", () => {
 			items: [{ itemId: "iron_ore", maxBuyPrice: 10, minSellPrice: 20 }],
 			maxIterations: 0,
 		};
-		manager.startTradingLoop("p1", options, account, store as never);
+		manager.startTradingLoop("p1", options, account);
 		// Wait for the loop to complete (0 iterations resolves immediately as microtask)
 		await new Promise<void>((r) => setTimeout(r, 10));
 		expect(manager.isRunning("p1")).toBe(false);

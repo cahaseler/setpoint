@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
-import type { ManagedAccount, PendingAccount } from "../../src/accounts/manager.js";
-import type { AccountManager } from "../../src/accounts/manager.js";
+import type { ClerkPlayer, GameState } from "@spacemolt/lib";
+import { markStateFresh } from "../../src/dispatcher/state-freshness.js";
 import {
 	type HandlerContext,
 	handleAbortAccount,
@@ -9,12 +9,10 @@ import {
 	handleDeleteAccount,
 	handleExecuteGoal,
 	handleExecuteGoalAsync,
-	handleGameProxy,
 	handleGetAccount,
 	handleGetJob,
 	handleGetLogLevel,
 	handleGetLoop,
-	handleGetSessionId,
 	handleGetState,
 	handleGetStateSection,
 	handleGetSystem,
@@ -33,19 +31,24 @@ import type { LoopManager, LoopStatus } from "../../src/server/loop-manager.js";
 import { createMemoryDatabase } from "../../src/state/database.js";
 import type { StateStore } from "../../src/state/store.js";
 import type { StoredGameState } from "../../src/state/store.js";
+import {
+	FakeLibManagedAccount,
+	type FakeLibManagerOverrides,
+	makeFakeLibManager,
+} from "../dispatcher/lib-fakes.js";
 
 // ── Mock Factories ───────────────────────────────────────────────────
 
 function makeAccount(
 	playerId: string,
 	username = "TestPlayer",
-	sessionId: string | undefined = "sess-123",
-): ManagedAccount {
-	return {
-		config: { username, password: "pass", player_id: playerId },
-		session: { sessionId } as unknown as ManagedAccount["session"],
-		endpoints: {} as ManagedAccount["endpoints"],
-	};
+	state?: GameState,
+): FakeLibManagedAccount {
+	return new FakeLibManagedAccount({
+		playerId,
+		username,
+		...(state ? { state } : {}),
+	});
 }
 
 function makeState(overrides: Partial<StoredGameState> = {}): StoredGameState {
@@ -65,66 +68,30 @@ function makeState(overrides: Partial<StoredGameState> = {}): StoredGameState {
 
 function makeContext(
 	overrides: Partial<{
-		accounts: ManagedAccount[];
+		accounts: FakeLibManagedAccount[];
 		state: StoredGameState | null;
 		loopStatus: LoopStatus | undefined;
 		loopRunning: boolean;
-		queueResult: PendingAccount | Error;
-		pendingAccounts: PendingAccount[];
-		pendingByPlayerId: PendingAccount | undefined;
-		pendingByUsername: PendingAccount | undefined;
-	}> = {},
+		/** Owned-but-not-connected players returned by manager.listOwned(). */
+		owned: ClerkPlayer[];
+		/** Usernames/ids the manager reports as currently connecting. */
+		connecting: string[];
+	}> &
+		FakeLibManagerOverrides = {},
 ): HandlerContext {
 	const accounts = overrides.accounts ?? [];
-	const accountMap = new Map(accounts.map((a) => [a.config.player_id, a]));
 
-	const manager = {
-		get size() {
-			return accountMap.size;
-		},
-		getAll: mock(() => accounts),
-		getByPlayerId: mock((id: string) => accountMap.get(id)),
-		getByUsername: mock((username: string) => {
-			const lower = username.toLowerCase();
-			return accounts.find((a) => a.config.username.toLowerCase() === lower);
-		}),
-		connectAccount: mock(() => Promise.resolve(accounts[0])),
-		connectByCredentials: mock(() => Promise.resolve(accounts[0])),
-		disconnectAccount: mock(() => {}),
-		queueAccount:
-			overrides.queueResult instanceof Error
-				? mock(() => {
-						throw overrides.queueResult;
-					})
-				: mock(
-						() =>
-							overrides.queueResult ?? {
-								username: "NewPlayer",
-								credentials: { username: "NewPlayer", password: "secret" },
-								status: "pending" as const,
-								queuedAt: new Date().toISOString(),
-								playerId: "p-new",
-							},
-					),
-		queueByCredentials:
-			overrides.queueResult instanceof Error
-				? mock(() => {
-						throw overrides.queueResult;
-					})
-				: mock(
-						() =>
-							overrides.queueResult ?? {
-								username: "NewPlayer",
-								credentials: { username: "NewPlayer", password: "secret" },
-								status: "pending" as const,
-								queuedAt: new Date().toISOString(),
-							},
-					),
-		getAllPending: mock(() => overrides.pendingAccounts ?? []),
-		getPending: mock(() => overrides.pendingByUsername),
-		getPendingByPlayerId: mock(() => overrides.pendingByPlayerId),
-		removePending: mock(() => true),
-	} as unknown as AccountManager;
+	const managerOverrides: FakeLibManagerOverrides = {
+		listOwned: overrides.listOwned ?? (() => Promise.resolve(overrides.owned ?? [])),
+		isConnecting:
+			overrides.isConnecting ??
+			((idOrUsername: string) =>
+				(overrides.connecting ?? []).some((u) => u.toLowerCase() === idOrUsername.toLowerCase())),
+		...(overrides.connectOne ? { connectOne: overrides.connectOne } : {}),
+		...(overrides.register ? { register: overrides.register } : {}),
+		...(overrides.remove ? { remove: overrides.remove } : {}),
+	};
+	const manager = makeFakeLibManager(accounts, managerOverrides);
 
 	const store = {
 		getState: mock(() => overrides.state ?? null),
@@ -252,7 +219,7 @@ describe("handleListAccounts", () => {
 		});
 		const ctx = makeContext({ accounts: [account], state });
 
-		const res = handleListAccounts(new Request("http://localhost/accounts"), {}, ctx);
+		const res = await handleListAccounts(new Request("http://localhost/accounts"), {}, ctx);
 		const body = (await res.json()) as Record<string, unknown>;
 		const accounts = body["accounts"] as Array<Record<string, unknown>>;
 		expect(accounts).toHaveLength(1);
@@ -276,41 +243,75 @@ describe("handleListAccounts", () => {
 		});
 		const ctx = makeContext({ accounts: [account], state });
 
-		const res = handleListAccounts(new Request("http://localhost/accounts"), {}, ctx);
+		const res = await handleListAccounts(new Request("http://localhost/accounts"), {}, ctx);
 		const body = (await res.json()) as Record<string, unknown>;
 		const accounts = body["accounts"] as Array<Record<string, unknown>>;
 		expect(accounts[0]?.["status"]).toBe("connected");
 	});
 
-	test("includes pending accounts in list", async () => {
-		const pendingAccounts: PendingAccount[] = [
-			{
-				username: "PendingPlayer",
-				credentials: { username: "PendingPlayer", password: "pass" },
-				status: "pending",
-				queuedAt: new Date().toISOString(),
-				playerId: "p-pending",
-			},
+	test("includes owned-but-not-connected accounts as disconnected", async () => {
+		const owned: ClerkPlayer[] = [
+			{ id: "cp1", username: "OwnedPlayer", empire: "solarian", hidden: false },
 		];
-		const ctx = makeContext({ pendingAccounts });
+		const ctx = makeContext({ owned });
 
-		const res = handleListAccounts(new Request("http://localhost/accounts"), {}, ctx);
+		const res = await handleListAccounts(new Request("http://localhost/accounts"), {}, ctx);
 		const body = (await res.json()) as Record<string, unknown>;
 		const accounts = body["accounts"] as Array<Record<string, unknown>>;
 		expect(accounts).toHaveLength(1);
-		expect(accounts[0]?.["player_id"]).toBe("p-pending");
-		expect(accounts[0]?.["username"]).toBe("PendingPlayer");
-		expect(accounts[0]?.["status"]).toBe("pending");
+		expect(accounts[0]?.["username"]).toBe("OwnedPlayer");
+		expect(accounts[0]?.["empire"]).toBe("solarian");
+		expect(accounts[0]?.["status"]).toBe("disconnected");
 		expect(accounts[0]?.["credits"]).toBeNull();
 		expect(accounts[0]?.["ship"]).toBeNull();
 		expect(accounts[0]?.["location"]).toBeNull();
 		expect(accounts[0]?.["loop"]).toBeNull();
 	});
 
+	test("marks owned accounts with an in-flight connect as connecting", async () => {
+		const owned: ClerkPlayer[] = [
+			{ id: "cp1", username: "Booting", empire: "nebula", hidden: false },
+		];
+		const ctx = makeContext({ owned, connecting: ["Booting"] });
+
+		const res = await handleListAccounts(new Request("http://localhost/accounts"), {}, ctx);
+		const body = (await res.json()) as Record<string, unknown>;
+		const accounts = body["accounts"] as Array<Record<string, unknown>>;
+		expect(accounts[0]?.["status"]).toBe("connecting");
+	});
+
+	test("excludes already-connected accounts from the owned list", async () => {
+		const account = makeAccount("p1", "Player1");
+		const owned: ClerkPlayer[] = [
+			{ id: "cp1", username: "Player1", empire: "solarian", hidden: false },
+		];
+		const ctx = makeContext({ accounts: [account], owned });
+
+		const res = await handleListAccounts(new Request("http://localhost/accounts"), {}, ctx);
+		const body = (await res.json()) as Record<string, unknown>;
+		const accounts = body["accounts"] as Array<Record<string, unknown>>;
+		expect(accounts).toHaveLength(1);
+		expect(accounts[0]?.["status"]).toBe("connected");
+	});
+
+	test("degrades to connected-only when listOwned fails", async () => {
+		const account = makeAccount("p1", "Player1");
+		const ctx = makeContext({
+			accounts: [account],
+			listOwned: () => Promise.reject(new Error("Clerk unavailable")),
+		});
+
+		const res = await handleListAccounts(new Request("http://localhost/accounts"), {}, ctx);
+		const body = (await res.json()) as Record<string, unknown>;
+		const accounts = body["accounts"] as Array<Record<string, unknown>>;
+		expect(accounts).toHaveLength(1);
+		expect(accounts[0]?.["status"]).toBe("connected");
+	});
+
 	test("returns empty array when no accounts", async () => {
 		const ctx = makeContext();
 
-		const res = handleListAccounts(new Request("http://localhost/accounts"), {}, ctx);
+		const res = await handleListAccounts(new Request("http://localhost/accounts"), {}, ctx);
 		const body = (await res.json()) as Record<string, unknown>;
 		const accounts = body["accounts"] as unknown[];
 		expect(accounts).toHaveLength(0);
@@ -349,30 +350,6 @@ describe("handleGetAccount", () => {
 		expect(body["recentJobs"]).toEqual([]);
 	});
 
-	test("returns pending account by player_id", async () => {
-		const pending: PendingAccount = {
-			username: "PendingPlayer",
-			credentials: { username: "PendingPlayer", password: "pass" },
-			status: "connecting",
-			queuedAt: new Date().toISOString(),
-			playerId: "p-pending",
-		};
-		const ctx = makeContext({ pendingByPlayerId: pending });
-
-		const res = handleGetAccount(
-			new Request("http://localhost/accounts/p-pending"),
-			{ playerId: "p-pending" },
-			ctx,
-		);
-		const body = (await res.json()) as Record<string, unknown>;
-		expect(res.status).toBe(200);
-		expect(body["player_id"]).toBe("p-pending");
-		expect(body["username"]).toBe("PendingPlayer");
-		expect(body["status"]).toBe("connecting");
-		expect(body["state"]).toBeNull();
-		expect(body["loop"]).toBeNull();
-	});
-
 	test("returns 404 for unknown account", async () => {
 		const ctx = makeContext();
 
@@ -395,54 +372,22 @@ describe("handleGetAccount", () => {
 // ── Add Account ──────────────────────────────────────────────────────
 
 describe("handleAddAccount", () => {
-	test("queues account with full config and returns 202", async () => {
-		const ctx = makeContext();
-
-		const req = new Request("http://localhost/accounts", {
-			method: "POST",
-			body: JSON.stringify({
-				username: "NewPlayer",
-				password: "secret",
-				player_id: "p-new",
-			}),
-			headers: { "Content-Type": "application/json" },
-		});
-
-		const res = await handleAddAccount(req, {}, ctx);
-		const body = (await res.json()) as Record<string, unknown>;
-		expect(res.status).toBe(202);
-		expect(body["player_id"]).toBe("p-new");
-		expect(body["username"]).toBe("NewPlayer");
-		expect(body["status"]).toBe("pending");
-		expect(body["message"]).toBe("Account queued for connection");
-	});
-
-	test("queues account with credentials only and returns 202", async () => {
+	test("starts a background connect for an owned account and returns 202", async () => {
 		const ctx = makeContext({
-			queueResult: {
-				username: "CredPlayer",
-				credentials: { username: "CredPlayer", password: "secret" },
-				status: "pending",
-				queuedAt: new Date().toISOString(),
-			},
+			connectOne: () => Promise.resolve(makeAccount("p-new", "OwnedPlayer")),
 		});
 
 		const req = new Request("http://localhost/accounts", {
 			method: "POST",
-			body: JSON.stringify({
-				username: "CredPlayer",
-				password: "secret",
-			}),
+			body: JSON.stringify({ username: "OwnedPlayer" }),
 			headers: { "Content-Type": "application/json" },
 		});
 
 		const res = await handleAddAccount(req, {}, ctx);
 		const body = (await res.json()) as Record<string, unknown>;
 		expect(res.status).toBe(202);
-		expect(body["player_id"]).toBeNull();
-		expect(body["username"]).toBe("CredPlayer");
-		expect(body["status"]).toBe("pending");
-		expect(body["message"]).toBe("Account queued for connection");
+		expect(body["username"]).toBe("OwnedPlayer");
+		expect(body["status"]).toBe("connecting");
 	});
 
 	test("returns 400 for invalid JSON body", async () => {
@@ -457,12 +402,12 @@ describe("handleAddAccount", () => {
 		expect(res.status).toBe(400);
 	});
 
-	test("returns 400 for invalid account config", async () => {
+	test("returns 400 when username is missing", async () => {
 		const ctx = makeContext();
 
 		const req = new Request("http://localhost/accounts", {
 			method: "POST",
-			body: JSON.stringify({ username: "" }),
+			body: JSON.stringify({ password: "secret" }),
 			headers: { "Content-Type": "application/json" },
 		});
 
@@ -470,23 +415,18 @@ describe("handleAddAccount", () => {
 		expect(res.status).toBe(400);
 	});
 
-	test("returns 409 when queueAccount throws duplicate", async () => {
-		const ctx = makeContext({ queueResult: new Error("Account already connected") });
+	test("returns 409 when the account is already connected", async () => {
+		const account = makeAccount("p1", "Existing");
+		const ctx = makeContext({ accounts: [account] });
 
 		const req = new Request("http://localhost/accounts", {
 			method: "POST",
-			body: JSON.stringify({
-				username: "NewPlayer",
-				password: "secret",
-				player_id: "p-new",
-			}),
+			body: JSON.stringify({ username: "Existing" }),
 			headers: { "Content-Type": "application/json" },
 		});
 
 		const res = await handleAddAccount(req, {}, ctx);
 		expect(res.status).toBe(409);
-		const body = (await res.json()) as Record<string, unknown>;
-		expect(body["error"]).toBe("Account already connected");
 	});
 });
 
@@ -505,7 +445,7 @@ describe("handleDeleteAccount", () => {
 		const body = (await res.json()) as Record<string, unknown>;
 		expect(res.status).toBe(200);
 		expect(body["message"]).toBe("Account disconnected");
-		expect(ctx.manager.disconnectAccount).toHaveBeenCalledWith("p1");
+		expect(body["player_id"]).toBe("p1");
 	});
 
 	test("stops running loop before disconnecting", async () => {
@@ -519,28 +459,6 @@ describe("handleDeleteAccount", () => {
 		);
 		expect(res.status).toBe(200);
 		expect(ctx.loopManager.abortLoop).toHaveBeenCalledWith("p1");
-	});
-
-	test("removes pending account and returns success", async () => {
-		const pending: PendingAccount = {
-			username: "PendingPlayer",
-			credentials: { username: "PendingPlayer", password: "pass" },
-			status: "pending",
-			queuedAt: new Date().toISOString(),
-			playerId: "p-pending",
-		};
-		const ctx = makeContext({ pendingByPlayerId: pending });
-
-		const res = await handleDeleteAccount(
-			new Request("http://localhost/accounts/p-pending", { method: "DELETE" }),
-			{ playerId: "p-pending" },
-			ctx,
-		);
-		const body = (await res.json()) as Record<string, unknown>;
-		expect(res.status).toBe(200);
-		expect(body["message"]).toBe("Pending account removed");
-		expect(body["username"]).toBe("PendingPlayer");
-		expect(ctx.manager.removePending).toHaveBeenCalledWith("PendingPlayer");
 	});
 
 	test("returns 404 for unknown account", async () => {
@@ -826,6 +744,27 @@ describe("handlePatchLoop", () => {
 		const res = await handlePatchLoop(req, { playerId: "p1" }, ctx);
 		expect(res.status).toBe(200);
 	});
+
+	test("returns 400 for a wrong-typed patch field value", async () => {
+		const account = makeAccount("p1");
+		const loopStatus: LoopStatus = {
+			type: "enhanced-mining",
+			startedAt: "2026-01-01T00:00:00.000Z",
+			running: true,
+			options: { junkItemIds: ["rock_dust"] },
+		};
+		const ctx = makeContext({ accounts: [account], loopStatus });
+
+		const req = new Request("http://localhost/accounts/p1/loop", {
+			method: "PATCH",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ junkItemIds: "not-an-array" }),
+		});
+		const res = await handlePatchLoop(req, { playerId: "p1" }, ctx);
+		const body = (await res.json()) as Record<string, unknown>;
+		expect(res.status).toBe(400);
+		expect(body["error"]).toContain("junkItemIds");
+	});
 });
 
 // ── Start Loop ───────────────────────────────────────────────────────
@@ -1026,7 +965,7 @@ describe("handleStartLoop", () => {
 		expect(opts["minCredits"]).toBe(2000);
 	});
 
-	test("ignores cashSource personal (only faction is valid)", async () => {
+	test("rejects cashSource personal (only faction is valid)", async () => {
 		const account = makeAccount("p1");
 		const ctx = makeContext({ accounts: [account] });
 
@@ -1047,11 +986,33 @@ describe("handleStartLoop", () => {
 		});
 
 		const res = await handleStartLoop(req, { playerId: "p1" }, ctx);
-		expect(res.status).toBe(201);
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as Record<string, unknown>;
+		expect(body["error"]).toContain("cashSource");
+	});
 
-		const calls = (ctx.loopManager.startMiningLoop as ReturnType<typeof mock>).mock.calls;
-		const opts = calls[0]?.[1] as Record<string, unknown>;
-		expect(opts["cashSource"]).toBeUndefined();
+	test("returns 400 with a zod-formatted message for a missing required mining option", async () => {
+		const account = makeAccount("p1");
+		const ctx = makeContext({ accounts: [account] });
+
+		const req = new Request("http://localhost/accounts/p1/loop", {
+			method: "POST",
+			body: JSON.stringify({
+				type: "mining",
+				options: {
+					beltPoiId: "belt-1",
+					sellSystemId: "sys-2",
+					sellStationPoiId: "station-1",
+					sellBaseId: "base-1",
+				},
+			}),
+			headers: { "Content-Type": "application/json" },
+		});
+
+		const res = await handleStartLoop(req, { playerId: "p1" }, ctx);
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as Record<string, unknown>;
+		expect(body["error"]).toBe("options.miningSystemId: Required");
 	});
 
 	test("starts salvage loop with required options", async () => {
@@ -1939,7 +1900,9 @@ describe("handleExecuteGoal", () => {
 		const res = await handleExecuteGoal(req, { playerId: "p1" }, ctx);
 		expect(res.status).toBe(400);
 		const body = (await res.json()) as Record<string, unknown>;
-		expect(body["error"] as string).toContain("targetSystemId");
+		// Validated via the @setpoint/protocol zod schema — the goal-registry
+		// formats the ZodError into a readable "options.<field>: <message>" string.
+		expect(body["error"] as string).toBe("options.targetSystemId: Required");
 	});
 
 	test("waits for executing goal to finish then proceeds", async () => {
@@ -2004,6 +1967,40 @@ describe("handleExecuteGoal", () => {
 
 		// Lock must be cleared regardless of outcome
 		expect(ctx.executingGoals.has("p1")).toBe(false);
+	});
+
+	test("refreshes state before executing when the cache is stale", async () => {
+		const account = makeAccount("p1");
+		markStateFresh(account, Date.now() - 1_000_000); // long past the freshness TTL
+		const ctx = makeContext({ accounts: [account] });
+		const req = new Request("http://localhost/accounts/p1/goal", {
+			method: "POST",
+			body: JSON.stringify({ type: "ensure-undocked" }),
+			headers: { "Content-Type": "application/json" },
+		});
+
+		const res = await handleExecuteGoal(req, { playerId: "p1" }, ctx);
+		expect(res.status).toBe(200);
+		await res.text(); // drain to let the goal (and its own post-completion refresh) finish
+		// 2 = 1 pre-execute refresh (stale cache) + 1 unconditional post-completion refresh.
+		expect(account.refreshCalls).toBe(2);
+	});
+
+	test("does not refresh state before executing when the cache is fresh", async () => {
+		const account = makeAccount("p1");
+		markStateFresh(account); // just marked — well within the TTL
+		const ctx = makeContext({ accounts: [account] });
+		const req = new Request("http://localhost/accounts/p1/goal", {
+			method: "POST",
+			body: JSON.stringify({ type: "ensure-undocked" }),
+			headers: { "Content-Type": "application/json" },
+		});
+
+		const res = await handleExecuteGoal(req, { playerId: "p1" }, ctx);
+		expect(res.status).toBe(200);
+		await res.text(); // drain to let the goal (and its own post-completion refresh) finish
+		// 1 = 0 pre-execute refresh (fresh cache, skipped) + 1 unconditional post-completion refresh.
+		expect(account.refreshCalls).toBe(1);
 	});
 });
 
@@ -2099,6 +2096,36 @@ describe("handleExecuteGoalAsync", () => {
 		expect(res.status).toBe(400);
 	});
 
+	test("returns 400 with a validation message for missing required options", async () => {
+		const account = makeAccount("p1");
+		const ctx = makeContext({ accounts: [account] });
+		const req = new Request("http://localhost/accounts/p1/goal/async", {
+			method: "POST",
+			body: JSON.stringify({ type: "navigate-to-system", options: {} }),
+			headers: { "Content-Type": "application/json" },
+		});
+
+		const res = await handleExecuteGoalAsync(req, { playerId: "p1" }, ctx);
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as Record<string, unknown>;
+		expect(body["error"] as string).toBe("options.targetSystemId: Required");
+	});
+
+	test("returns 410 deprecated for the removed craft goal", async () => {
+		const account = makeAccount("p1");
+		const ctx = makeContext({ accounts: [account] });
+		const req = new Request("http://localhost/accounts/p1/goal/async", {
+			method: "POST",
+			body: JSON.stringify({ type: "craft", options: { recipeId: "iron_bar" } }),
+			headers: { "Content-Type": "application/json" },
+		});
+
+		const res = await handleExecuteGoalAsync(req, { playerId: "p1" }, ctx);
+		expect(res.status).toBe(410);
+		const body = (await res.json()) as Record<string, unknown>;
+		expect(body["error"] as string).toContain("DEPRECATED");
+	});
+
 	test("returns 409 when a sync goal is already executing for this account", async () => {
 		const account = makeAccount("p1");
 		const ctx = makeContext({ accounts: [account] });
@@ -2118,6 +2145,40 @@ describe("handleExecuteGoalAsync", () => {
 
 		const res = await handleExecuteGoalAsync(req, { playerId: "p1" }, ctx);
 		expect(res.status).toBe(409);
+	});
+
+	test("refreshes state before executing when the cache is stale", async () => {
+		const account = makeAccount("p1");
+		markStateFresh(account, Date.now() - 1_000_000); // long past the freshness TTL
+		const ctx = makeContext({ accounts: [account] });
+		const req = new Request("http://localhost/accounts/p1/goal/async", {
+			method: "POST",
+			body: JSON.stringify({ type: "ensure-undocked" }),
+			headers: { "Content-Type": "application/json" },
+		});
+
+		const res = await handleExecuteGoalAsync(req, { playerId: "p1" }, ctx);
+		expect(res.status).toBe(202);
+		// 2 = 1 pre-execute refresh (stale cache) + 1 unconditional post-completion refresh
+		// (the fake job's goal.execute()/.then() chain settles via microtasks before this
+		// await resolves, same as the sync handler).
+		expect(account.refreshCalls).toBe(2);
+	});
+
+	test("does not refresh state before executing when the cache is fresh", async () => {
+		const account = makeAccount("p1");
+		markStateFresh(account); // just marked — well within the TTL
+		const ctx = makeContext({ accounts: [account] });
+		const req = new Request("http://localhost/accounts/p1/goal/async", {
+			method: "POST",
+			body: JSON.stringify({ type: "ensure-undocked" }),
+			headers: { "Content-Type": "application/json" },
+		});
+
+		const res = await handleExecuteGoalAsync(req, { playerId: "p1" }, ctx);
+		expect(res.status).toBe(202);
+		// 1 = 0 pre-execute refresh (fresh cache, skipped) + 1 unconditional post-completion refresh.
+		expect(account.refreshCalls).toBe(1);
 	});
 });
 
@@ -2189,107 +2250,6 @@ describe("handleGetJob", () => {
 		expect(body["status"]).toBe("failed");
 		expect(body["error"]).toBe("something went wrong");
 		expect(typeof body["completedAt"]).toBe("string");
-	});
-});
-
-// ── Get Session ID ──────────────────────────────────────────────────
-
-describe("handleGetSessionId", () => {
-	test("returns session_id for connected account", async () => {
-		const account = makeAccount("p1", "TestPlayer", "sess-abc");
-		account.session = {
-			sessionId: "sess-abc",
-			execute: async () => ({}),
-		} as unknown as ManagedAccount["session"];
-		const ctx = makeContext({ accounts: [account] });
-
-		const res = await handleGetSessionId(
-			new Request("http://localhost/accounts/p1/session"),
-			{ playerId: "p1" },
-			ctx,
-		);
-		const body = (await res.json()) as Record<string, unknown>;
-		expect(res.status).toBe(200);
-		expect(body["session_id"]).toBe("sess-abc");
-		expect(body["player_id"]).toBe("p1");
-		expect(body["username"]).toBe("TestPlayer");
-	});
-
-	test("resolves by username (case-insensitive)", async () => {
-		const account = makeAccount("p1", "TestPlayer", "sess-abc");
-		account.session = {
-			sessionId: "sess-abc",
-			execute: async () => ({}),
-		} as unknown as ManagedAccount["session"];
-		const ctx = makeContext({ accounts: [account] });
-
-		const res = await handleGetSessionId(
-			new Request("http://localhost/accounts/testplayer/session"),
-			{ playerId: "testplayer" },
-			ctx,
-		);
-		const body = (await res.json()) as Record<string, unknown>;
-		expect(res.status).toBe(200);
-		expect(body["session_id"]).toBe("sess-abc");
-	});
-
-	test("returns 404 for unknown account", async () => {
-		const ctx = makeContext();
-
-		const res = await handleGetSessionId(
-			new Request("http://localhost/accounts/nope/session"),
-			{ playerId: "nope" },
-			ctx,
-		);
-		expect(res.status).toBe(404);
-	});
-
-	test("returns 503 when session has no active ID", async () => {
-		const account = makeAccount("p1", "TestPlayer");
-		// Override session to have no sessionId (simulating recovering/disconnected state)
-		account.session = { sessionId: undefined } as unknown as ManagedAccount["session"];
-		const ctx = makeContext({ accounts: [account] });
-
-		const res = await handleGetSessionId(
-			new Request("http://localhost/accounts/p1/session"),
-			{ playerId: "p1" },
-			ctx,
-		);
-		expect(res.status).toBe(503);
-	});
-
-	test("returns 400 when playerId missing", async () => {
-		const ctx = makeContext();
-
-		const res = await handleGetSessionId(
-			new Request("http://localhost/accounts//session"),
-			{},
-			ctx,
-		);
-		expect(res.status).toBe(400);
-	});
-
-	test("recovers stale session before returning", async () => {
-		const account = makeAccount("p1", "TestPlayer", "stale-sess");
-		// Simulate: execute triggers recovery, which updates sessionId
-		account.session = {
-			sessionId: "stale-sess",
-			execute: async () => {
-				// Recovery happened — sessionId updated
-				(account.session as unknown as { sessionId: string }).sessionId = "fresh-sess";
-				return {};
-			},
-		} as unknown as ManagedAccount["session"];
-		const ctx = makeContext({ accounts: [account] });
-
-		const res = await handleGetSessionId(
-			new Request("http://localhost/accounts/p1/session"),
-			{ playerId: "p1" },
-			ctx,
-		);
-		const body = (await res.json()) as Record<string, unknown>;
-		expect(res.status).toBe(200);
-		expect(body["session_id"]).toBe("fresh-sess");
 	});
 });
 
@@ -2375,18 +2335,10 @@ describe("handleRawAction", () => {
 	test("normalizes short tool group name by prepending spacemolt_", async () => {
 		let capturedToolGroup = "";
 		const account = makeAccount("p1");
-		account.session = {
-			...account.session,
-			execute: mock(async (toolGroup: string) => {
-				capturedToolGroup = toolGroup;
-				return {
-					result: "ok",
-					structuredContent: {},
-					notifications: [],
-					session: undefined,
-				};
-			}),
-		} as unknown as ManagedAccount["session"];
+		account.send = mock(async (toolGroup: string) => {
+			capturedToolGroup = toolGroup;
+			return { command: "list", tick: 3, delta: { ship: { fuel: 9 } } };
+		}) as typeof account.send;
 		const ctx = makeContext({ accounts: [account] });
 		const req = new Request("http://localhost/accounts/p1/raw", {
 			method: "POST",
@@ -2402,18 +2354,10 @@ describe("handleRawAction", () => {
 	test("does not modify tool group that already starts with spacemolt", async () => {
 		let capturedToolGroup = "";
 		const account = makeAccount("p1");
-		account.session = {
-			...account.session,
-			execute: mock(async (toolGroup: string) => {
-				capturedToolGroup = toolGroup;
-				return {
-					result: "ok",
-					structuredContent: {},
-					notifications: [],
-					session: undefined,
-				};
-			}),
-		} as unknown as ManagedAccount["session"];
+		account.send = mock(async (toolGroup: string) => {
+			capturedToolGroup = toolGroup;
+			return { result: "ok", structuredContent: {} };
+		}) as typeof account.send;
 		const ctx = makeContext({ accounts: [account] });
 		const req = new Request("http://localhost/accounts/p1/raw", {
 			method: "POST",
@@ -2424,6 +2368,52 @@ describe("handleRawAction", () => {
 		const res = await handleRawAction(req, { playerId: "p1" }, ctx);
 		expect(res.status).toBe(200);
 		expect(capturedToolGroup).toBe("spacemolt_market");
+	});
+
+	test("normalizes a mutation result to the delta envelope (no notifications)", async () => {
+		const account = makeAccount("p1");
+		account.send = mock(async () => ({
+			command: "dock",
+			tick: 7,
+			delta: { location: { docked_at: "base-1" } },
+			autoDocked: true,
+		})) as typeof account.send;
+		const ctx = makeContext({ accounts: [account] });
+		const req = new Request("http://localhost/accounts/p1/raw", {
+			method: "POST",
+			body: JSON.stringify({ toolGroup: "spacemolt", action: "dock" }),
+			headers: { "Content-Type": "application/json" },
+		});
+
+		const res = await handleRawAction(req, { playerId: "p1" }, ctx);
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as Record<string, unknown>;
+		expect(body["command"]).toBe("dock");
+		expect(body["tick"]).toBe(7);
+		expect(body["result"]).toEqual({ location: { docked_at: "base-1" } });
+		expect(body["structuredContent"]).toEqual({ location: { docked_at: "base-1" } });
+		expect("notifications" in body).toBe(false);
+	});
+
+	test("normalizes a query result and omits notifications", async () => {
+		const account = makeAccount("p1");
+		account.send = mock(async () => ({
+			result: "rendered",
+			structuredContent: { orders: [{ id: "o1" }] },
+		})) as typeof account.send;
+		const ctx = makeContext({ accounts: [account] });
+		const req = new Request("http://localhost/accounts/p1/raw", {
+			method: "POST",
+			body: JSON.stringify({ toolGroup: "spacemolt_market", action: "view_market" }),
+			headers: { "Content-Type": "application/json" },
+		});
+
+		const res = await handleRawAction(req, { playerId: "p1" }, ctx);
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as Record<string, unknown>;
+		expect(body["result"]).toBe("rendered");
+		expect(body["structuredContent"]).toEqual({ orders: [{ id: "o1" }] });
+		expect("notifications" in body).toBe(false);
 	});
 });
 
@@ -2604,8 +2594,7 @@ describe("handleGetSystem", () => {
 				structuredContent: { system: { id: "sys-current", name: "Current System" } },
 			}),
 		);
-		account.endpoints.getSystem =
-			mockGetSystem as unknown as ManagedAccount["endpoints"]["getSystem"];
+		account.query = mockGetSystem as unknown as typeof account.query;
 		const ctx = makeContext({ accounts: [account] });
 
 		const res = await handleGetSystem(
@@ -2628,8 +2617,7 @@ describe("handleGetSystem", () => {
 				structuredContent: { system: { id: "sol", name: "Sol" } },
 			}),
 		);
-		account.endpoints.getSystem =
-			mockGetSystem as unknown as ManagedAccount["endpoints"]["getSystem"];
+		account.query = mockGetSystem as unknown as typeof account.query;
 		// Account is in sol — state has matching system_id
 		const ctx = makeContext({
 			accounts: [account],
@@ -2661,124 +2649,5 @@ describe("handleGetSystem", () => {
 		);
 
 		expect(res.status).toBe(404);
-	});
-});
-
-describe("handleGameProxy", () => {
-	test("forwards the sub-path, session, body, and content-type to the client and relays the response", async () => {
-		const ctx = makeContext();
-		const forward = mock(
-			async (
-				_method: string,
-				_path: string,
-				_body: string | undefined,
-				_sessionId: string | undefined,
-				_contentType: string | undefined,
-			) => ({
-				status: 200,
-				contentType: "application/json",
-				body: JSON.stringify({ structuredContent: { ok: true } }),
-			}),
-		);
-		ctx.client = { forward } as unknown as HandlerContext["client"];
-
-		const req = new Request("http://localhost/gameproxy/api/v2/spacemolt/travel?foo=bar", {
-			method: "POST",
-			body: JSON.stringify({ id: "sol" }),
-			headers: { "Content-Type": "application/json", "X-Session-Id": "sess-abc" },
-		});
-
-		const res = await handleGameProxy(req, {}, ctx);
-
-		expect(res.status).toBe(200);
-		expect(res.headers.get("Content-Type")).toBe("application/json");
-		expect(await res.json()).toEqual({ structuredContent: { ok: true } });
-
-		const call = forward.mock.calls[0];
-		expect(call?.[0]).toBe("POST");
-		expect(call?.[1]).toBe("/api/v2/spacemolt/travel?foo=bar");
-		expect(call?.[2]).toBe(JSON.stringify({ id: "sol" }));
-		expect(call?.[3]).toBe("sess-abc");
-		expect(call?.[4]).toBe("application/json");
-	});
-
-	test("rejects a path outside the /api/v2/ namespace with 400", async () => {
-		const ctx = makeContext();
-		const forward = mock(async () => ({
-			status: 200,
-			contentType: "application/json",
-			body: "{}",
-		}));
-		ctx.client = { forward } as unknown as HandlerContext["client"];
-
-		const req = new Request("http://localhost/gameproxy/etc/passwd", { method: "GET" });
-		const res = await handleGameProxy(req, {}, ctx);
-
-		expect(res.status).toBe(400);
-		expect(forward).not.toHaveBeenCalled();
-	});
-
-	test("relays a non-2xx game response verbatim instead of throwing", async () => {
-		const ctx = makeContext();
-		ctx.client = {
-			forward: mock(async () => ({
-				status: 400,
-				contentType: "application/json",
-				body: JSON.stringify({ error: { code: "bad_request" } }),
-			})),
-		} as unknown as HandlerContext["client"];
-
-		const req = new Request("http://localhost/gameproxy/api/v2/spacemolt/buy", {
-			method: "POST",
-			body: "{}",
-		});
-
-		const res = await handleGameProxy(req, {}, ctx);
-		expect(res.status).toBe(400);
-		expect(await res.json()).toEqual({ error: { code: "bad_request" } });
-	});
-
-	test("does not send a body for GET requests", async () => {
-		const ctx = makeContext();
-		const forward = mock(
-			async (
-				_method: string,
-				_path: string,
-				_body: string | undefined,
-				_sessionId: string | undefined,
-				_contentType: string | undefined,
-			) => ({
-				status: 200,
-				contentType: "application/json",
-				body: "{}",
-			}),
-		);
-		ctx.client = { forward } as unknown as HandlerContext["client"];
-
-		const req = new Request("http://localhost/gameproxy/api/v2/notifications", {
-			method: "GET",
-		});
-		await handleGameProxy(req, {}, ctx);
-
-		expect(forward.mock.calls[0]?.[0]).toBe("GET");
-		expect(forward.mock.calls[0]?.[1]).toBe("/api/v2/notifications");
-		expect(forward.mock.calls[0]?.[2]).toBeUndefined();
-	});
-
-	test("returns 502 when the forward fails", async () => {
-		const ctx = makeContext();
-		ctx.client = {
-			forward: mock(async () => {
-				throw new Error("network down");
-			}),
-		} as unknown as HandlerContext["client"];
-
-		const req = new Request("http://localhost/gameproxy/api/v2/spacemolt/get_state", {
-			method: "POST",
-			body: "{}",
-		});
-
-		const res = await handleGameProxy(req, {}, ctx);
-		expect(res.status).toBe(502);
 	});
 });

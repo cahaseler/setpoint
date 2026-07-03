@@ -1,259 +1,219 @@
+import { deprecatedGoalMessage, goalSchemas } from "@setpoint/protocol";
 import {
-	BuyAtStation,
-	EnhancedMiningRun,
-	EnsureLoadout,
-	EnsureMarketbook,
-	FuelRescue,
-	LoadAtStation,
-	MineUntilFull,
-	MineWithJettison,
-	MiningRun,
-	PrepareAtStation,
-	SellAtStation,
-	SellAtStationPriced,
-	TransferStorageToFaction,
-	UNLOAD_DEST_TYPES,
-	UnloadAtStation,
-} from "../dispatcher/compounds/index.js";
-import type { Goal } from "../dispatcher/goals.js";
+	LibBuyAtStation,
+	LibEnhancedMiningRun,
+	LibEnsureLoadout,
+	LibEnsureMarketbook,
+	LibFuelRescue,
+	LibLoadAtStation,
+	LibMineUntilFull,
+	LibMineWithJettison,
+	LibMiningRun,
+	LibPrepareAtStation,
+	LibSellAtStation,
+	LibSellAtStationPriced,
+	LibTransferStorageToFaction,
+	LibUnloadAtStation,
+} from "../dispatcher/lib-compounds/index.js";
+import type { LibGoal } from "../dispatcher/lib-goal-context.js";
 import {
-	AbandonMission,
-	AcceptMission,
-	BuyItems,
-	CancelOrders,
-	CompleteMission,
-	CreateMarketBuyOrder,
-	CreateMarketSellOrder,
-	DepositToFactionStorage,
-	DockAt,
-	EnsureCreditsFromFaction,
-	EnsureEmptyCargo,
-	EnsureFueled,
-	EnsureRepaired,
-	EnsureUndocked,
-	GiftToPlayer,
-	GoToPoi,
-	InstallMod,
-	JettisonCargo,
-	ListCargoForSale,
-	LoadFromFactionStorage,
-	LoadFromStorage,
-	NavigateToSystem,
-	NavigateViaRoute,
-	Scan,
-	SellOrDepositCargo,
-	TransferStorage,
-	UninstallMod,
-	UseItem,
-	WithdrawFromFactionStorage,
-} from "../dispatcher/primitives/index.js";
+	LibAbandonMission,
+	LibAcceptMission,
+	LibBuyItems,
+	LibCancelOrders,
+	LibCompleteMission,
+	LibCreateBuyOrder,
+	LibCreateSellOrder,
+	LibDepositToFactionStorage,
+	LibDockAt,
+	LibEnsureCreditsFromFaction,
+	LibEnsureEmptyCargo,
+	LibEnsureFueled,
+	LibEnsureRepaired,
+	LibEnsureUndocked,
+	LibGiftToPlayer,
+	LibGoToPoi,
+	LibInstallMod,
+	LibJettisonCargo,
+	LibListCargoForSale,
+	LibLoadFromFactionStorage,
+	LibLoadFromStorage,
+	LibNavigateToSystem,
+	LibNavigateViaRoute,
+	LibScan,
+	LibSellOrDepositCargo,
+	LibTransferStorage,
+	LibUninstallMod,
+	LibUseItem,
+	LibWithdrawFromFactionStorage,
+} from "../dispatcher/lib-primitives/index.js";
 
-type GoalFactory = (opts: Record<string, unknown>) => Goal;
+type GoalFactory = (opts: Record<string, unknown>) => LibGoal;
 
-function requireString(opts: Record<string, unknown>, key: string): string {
-	const value = opts[key];
-	if (typeof value !== "string") {
-		throw new Error(`options.${key} is required (string)`);
-	}
-	return value;
-}
-
-function requireNumber(opts: Record<string, unknown>, key: string): number {
-	const value = opts[key];
-	if (typeof value !== "number") {
-		throw new Error(`options.${key} is required (number)`);
-	}
-	return value;
-}
-
-function requireStringArray(opts: Record<string, unknown>, key: string): string[] {
-	const value = opts[key];
-	if (!Array.isArray(value) || !value.every((v) => typeof v === "string")) {
-		throw new Error(`options.${key} is required (string[])`);
-	}
-	return value as string[];
-}
-
-function requireItemArray(
-	opts: Record<string, unknown>,
-	key: string,
-	requiredFields: string[],
-): Record<string, unknown>[] {
-	const value = opts[key];
-	if (!Array.isArray(value) || value.length === 0) {
-		throw new Error(`options.${key} is required (non-empty array)`);
-	}
-	for (const item of value) {
-		if (typeof item !== "object" || item === null || Array.isArray(item)) {
-			throw new Error(`options.${key} entries must be objects`);
-		}
-		const entry = item as Record<string, unknown>;
-		for (const field of requiredFields) {
-			if (entry[field] === undefined) {
-				throw new Error(`options.${key} entries require '${field}'`);
-			}
-		}
-	}
-	return value as Record<string, unknown>[];
-}
-
+// Each factory validates its raw options against the matching zod schema in
+// `goalSchemas` (from `@setpoint/protocol`) before constructing the Lib* goal.
+// The schema is the single source of truth for a goal's option shape — it
+// doubles as the client's compile-time type and the daemon's runtime
+// validator. `.parse()` throws a `ZodError` on invalid input, which
+// `createGoal` lets propagate to the caller (the goal handlers map it to a
+// 400 with a formatted validation message).
 const registry: ReadonlyMap<string, GoalFactory> = new Map<string, GoalFactory>([
 	// --- Primitives ---
 	[
 		"navigate-to-system",
 		(opts) => {
-			const fuelReserve = typeof opts["fuelReserve"] === "number" ? opts["fuelReserve"] : undefined;
-			return new NavigateToSystem(requireString(opts, "targetSystemId"), fuelReserve);
+			const validated = goalSchemas["navigate-to-system"].parse(opts);
+			return new LibNavigateToSystem(validated.targetSystemId, validated.fuelReserve);
 		},
 	],
 	[
 		"navigate-via-route",
 		(opts) => {
-			const fuelReserve = typeof opts["fuelReserve"] === "number" ? opts["fuelReserve"] : undefined;
-			return new NavigateViaRoute(requireStringArray(opts, "route"), fuelReserve);
+			const validated = goalSchemas["navigate-via-route"].parse(opts);
+			return new LibNavigateViaRoute(validated.route, validated.fuelReserve);
 		},
 	],
-	["go-to-poi", (opts) => new GoToPoi(requireString(opts, "targetPoiId"))],
-	["dock-at", (opts) => new DockAt(requireString(opts, "targetBaseId"))],
-	["ensure-undocked", () => new EnsureUndocked()],
+	["go-to-poi", (opts) => new LibGoToPoi(goalSchemas["go-to-poi"].parse(opts).targetPoiId)],
+	["dock-at", (opts) => new LibDockAt(goalSchemas["dock-at"].parse(opts).targetBaseId)],
+	["ensure-undocked", () => new LibEnsureUndocked()],
 	[
 		"ensure-fueled",
-		(opts) => {
-			const targetFuel = typeof opts["targetFuel"] === "number" ? opts["targetFuel"] : undefined;
-			return new EnsureFueled(targetFuel);
-		},
+		(opts) => new LibEnsureFueled(goalSchemas["ensure-fueled"].parse(opts).targetFuel),
 	],
-	["ensure-repaired", () => new EnsureRepaired()],
+	["ensure-repaired", () => new LibEnsureRepaired()],
 	[
 		"sell-or-deposit-cargo",
 		(opts) => {
-			const depositTarget = opts["depositTarget"];
-			return new SellOrDepositCargo(
-				depositTarget === "personal" || depositTarget === "faction" ? { depositTarget } : {},
-			);
+			const { depositTarget } = goalSchemas["sell-or-deposit-cargo"].parse(opts);
+			return new LibSellOrDepositCargo(depositTarget !== undefined ? { depositTarget } : {});
 		},
 	],
 	[
 		"ensure-empty-cargo",
 		(opts) => {
-			const depositTarget = opts["depositTarget"];
-			return new EnsureEmptyCargo(
-				depositTarget === "personal" || depositTarget === "faction" ? { depositTarget } : {},
-			);
+			const { depositTarget } = goalSchemas["ensure-empty-cargo"].parse(opts);
+			return new LibEnsureEmptyCargo(depositTarget !== undefined ? { depositTarget } : {});
 		},
 	],
 	[
 		"jettison-cargo",
-		(opts) =>
-			new JettisonCargo({
-				itemId: requireString(opts, "itemId"),
-				quantity: requireNumber(opts, "quantity"),
-			}),
+		(opts) => {
+			const validated = goalSchemas["jettison-cargo"].parse(opts);
+			return new LibJettisonCargo({ itemId: validated.itemId, quantity: validated.quantity });
+		},
 	],
 	[
 		"load-from-storage",
 		(opts) => {
-			const maxQuantity = typeof opts["maxQuantity"] === "number" ? opts["maxQuantity"] : undefined;
-			return new LoadFromStorage(requireString(opts, "itemId"), maxQuantity);
+			const validated = goalSchemas["load-from-storage"].parse(opts);
+			return new LibLoadFromStorage(validated.itemId, validated.maxQuantity);
 		},
 	],
-	["scan", () => new Scan()],
-	["use-item", (opts) => new UseItem({ itemId: requireString(opts, "itemId") })],
+	["scan", () => new LibScan()],
+	["use-item", (opts) => new LibUseItem({ itemId: goalSchemas["use-item"].parse(opts).itemId })],
 	[
 		"create-buy-order",
-		(opts) =>
-			new CreateMarketBuyOrder(
-				requireString(opts, "itemId"),
-				requireNumber(opts, "quantity"),
-				requireNumber(opts, "price"),
-			),
+		(opts) => {
+			const validated = goalSchemas["create-buy-order"].parse(opts);
+			return new LibCreateBuyOrder(validated.itemId, validated.quantity, validated.price);
+		},
 	],
 	[
 		"create-sell-order",
-		(opts) =>
-			new CreateMarketSellOrder(
-				requireString(opts, "itemId"),
-				requireNumber(opts, "quantity"),
-				requireNumber(opts, "price"),
-			),
+		(opts) => {
+			const validated = goalSchemas["create-sell-order"].parse(opts);
+			return new LibCreateSellOrder(validated.itemId, validated.quantity, validated.price);
+		},
 	],
-	["cancel-orders", (opts) => new CancelOrders({ orderIds: requireStringArray(opts, "orderIds") })],
-	["accept-mission", (opts) => new AcceptMission({ missionId: requireString(opts, "missionId") })],
+	[
+		"cancel-orders",
+		(opts) => new LibCancelOrders({ orderIds: goalSchemas["cancel-orders"].parse(opts).orderIds }),
+	],
+	[
+		"accept-mission",
+		(opts) =>
+			new LibAcceptMission({ missionId: goalSchemas["accept-mission"].parse(opts).missionId }),
+	],
 	[
 		"complete-mission",
-		(opts) => new CompleteMission({ missionId: requireString(opts, "missionId") }),
+		(opts) =>
+			new LibCompleteMission({ missionId: goalSchemas["complete-mission"].parse(opts).missionId }),
 	],
 	[
 		"abandon-mission",
-		(opts) => new AbandonMission({ missionId: requireString(opts, "missionId") }),
+		(opts) =>
+			new LibAbandonMission({ missionId: goalSchemas["abandon-mission"].parse(opts).missionId }),
 	],
-	["install-mod", (opts) => new InstallMod({ moduleId: requireString(opts, "moduleId") })],
-	["uninstall-mod", (opts) => new UninstallMod({ moduleId: requireString(opts, "moduleId") })],
+	[
+		"install-mod",
+		(opts) => new LibInstallMod({ moduleId: goalSchemas["install-mod"].parse(opts).moduleId }),
+	],
+	[
+		"uninstall-mod",
+		(opts) => new LibUninstallMod({ moduleId: goalSchemas["uninstall-mod"].parse(opts).moduleId }),
+	],
 	[
 		"buy-items",
 		(opts) => {
-			const items = requireItemArray(opts, "items", ["itemId", "maxPrice"]);
-			return new BuyItems({
+			const { items } = goalSchemas["buy-items"].parse(opts);
+			return new LibBuyItems({
 				items: items.map((item) => ({
-					itemId: item["itemId"] as string,
-					maxPrice: item["maxPrice"] as number,
-					...(typeof item["maxQuantity"] === "number" ? { maxQuantity: item["maxQuantity"] } : {}),
+					itemId: item.itemId,
+					maxPrice: item.maxPrice,
+					...(item.maxQuantity !== undefined ? { maxQuantity: item.maxQuantity } : {}),
 				})),
 			});
 		},
 	],
 	[
 		"list-cargo-for-sale",
+		(opts) =>
+			new LibListCargoForSale({ items: goalSchemas["list-cargo-for-sale"].parse(opts).items }),
+	],
+	[
+		"deposit-to-faction-storage",
 		(opts) => {
-			const items = requireItemArray(opts, "items", ["itemId", "minPrice"]);
-			return new ListCargoForSale({
-				items: items.map((item) => ({
-					itemId: item["itemId"] as string,
-					minPrice: item["minPrice"] as number,
-				})),
+			const validated = goalSchemas["deposit-to-faction-storage"].parse(opts);
+			return new LibDepositToFactionStorage({
+				itemId: validated.itemId,
+				quantity: validated.quantity,
 			});
 		},
 	],
 	[
-		"deposit-to-faction-storage",
-		(opts) =>
-			new DepositToFactionStorage({
-				itemId: requireString(opts, "itemId"),
-				quantity: requireNumber(opts, "quantity"),
-			}),
-	],
-	[
 		"withdraw-from-faction-storage",
 		(opts) => {
-			const quantity = typeof opts["quantity"] === "number" ? opts["quantity"] : undefined;
-			return new WithdrawFromFactionStorage({
-				itemId: requireString(opts, "itemId"),
-				...(quantity !== undefined ? { quantity } : {}),
+			const validated = goalSchemas["withdraw-from-faction-storage"].parse(opts);
+			return new LibWithdrawFromFactionStorage({
+				itemId: validated.itemId,
+				...(validated.quantity !== undefined ? { quantity: validated.quantity } : {}),
 			});
 		},
 	],
 	[
 		"gift-to-player",
-		(opts) =>
-			new GiftToPlayer({
-				targetName: requireString(opts, "targetName"),
-				itemId: requireString(opts, "itemId"),
-				quantity: requireNumber(opts, "quantity"),
-				...(typeof opts["message"] === "string" ? { message: opts["message"] } : {}),
-			}),
+		(opts) => {
+			const validated = goalSchemas["gift-to-player"].parse(opts);
+			return new LibGiftToPlayer({
+				targetName: validated.targetName,
+				itemId: validated.itemId,
+				quantity: validated.quantity,
+				...(validated.message !== undefined ? { message: validated.message } : {}),
+			});
+		},
 	],
 	[
 		"load-from-faction-storage",
 		(opts) => {
-			const maxQuantity = typeof opts["maxQuantity"] === "number" ? opts["maxQuantity"] : undefined;
-			return new LoadFromFactionStorage(requireString(opts, "itemId"), maxQuantity);
+			const validated = goalSchemas["load-from-faction-storage"].parse(opts);
+			return new LibLoadFromFactionStorage(validated.itemId, validated.maxQuantity);
 		},
 	],
 	[
 		"ensure-credits-from-faction",
 		(opts) => {
-			const minCredits = typeof opts["minCredits"] === "number" ? opts["minCredits"] : undefined;
-			return new EnsureCreditsFromFaction(minCredits !== undefined ? { minCredits } : undefined);
+			const { minCredits } = goalSchemas["ensure-credits-from-faction"].parse(opts);
+			return new LibEnsureCreditsFromFaction(minCredits !== undefined ? { minCredits } : undefined);
 		},
 	],
 
@@ -261,10 +221,8 @@ const registry: ReadonlyMap<string, GoalFactory> = new Map<string, GoalFactory>(
 	[
 		"mine-until-full",
 		(opts) => {
-			const fullThreshold =
-				typeof opts["fullThreshold"] === "number" ? opts["fullThreshold"] : undefined;
-			const maxAttempts = typeof opts["maxAttempts"] === "number" ? opts["maxAttempts"] : undefined;
-			return new MineUntilFull({
+			const { fullThreshold, maxAttempts } = goalSchemas["mine-until-full"].parse(opts);
+			return new LibMineUntilFull({
 				...(fullThreshold !== undefined ? { fullThreshold } : {}),
 				...(maxAttempts !== undefined ? { maxAttempts } : {}),
 			});
@@ -273,316 +231,221 @@ const registry: ReadonlyMap<string, GoalFactory> = new Map<string, GoalFactory>(
 	[
 		"prepare-at-station",
 		(opts) => {
-			const refuel = typeof opts["refuel"] === "boolean" ? opts["refuel"] : undefined;
-			const repair = typeof opts["repair"] === "boolean" ? opts["repair"] : undefined;
-			const cashSource = opts["cashSource"] === "faction" ? ("faction" as const) : undefined;
-			const minCredits = typeof opts["minCredits"] === "number" ? opts["minCredits"] : undefined;
-			const route = opts["route"] !== undefined ? requireStringArray(opts, "route") : undefined;
-			return new PrepareAtStation({
-				systemId: requireString(opts, "systemId"),
-				poiId: requireString(opts, "poiId"),
-				baseId: requireString(opts, "baseId"),
-				...(refuel !== undefined ? { refuel } : {}),
-				...(repair !== undefined ? { repair } : {}),
-				...(cashSource !== undefined ? { cashSource } : {}),
-				...(minCredits !== undefined ? { minCredits } : {}),
-				...(route !== undefined ? { route } : {}),
+			const validated = goalSchemas["prepare-at-station"].parse(opts);
+			return new LibPrepareAtStation({
+				systemId: validated.systemId,
+				poiId: validated.poiId,
+				baseId: validated.baseId,
+				...(validated.refuel !== undefined ? { refuel: validated.refuel } : {}),
+				...(validated.repair !== undefined ? { repair: validated.repair } : {}),
+				...(validated.cashSource !== undefined ? { cashSource: validated.cashSource } : {}),
+				...(validated.minCredits !== undefined ? { minCredits: validated.minCredits } : {}),
+				...(validated.route !== undefined ? { route: validated.route } : {}),
 			});
 		},
 	],
 	[
 		"sell-at-station",
 		(opts) => {
-			const refuel = typeof opts["refuel"] === "boolean" ? opts["refuel"] : undefined;
-			const depositTarget = opts["depositTarget"];
-			const cashSource = opts["cashSource"] === "faction" ? ("faction" as const) : undefined;
-			const minCredits = typeof opts["minCredits"] === "number" ? opts["minCredits"] : undefined;
-			return new SellAtStation({
-				systemId: requireString(opts, "systemId"),
-				stationPoiId: requireString(opts, "stationPoiId"),
-				baseId: requireString(opts, "baseId"),
-				...(refuel !== undefined ? { refuel } : {}),
-				...(depositTarget === "personal" || depositTarget === "faction" ? { depositTarget } : {}),
-				...(cashSource !== undefined ? { cashSource } : {}),
-				...(minCredits !== undefined ? { minCredits } : {}),
+			const validated = goalSchemas["sell-at-station"].parse(opts);
+			return new LibSellAtStation({
+				systemId: validated.systemId,
+				stationPoiId: validated.stationPoiId,
+				baseId: validated.baseId,
+				...(validated.refuel !== undefined ? { refuel: validated.refuel } : {}),
+				...(validated.depositTarget !== undefined
+					? { depositTarget: validated.depositTarget }
+					: {}),
+				...(validated.cashSource !== undefined ? { cashSource: validated.cashSource } : {}),
+				...(validated.minCredits !== undefined ? { minCredits: validated.minCredits } : {}),
 			});
 		},
 	],
 	[
 		"mining-run",
 		(opts) => {
-			const fullThreshold =
-				typeof opts["fullThreshold"] === "number" ? opts["fullThreshold"] : undefined;
-			const maxAttempts = typeof opts["maxAttempts"] === "number" ? opts["maxAttempts"] : undefined;
-			return new MiningRun({
-				systemId: requireString(opts, "systemId"),
-				beltPoiId: requireString(opts, "beltPoiId"),
-				...(fullThreshold !== undefined ? { fullThreshold } : {}),
-				...(maxAttempts !== undefined ? { maxAttempts } : {}),
+			const validated = goalSchemas["mining-run"].parse(opts);
+			return new LibMiningRun({
+				systemId: validated.systemId,
+				beltPoiId: validated.beltPoiId,
+				...(validated.fullThreshold !== undefined
+					? { fullThreshold: validated.fullThreshold }
+					: {}),
+				...(validated.maxAttempts !== undefined ? { maxAttempts: validated.maxAttempts } : {}),
 			});
 		},
 	],
 	[
 		"enhanced-mining-run",
 		(opts) => {
-			const fullThreshold =
-				typeof opts["fullThreshold"] === "number" ? opts["fullThreshold"] : undefined;
-			const maxAttempts = typeof opts["maxAttempts"] === "number" ? opts["maxAttempts"] : undefined;
-			const maxJettisonRounds =
-				typeof opts["maxJettisonRounds"] === "number" ? opts["maxJettisonRounds"] : undefined;
-			return new EnhancedMiningRun({
-				systemId: requireString(opts, "systemId"),
-				beltPoiId: requireString(opts, "beltPoiId"),
-				junkItemIds: requireStringArray(opts, "junkItemIds"),
-				...(fullThreshold !== undefined ? { fullThreshold } : {}),
-				...(maxAttempts !== undefined ? { maxAttempts } : {}),
-				...(maxJettisonRounds !== undefined ? { maxJettisonRounds } : {}),
+			const validated = goalSchemas["enhanced-mining-run"].parse(opts);
+			return new LibEnhancedMiningRun({
+				systemId: validated.systemId,
+				beltPoiId: validated.beltPoiId,
+				junkItemIds: validated.junkItemIds,
+				...(validated.fullThreshold !== undefined
+					? { fullThreshold: validated.fullThreshold }
+					: {}),
+				...(validated.maxAttempts !== undefined ? { maxAttempts: validated.maxAttempts } : {}),
+				...(validated.maxJettisonRounds !== undefined
+					? { maxJettisonRounds: validated.maxJettisonRounds }
+					: {}),
 			});
 		},
 	],
 	[
 		"mine-with-jettison",
 		(opts) => {
-			const fullThreshold =
-				typeof opts["fullThreshold"] === "number" ? opts["fullThreshold"] : undefined;
-			const maxAttempts = typeof opts["maxAttempts"] === "number" ? opts["maxAttempts"] : undefined;
-			const maxJettisonRounds =
-				typeof opts["maxJettisonRounds"] === "number" ? opts["maxJettisonRounds"] : undefined;
-			return new MineWithJettison({
-				junkItemIds: requireStringArray(opts, "junkItemIds"),
-				...(fullThreshold !== undefined ? { fullThreshold } : {}),
-				...(maxAttempts !== undefined ? { maxAttempts } : {}),
-				...(maxJettisonRounds !== undefined ? { maxJettisonRounds } : {}),
+			const validated = goalSchemas["mine-with-jettison"].parse(opts);
+			return new LibMineWithJettison({
+				junkItemIds: validated.junkItemIds,
+				...(validated.fullThreshold !== undefined
+					? { fullThreshold: validated.fullThreshold }
+					: {}),
+				...(validated.maxAttempts !== undefined ? { maxAttempts: validated.maxAttempts } : {}),
+				...(validated.maxJettisonRounds !== undefined
+					? { maxJettisonRounds: validated.maxJettisonRounds }
+					: {}),
 			});
 		},
 	],
 	[
 		"buy-at-station",
 		(opts) => {
-			const items = requireItemArray(opts, "items", ["itemId", "maxPrice"]);
-			const refuel = typeof opts["refuel"] === "boolean" ? opts["refuel"] : undefined;
-			return new BuyAtStation({
-				systemId: requireString(opts, "systemId"),
-				poiId: requireString(opts, "poiId"),
-				baseId: requireString(opts, "baseId"),
-				items: items.map((item) => ({
-					itemId: item["itemId"] as string,
-					maxPrice: item["maxPrice"] as number,
-					...(typeof item["maxQuantity"] === "number" ? { maxQuantity: item["maxQuantity"] } : {}),
+			const validated = goalSchemas["buy-at-station"].parse(opts);
+			return new LibBuyAtStation({
+				systemId: validated.systemId,
+				poiId: validated.poiId,
+				baseId: validated.baseId,
+				items: validated.items.map((item) => ({
+					itemId: item.itemId,
+					maxPrice: item.maxPrice,
+					...(item.maxQuantity !== undefined ? { maxQuantity: item.maxQuantity } : {}),
 				})),
-				...(refuel !== undefined ? { refuel } : {}),
+				...(validated.refuel !== undefined ? { refuel: validated.refuel } : {}),
 			});
 		},
 	],
 	[
 		"sell-at-station-priced",
 		(opts) => {
-			const items = requireItemArray(opts, "items", ["itemId", "minPrice"]);
-			const refuel = typeof opts["refuel"] === "boolean" ? opts["refuel"] : undefined;
-			return new SellAtStationPriced({
-				systemId: requireString(opts, "systemId"),
-				stationPoiId: requireString(opts, "stationPoiId"),
-				baseId: requireString(opts, "baseId"),
-				items: items.map((item) => ({
-					itemId: item["itemId"] as string,
-					minPrice: item["minPrice"] as number,
-				})),
-				...(refuel !== undefined ? { refuel } : {}),
+			const validated = goalSchemas["sell-at-station-priced"].parse(opts);
+			return new LibSellAtStationPriced({
+				systemId: validated.systemId,
+				stationPoiId: validated.stationPoiId,
+				baseId: validated.baseId,
+				items: validated.items,
+				...(validated.refuel !== undefined ? { refuel: validated.refuel } : {}),
 			});
 		},
 	],
 	[
 		"load-at-station",
 		(opts) => {
-			const items = requireItemArray(opts, "items", ["itemId"]);
-			const refuel = typeof opts["refuel"] === "boolean" ? opts["refuel"] : undefined;
-			const sourceType = requireString(opts, "sourceType");
-			return new LoadAtStation({
-				systemId: requireString(opts, "systemId"),
-				poiId: requireString(opts, "poiId"),
-				baseId: requireString(opts, "baseId"),
-				sourceType: sourceType as "personal-storage" | "faction-storage" | "market",
-				items: items.map((item) => ({
-					itemId: item["itemId"] as string,
-					...(typeof item["quantity"] === "number" ? { quantity: item["quantity"] } : {}),
-					...(typeof item["maxPrice"] === "number" ? { maxPrice: item["maxPrice"] } : {}),
+			const validated = goalSchemas["load-at-station"].parse(opts);
+			return new LibLoadAtStation({
+				systemId: validated.systemId,
+				poiId: validated.poiId,
+				baseId: validated.baseId,
+				sourceType: validated.sourceType,
+				items: validated.items.map((item) => ({
+					itemId: item.itemId,
+					...(item.quantity !== undefined ? { quantity: item.quantity } : {}),
+					...(item.maxPrice !== undefined ? { maxPrice: item.maxPrice } : {}),
 				})),
-				...(refuel !== undefined ? { refuel } : {}),
+				...(validated.refuel !== undefined ? { refuel: validated.refuel } : {}),
 			});
 		},
 	],
 	[
 		"unload-at-station",
 		(opts) => {
-			const refuel = typeof opts["refuel"] === "boolean" ? opts["refuel"] : undefined;
-			const destType = requireString(opts, "destType");
-			if (!(UNLOAD_DEST_TYPES as readonly string[]).includes(destType)) {
-				throw new Error(
-					`options.destType "${destType}" is invalid — valid: ${UNLOAD_DEST_TYPES.join(", ")}`,
-				);
-			}
-			const itemsRaw = opts["items"];
-			const items = Array.isArray(itemsRaw)
-				? (itemsRaw as Record<string, unknown>[]).map((item) => ({
-						itemId: item["itemId"] as string,
-						...(typeof item["minPrice"] === "number" ? { minPrice: item["minPrice"] } : {}),
-					}))
-				: undefined;
-
-			return new UnloadAtStation({
-				systemId: requireString(opts, "systemId"),
-				poiId: requireString(opts, "poiId"),
-				baseId: requireString(opts, "baseId"),
-				destType: destType as "personal-storage" | "faction-storage" | "gift" | "market",
-				...(typeof opts["targetPlayer"] === "string" ? { targetPlayer: opts["targetPlayer"] } : {}),
-				...(items !== undefined ? { items } : {}),
-				...(refuel !== undefined ? { refuel } : {}),
+			const validated = goalSchemas["unload-at-station"].parse(opts);
+			return new LibUnloadAtStation({
+				systemId: validated.systemId,
+				poiId: validated.poiId,
+				baseId: validated.baseId,
+				destType: validated.destType,
+				...(validated.targetPlayer !== undefined ? { targetPlayer: validated.targetPlayer } : {}),
+				...(validated.items !== undefined
+					? {
+							items: validated.items.map((item) => ({
+								itemId: item.itemId,
+								...(item.minPrice !== undefined ? { minPrice: item.minPrice } : {}),
+							})),
+						}
+					: {}),
+				...(validated.refuel !== undefined ? { refuel: validated.refuel } : {}),
 			});
 		},
 	],
 	[
 		"ensure-loadout",
 		(opts) => {
-			const ammoRaw = opts["ammo"];
-			let ammo: Record<string, string> | undefined;
-			if (ammoRaw !== undefined && ammoRaw !== null) {
-				if (typeof ammoRaw !== "object" || Array.isArray(ammoRaw)) {
-					throw new Error("options.ammo must be an object mapping weapon type_id to ammo item_id");
-				}
-				ammo = {};
-				for (const [key, value] of Object.entries(ammoRaw as Record<string, unknown>)) {
-					if (typeof value !== "string") {
-						throw new Error(`options.ammo["${key}"] must be a string`);
-					}
-					ammo[key] = value;
-				}
-			}
-
-			const uninstalledStorage =
-				typeof opts["uninstalledStorage"] === "string" ? opts["uninstalledStorage"] : undefined;
-			if (
-				uninstalledStorage !== undefined &&
-				uninstalledStorage !== "personal" &&
-				uninstalledStorage !== "faction" &&
-				uninstalledStorage !== "cargo"
-			) {
-				throw new Error('options.uninstalledStorage must be "personal", "faction", or "cargo"');
-			}
-
-			return new EnsureLoadout({
-				systemId: requireString(opts, "systemId"),
-				poiId: requireString(opts, "poiId"),
-				baseId: requireString(opts, "baseId"),
-				modules: requireStringArray(opts, "modules"),
-				...(ammo !== undefined ? { ammo } : {}),
-				...(uninstalledStorage !== undefined ? { uninstalledStorage } : {}),
+			const validated = goalSchemas["ensure-loadout"].parse(opts);
+			return new LibEnsureLoadout({
+				systemId: validated.systemId,
+				poiId: validated.poiId,
+				baseId: validated.baseId,
+				modules: validated.modules,
+				...(validated.ammo !== undefined ? { ammo: validated.ammo } : {}),
+				...(validated.uninstalledStorage !== undefined
+					? { uninstalledStorage: validated.uninstalledStorage }
+					: {}),
 			});
 		},
 	],
 	[
 		"ensure-marketbook",
 		(opts) => {
-			const rawOrders = requireItemArray(opts, "targetOrders", [
-				"itemId",
-				"side",
-				"quantity",
-				"price",
-			]);
-			const targetOrders = rawOrders.map((item) => {
-				const side = item["side"];
-				if (side !== "buy" && side !== "sell") {
-					throw new Error('options.targetOrders entries: side must be "buy" or "sell"');
-				}
-				if (typeof item["quantity"] !== "number") {
-					throw new Error("options.targetOrders entries: quantity must be a number");
-				}
-				if (typeof item["price"] !== "number") {
-					throw new Error("options.targetOrders entries: price must be a number");
-				}
-				return {
-					itemId: item["itemId"] as string,
-					side: side as "buy" | "sell",
-					quantity: item["quantity"] as number,
-					price: item["price"] as number,
-				};
-			});
-
-			const priceTolerance =
-				typeof opts["priceTolerance"] === "number" ? opts["priceTolerance"] : undefined;
-			if (priceTolerance !== undefined && (priceTolerance < 0 || priceTolerance > 1)) {
-				throw new Error("options.priceTolerance must be a number in range [0, 1]");
-			}
-
-			const cancelUnmatched =
-				typeof opts["cancelUnmatched"] === "boolean" ? opts["cancelUnmatched"] : undefined;
-
-			return new EnsureMarketbook({
-				targetOrders,
-				...(priceTolerance !== undefined ? { priceTolerance } : {}),
-				...(cancelUnmatched !== undefined ? { cancelUnmatched } : {}),
+			const validated = goalSchemas["ensure-marketbook"].parse(opts);
+			return new LibEnsureMarketbook({
+				targetOrders: validated.targetOrders,
+				...(validated.priceTolerance !== undefined
+					? { priceTolerance: validated.priceTolerance }
+					: {}),
+				...(validated.cancelUnmatched !== undefined
+					? { cancelUnmatched: validated.cancelUnmatched }
+					: {}),
 			});
 		},
 	],
-	["transfer-storage-to-faction", () => new TransferStorageToFaction()],
+	["transfer-storage-to-faction", () => new LibTransferStorageToFaction()],
 	[
 		"fuel-rescue",
-		(opts) =>
-			new FuelRescue({
-				systemId: requireString(opts, "systemId"),
-				poiId: requireString(opts, "poiId"),
-				targetUsername: requireString(opts, "targetUsername"),
-			}),
+		(opts) => {
+			const validated = goalSchemas["fuel-rescue"].parse(opts);
+			return new LibFuelRescue({
+				systemId: validated.systemId,
+				poiId: validated.poiId,
+				targetUsername: validated.targetUsername,
+			});
+		},
 	],
 	[
 		"transfer-storage",
 		(opts) => {
-			const source = requireString(opts, "source");
-			const target = requireString(opts, "target");
-			if (source !== "self" && source !== "faction") {
-				throw new Error('options.source must be "self" or "faction"');
-			}
-			if (target !== "self" && target !== "faction") {
-				throw new Error('options.target must be "self" or "faction"');
-			}
-			const quantity = typeof opts["quantity"] === "number" ? opts["quantity"] : undefined;
-			return new TransferStorage({
-				source: source as "self" | "faction",
-				target: target as "self" | "faction",
-				itemId: requireString(opts, "itemId"),
-				...(quantity !== undefined ? { quantity } : {}),
+			const validated = goalSchemas["transfer-storage"].parse(opts);
+			return new LibTransferStorage({
+				source: validated.source,
+				target: validated.target,
+				itemId: validated.itemId,
+				...(validated.quantity !== undefined ? { quantity: validated.quantity } : {}),
 			});
 		},
 	],
-]);
-
-/**
- * Guidance returned for the removed managed crafting goals/loops. Crafting
- * is now an async job queue on the game server, so the dispatcher no longer
- * wraps it — callers submit jobs directly through the raw passthrough.
- */
-export const CRAFTING_DEPRECATION_MESSAGE =
-	"DEPRECATED: managed crafting goals/loops were removed. Crafting is now an async job " +
-	"queue on the game server — submit jobs directly through the raw passthrough: " +
-	'POST /accounts/:id/raw {"toolGroup":"spacemolt","action":"craft","params":{"id":"<recipe>","quantity":<n>}} ' +
-	"(or `smctl raw <acct> craft id=<recipe> quantity=<n>`). Manage and inspect jobs with the " +
-	"spacemolt_facility job_add/job_list/job_cancel actions, and watch 'crafting_update' " +
-	"notifications for completion.";
-
-/** Goal/loop types that have been removed in favour of the raw passthrough. */
-const DEPRECATED_TYPES: ReadonlySet<string> = new Set([
-	"craft",
-	"craft-batch",
-	"craft-from-faction",
-	"crafting",
 ]);
 
 /**
  * Returns the deprecation guidance for a removed goal/loop type, or undefined
  * if the type is not deprecated. Used by the handlers to return a clear
  * pointer at the new system instead of a generic "unknown type" error.
+ *
+ * Sourced from `@setpoint/protocol`'s `deprecatedGoalMessage` — single source
+ * for the deprecation guidance text (also consumed by the client).
  */
 export function deprecatedTypeMessage(type: string): string | undefined {
-	return DEPRECATED_TYPES.has(type) ? CRAFTING_DEPRECATION_MESSAGE : undefined;
+	return deprecatedGoalMessage(type);
 }
 
 /** Get the list of all registered goal type names. */
@@ -591,10 +454,50 @@ export function getGoalTypes(): string[] {
 }
 
 /**
- * Create a Goal instance by type name and options.
- * Throws if the type is unknown, deprecated, or options are invalid.
+ * Shape of a zod `ZodError`'s `issues` array. Duck-typed rather than checked
+ * via `instanceof` because zod is a transitive dependency (through
+ * `@setpoint/protocol`), not a direct dependency of the daemon. Exported so
+ * other handlers (e.g. loop start/patch validation) can reuse the same
+ * duck-typed detection instead of re-declaring it.
  */
-export function createGoal(type: string, options: Record<string, unknown>): Goal {
+export interface ZodLikeError {
+	issues: Array<{ path: PropertyKey[]; message: string }>;
+}
+
+export function isZodLikeError(err: unknown): err is ZodLikeError {
+	return (
+		typeof err === "object" &&
+		err !== null &&
+		"issues" in err &&
+		Array.isArray((err as { issues: unknown }).issues)
+	);
+}
+
+/**
+ * Format an error into a readable message for the goal-execution handlers'
+ * 400 response. A `ZodError` (thrown by `goalSchemas[type].parse()`) is
+ * expanded into one "options.<path>: <message>" entry per issue (joined with
+ * "; "); any other `Error` passes through as its own message.
+ */
+export function formatGoalError(err: unknown): string {
+	if (isZodLikeError(err)) {
+		return err.issues
+			.map((issue) => `options.${issue.path.join(".")}: ${issue.message}`)
+			.join("; ");
+	}
+	return err instanceof Error ? err.message : "Invalid goal options";
+}
+
+/**
+ * Create a Goal instance by type name and options.
+ * Throws if the type is unknown or deprecated. Throws a plain `Error` with a
+ * readable "options.<field>: <message>" description if the options fail
+ * validation against the goal's schema in `@setpoint/protocol` (the schema's
+ * `ZodError` is reformatted via `formatGoalError` here, at the source, so
+ * every `createGoal` caller — tests and HTTP handlers alike — sees the same
+ * readable message).
+ */
+export function createGoal(type: string, options: Record<string, unknown>): LibGoal {
 	const factory = registry.get(type);
 	if (!factory) {
 		const deprecated = deprecatedTypeMessage(type);
@@ -603,5 +506,12 @@ export function createGoal(type: string, options: Record<string, unknown>): Goal
 		}
 		throw new Error(`Unknown goal type: ${type}. Supported: ${getGoalTypes().join(", ")}`);
 	}
-	return factory(options);
+	try {
+		return factory(options);
+	} catch (err) {
+		if (isZodLikeError(err)) {
+			throw new Error(formatGoalError(err));
+		}
+		throw err;
+	}
 }

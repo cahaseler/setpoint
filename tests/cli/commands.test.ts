@@ -300,17 +300,44 @@ describe("dispatch", () => {
 		expect(output.usageError).toHaveBeenCalled();
 	});
 
-	test("raw with command args but no binary reports not-found", async () => {
-		// In test env, process.execPath is the bun runtime — spacemolt won't be
-		// found next to it. Verifies variadic args are accepted and the handler
-		// produces a clear error instead of "too many arguments".
-		const { ctx, output } = makeCtx();
+	test("raw posts to /accounts/:playerId/raw with toolGroup, action, and key=value params", async () => {
+		const { ctx, client } = makeCtx({ status: 200, data: { result: "ok" } });
+		await dispatch(ctx, ["raw", "player-123", "buy", "id=iron_ore", "quantity=10"]);
 
-		await expect(dispatch(ctx, ["raw", "player-123", "help", "market"])).rejects.toThrow(
-			"usage_error",
+		expect(client.post).toHaveBeenCalledWith(
+			"/accounts/player-123/raw",
+			{ toolGroup: "spacemolt", action: "buy", params: { id: "iron_ore", quantity: 10 } },
+			{ requestTimeoutMs: 0 },
 		);
-		const callArgs = output.usageError.mock.calls[0];
-		expect(callArgs?.[0] as string).toContain("spacemolt CLI not found");
+	});
+
+	test("raw treats a single bare positional as params.id", async () => {
+		const { ctx, client } = makeCtx({ status: 200, data: { result: "ok" } });
+		await dispatch(ctx, ["raw", "player-123", "travel", "sol_asteroid_belt"]);
+
+		expect(client.post).toHaveBeenCalledWith(
+			"/accounts/player-123/raw",
+			{ toolGroup: "spacemolt", action: "travel", params: { id: "sol_asteroid_belt" } },
+			{ requestTimeoutMs: 0 },
+		);
+	});
+
+	test("raw with no args after the action sends empty params", async () => {
+		const { ctx, client } = makeCtx({ status: 200, data: { result: "ok" } });
+		await dispatch(ctx, ["raw", "player-123", "get_state"]);
+
+		expect(client.post).toHaveBeenCalledWith(
+			"/accounts/player-123/raw",
+			{ toolGroup: "spacemolt", action: "get_state", params: {} },
+			{ requestTimeoutMs: 0 },
+		);
+	});
+
+	test("raw against an unknown/unconnected account surfaces a 404 as a client error", async () => {
+		const { ctx, output } = makeCtx({ status: 404, data: { error: "Account not found" } });
+		await dispatch(ctx, ["raw", "player-123", "get_state"]);
+
+		expect(output.fromStatus).toHaveBeenCalledWith(404, { error: "Account not found" });
 	});
 
 	test("fromStatus is called with response status and data", async () => {
