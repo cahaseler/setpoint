@@ -1,4 +1,3 @@
-import type { GameEndpoints } from "../api/endpoints.js";
 import type { StoredGameState } from "../state/store.js";
 
 /** The outcome of executing a goal. */
@@ -11,33 +10,6 @@ export interface GoalResult {
 	alreadySatisfied: boolean;
 	/** Number of mutation actions consumed (each costs a tick). */
 	ticksUsed: number;
-}
-
-/** Context passed to a goal during execution. */
-export interface GoalContext {
-	/** Typed API endpoint wrappers. */
-	endpoints: GameEndpoints;
-	/** Current game state snapshot (read from the state store). */
-	state: StoredGameState;
-	/**
-	 * Read current state from the local store without an API call.
-	 * Safe to call after any mutation — the store is updated by the onResponse
-	 * pipeline before the mutation Promise resolves.
-	 * Prefer this over refreshState for post-mutation cargo/state checks.
-	 */
-	readLocalState?: () => StoredGameState;
-	/**
-	 * Refresh state from the API. Returns fresh state.
-	 * Use for initial state sync or when transit polling is needed.
-	 * Prefer readLocalState for post-mutation checks — it avoids an extra API call.
-	 *
-	 * Pass `{ force: true }` to bypass the local-store freshness shortcut and
-	 * guarantee a live get_state — required after actions whose responses do not
-	 * carry post-action state (e.g. multi-hop jumps), where the store lags reality.
-	 */
-	refreshState?: (opts?: { force?: boolean }) => Promise<StoredGameState>;
-	/** Signal for external cancellation. Goals should check this before starting work. */
-	signal?: AbortSignal;
 }
 
 /**
@@ -62,33 +34,6 @@ export interface StepResult {
 export interface CompoundGoalResult extends GoalResult {
 	/** Results from each step that was attempted. */
 	steps: StepResult[];
-}
-
-/**
- * A declarative primitive goal — a desired end-state that the dispatcher
- * can check and satisfy.
- *
- * Each goal:
- * 1. Checks whether the desired state is already satisfied
- * 2. Validates that prerequisites are met
- * 3. Executes the necessary API action(s)
- * 4. Returns a result describing what happened
- *
- * Goals are named for the desired state, not the action taken:
- * - "navigate-to-system" not "jump"
- * - "ensure-fueled" not "refuel"
- */
-export interface Goal {
-	/** Unique identifier for this goal type. */
-	readonly name: string;
-
-	/**
-	 * Execute the goal: check state, validate prereqs, take action if needed.
-	 *
-	 * State is refreshed externally before calling execute — the goal reads
-	 * from the provided state snapshot, not from the store directly.
-	 */
-	execute(ctx: GoalContext): Promise<GoalResult>;
 }
 
 /** Result of a single loop iteration. */
@@ -139,9 +84,6 @@ export interface LoopOptions {
 	 */
 	ignoreFailure?: (result: GoalResult) => boolean;
 }
-
-/** Factory that produces a fresh Goal given current state. */
-export type GoalFactory = (state: StoredGameState) => Goal;
 
 /** Helper to build a successful result when already satisfied. */
 export function alreadySatisfied(message: string): GoalResult {
