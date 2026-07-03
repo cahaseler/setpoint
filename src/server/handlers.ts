@@ -8,7 +8,12 @@ import { STATE_SECTION_KEYS, type StateSectionKey, type StateStore } from "../st
 import { ApiError, HttpError, errorMessage } from "../util/errors.js";
 import { createLogger } from "../util/logger.js";
 import { type LogLevel, getLogLevel, setLogLevel } from "../util/logger.js";
-import { createGoal, deprecatedTypeMessage, getGoalTypes } from "./goal-registry.js";
+import {
+	createGoal,
+	deprecatedTypeMessage,
+	formatGoalError,
+	getGoalTypes,
+} from "./goal-registry.js";
 import type { JobManager } from "./job-manager.js";
 import type {
 	EnhancedMiningLoopApiOptions,
@@ -418,7 +423,7 @@ export async function handleExecuteGoal(
 	try {
 		goal = createGoal(goalType, opts);
 	} catch (err) {
-		return errorResponse(err instanceof Error ? err.message : "Invalid goal options", 400);
+		return errorResponse(formatGoalError(err), 400);
 	}
 
 	const startTime = Date.now();
@@ -602,7 +607,7 @@ export async function handleExecuteGoalAsync(
 	try {
 		goal = createGoal(goalType, opts);
 	} catch (err) {
-		return errorResponse(err instanceof Error ? err.message : "Invalid goal options", 400);
+		return errorResponse(formatGoalError(err), 400);
 	}
 
 	const job = ctx.jobManager.create(actualId, goalType, opts);

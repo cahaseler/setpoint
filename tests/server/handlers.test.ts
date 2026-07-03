@@ -1857,7 +1857,9 @@ describe("handleExecuteGoal", () => {
 		const res = await handleExecuteGoal(req, { playerId: "p1" }, ctx);
 		expect(res.status).toBe(400);
 		const body = (await res.json()) as Record<string, unknown>;
-		expect(body["error"] as string).toContain("targetSystemId");
+		// Validated via the @setpoint/protocol zod schema — the goal-registry
+		// formats the ZodError into a readable "options.<field>: <message>" string.
+		expect(body["error"] as string).toBe("options.targetSystemId: Required");
 	});
 
 	test("waits for executing goal to finish then proceeds", async () => {
@@ -2049,6 +2051,36 @@ describe("handleExecuteGoalAsync", () => {
 
 		const res = await handleExecuteGoalAsync(req, { playerId: "p1" }, ctx);
 		expect(res.status).toBe(400);
+	});
+
+	test("returns 400 with a validation message for missing required options", async () => {
+		const account = makeAccount("p1");
+		const ctx = makeContext({ accounts: [account] });
+		const req = new Request("http://localhost/accounts/p1/goal/async", {
+			method: "POST",
+			body: JSON.stringify({ type: "navigate-to-system", options: {} }),
+			headers: { "Content-Type": "application/json" },
+		});
+
+		const res = await handleExecuteGoalAsync(req, { playerId: "p1" }, ctx);
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as Record<string, unknown>;
+		expect(body["error"] as string).toBe("options.targetSystemId: Required");
+	});
+
+	test("returns 410 deprecated for the removed craft goal", async () => {
+		const account = makeAccount("p1");
+		const ctx = makeContext({ accounts: [account] });
+		const req = new Request("http://localhost/accounts/p1/goal/async", {
+			method: "POST",
+			body: JSON.stringify({ type: "craft", options: { recipeId: "iron_bar" } }),
+			headers: { "Content-Type": "application/json" },
+		});
+
+		const res = await handleExecuteGoalAsync(req, { playerId: "p1" }, ctx);
+		expect(res.status).toBe(410);
+		const body = (await res.json()) as Record<string, unknown>;
+		expect(body["error"] as string).toContain("DEPRECATED");
 	});
 
 	test("returns 409 when a sync goal is already executing for this account", async () => {

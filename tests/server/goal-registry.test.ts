@@ -416,7 +416,7 @@ describe("goal-registry", () => {
 				baseId: "sol_base",
 				destType: "faction",
 			}),
-		).toThrow('options.destType "faction" is invalid');
+		).toThrow("options.destType: Invalid enum value");
 	});
 
 	// --- ensure-credits-from-faction ---
@@ -463,7 +463,7 @@ describe("goal-registry", () => {
 				modules: ["laser_mod"],
 				ammo: ["laser_ammo_a"],
 			}),
-		).toThrow("options.ammo must be an object");
+		).toThrow("options.ammo: Expected object, received array");
 	});
 
 	test("ensure-loadout throws when ammo value is not a string", () => {
@@ -475,7 +475,7 @@ describe("goal-registry", () => {
 				modules: ["laser_mod"],
 				ammo: { laser_type_1: 42 },
 			}),
-		).toThrow('options.ammo["laser_type_1"] must be a string');
+		).toThrow("options.ammo.laser_type_1: Expected string, received number");
 	});
 
 	test("creates ensure-loadout with valid uninstalledStorage values", () => {
@@ -500,7 +500,7 @@ describe("goal-registry", () => {
 				modules: [],
 				uninstalledStorage: "vault",
 			}),
-		).toThrow('options.uninstalledStorage must be "personal", "faction", or "cargo"');
+		).toThrow("options.uninstalledStorage: Invalid enum value");
 	});
 
 	// --- ensure-marketbook ---
@@ -524,7 +524,7 @@ describe("goal-registry", () => {
 			createGoal("ensure-marketbook", {
 				targetOrders: [{ itemId: "iron_ore", side: "hold", quantity: 10, price: 50 }],
 			}),
-		).toThrow('side must be "buy" or "sell"');
+		).toThrow("options.targetOrders.0.side: Invalid enum value");
 	});
 
 	test("ensure-marketbook throws when priceTolerance is out of range", () => {
@@ -533,7 +533,7 @@ describe("goal-registry", () => {
 				targetOrders: [{ itemId: "iron_ore", side: "buy", quantity: 10, price: 50 }],
 				priceTolerance: 1.5,
 			}),
-		).toThrow("priceTolerance must be a number in range [0, 1]");
+		).toThrow("options.priceTolerance: Number must be less than or equal to 1");
 	});
 
 	test("ensure-marketbook accepts priceTolerance at boundary values", () => {
@@ -564,7 +564,7 @@ describe("goal-registry", () => {
 				target: "self",
 				itemId: "iron_ore",
 			}),
-		).toThrow('options.source must be "self" or "faction"');
+		).toThrow("options.source: Invalid enum value");
 	});
 
 	test("transfer-storage throws for invalid target", () => {
@@ -574,11 +574,25 @@ describe("goal-registry", () => {
 				target: "personal",
 				itemId: "iron_ore",
 			}),
-		).toThrow('options.target must be "self" or "faction"');
+		).toThrow("options.target: Invalid enum value");
 	});
 
 	test("creates transfer-storage-to-faction with no options", () => {
 		const goal = createGoal("transfer-storage-to-faction", {});
 		expect(goal.name).toBe("transfer-storage-to-faction");
+	});
+
+	// --- formatGoalError ---
+
+	test("formatGoalError joins multiple zod issues with '; '", () => {
+		expect(() => createGoal("jettison-cargo", {})).toThrow(
+			"options.itemId: Required; options.quantity: Required",
+		);
+	});
+
+	test("formatGoalError passes through non-validation errors unchanged", () => {
+		expect(() => createGoal("nonexistent", {})).toThrow(
+			"Unknown goal type: nonexistent. Supported:",
+		);
 	});
 });
