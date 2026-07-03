@@ -1,6 +1,13 @@
-/** Account-scoped goal API for `@setpoint/client`. */
+/** Account-scoped goal and loop API for `@setpoint/client`. */
 
-import type { GoalOptionsMap, GoalResult, GoalType } from "@setpoint/protocol";
+import type {
+	GoalOptionsMap,
+	GoalResult,
+	GoalType,
+	LoopOptionsMap,
+	LoopStatus,
+	LoopType,
+} from "@setpoint/protocol";
 import type { SetpointClient } from "./client.js";
 import { type WaitForJobOptions, waitForJob } from "./jobs.js";
 
@@ -9,12 +16,70 @@ export interface AbortOptions {
 	force?: boolean;
 }
 
-/** Goal API scoped to a single account, identified by player_id or username. */
-export class AccountApi {
+/**
+ * Loop API scoped to a single account. Mirrors the daemon's
+ * `POST|GET|PATCH|DELETE /accounts/:id/loop` routes (`src/server/handlers.ts`).
+ */
+export class AccountLoopApi {
 	constructor(
 		private readonly client: SetpointClient,
 		private readonly id: string,
 	) {}
+
+	/** Starts a loop, persisting its config on the daemon. Body is `{type, options}` (matches `handleStartLoop`). */
+	async start<T extends LoopType>(type: T, options: LoopOptionsMap[T]): Promise<LoopStatus> {
+		const result = await this.client.request(
+			"POST",
+			`/accounts/${encodeURIComponent(this.id)}/loop`,
+			{ body: { type, options } },
+		);
+		return result as LoopStatus;
+	}
+
+	/** Gets the current loop status, or `{running: false}` if no loop has ever run on this account. */
+	async get(): Promise<LoopStatus | { running: false }> {
+		const result = await this.client.request(
+			"GET",
+			`/accounts/${encodeURIComponent(this.id)}/loop`,
+		);
+		return result as LoopStatus | { running: false };
+	}
+
+	/**
+	 * Patches a running loop's options in place, without restarting it. The
+	 * body is the FLAT partial itself — unlike `start`, it is NOT wrapped in
+	 * an `options` object (matches `handlePatchLoop`).
+	 */
+	async patch<T extends LoopType>(partial: Partial<LoopOptionsMap[T]>): Promise<LoopStatus> {
+		const result = await this.client.request(
+			"PATCH",
+			`/accounts/${encodeURIComponent(this.id)}/loop`,
+			{ body: partial },
+		);
+		return result as LoopStatus;
+	}
+
+	/** Stops the running loop and deletes its persisted config. */
+	async stop(): Promise<{ message: string }> {
+		const result = await this.client.request(
+			"DELETE",
+			`/accounts/${encodeURIComponent(this.id)}/loop`,
+		);
+		return result as { message: string };
+	}
+}
+
+/** Goal API scoped to a single account, identified by player_id or username. */
+export class AccountApi {
+	/** Loop sub-API for this account (`sp.account(id).loop`). */
+	readonly loop: AccountLoopApi;
+
+	constructor(
+		private readonly client: SetpointClient,
+		private readonly id: string,
+	) {
+		this.loop = new AccountLoopApi(client, id);
+	}
 
 	/**
 	 * Executes a goal synchronously, blocking until the daemon returns a result.
