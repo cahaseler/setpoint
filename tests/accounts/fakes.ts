@@ -89,6 +89,8 @@ export class FakeAccount implements LibManagedAccount {
 
 export class FakeClient implements AccountClientLike {
 	lastFilter?: ((p: ClerkPlayer) => boolean) | undefined;
+	/** Number of times listOwnedPlayers() has been called — for TTL-cache tests. */
+	listOwnedPlayersCallCount = 0;
 	private connected = new Map<string, FakeAccount>();
 	constructor(
 		private readonly players: ClerkPlayer[],
@@ -129,6 +131,7 @@ export class FakeClient implements AccountClientLike {
 	}
 	/** Passthrough over the fixture player list, ignoring connection status. */
 	listOwnedPlayers(): Promise<ClerkPlayer[]> {
+		this.listOwnedPlayersCallCount++;
 		return Promise.resolve(this.players);
 	}
 	accounts(): LibManagedAccount[] {

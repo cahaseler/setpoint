@@ -296,7 +296,6 @@ dist/smctl <command> [options]       # Run the compiled standalone binary
 | `--port <number>` | Daemon port (default: 7580, or `SM_PORT` env var) |
 | `--json '<json>'` | Inline JSON body for POST commands |
 | `--stdin` | Read JSON body from stdin (mutually exclusive with `--json`) |
-| `--output-json` | Pass `--json` to the spacemolt CLI for JSON output (`raw` command only) |
 | `--async` | Submit a goal in the background, return `job_id` immediately (`goal` command only) |
 | `--version`, `-v` | Print smctl version |
 | `--help`, `-h` | Print usage text |
@@ -384,24 +383,18 @@ Loop configs are persisted to disk and auto-resume on daemon restart.
 
 Use `smctl help loops`, `smctl help trading`, or `smctl help hauling` for detailed schemas and examples.
 
-#### Raw Command (spacemolt CLI Passthrough)
+#### Raw Command (Game API Passthrough)
 
-The `raw` command spawns the external `spacemolt` CLI binary with the account's managed session token, allowing arbitrary game API calls without managing sessions manually. (The `spacemolt` binary is a separate third-party tool you obtain yourself — see [SETUP.md](SETUP.md).)
+The `raw` command posts directly to the daemon's `POST /accounts/:playerId/raw` endpoint, using the account's managed session — no external binary required.
 
 ```bash
-smctl raw <playerId> <command> [args...]
+smctl raw <playerId> <action> [args...]
 smctl raw <playerId> get_state
 smctl raw <playerId> travel sol_asteroid_belt
 smctl raw <playerId> buy id=iron_ore quantity=10
-smctl raw <playerId> get_nearby --output-json    # Pass --json to the spacemolt CLI
 ```
 
-**How it works:** smctl fetches the session token from `GET /accounts/:playerId/session`, then spawns the spacemolt CLI binary with `--session <token>` prepended to the command arguments. The CLI process inherits stdio, so its output goes directly to the terminal.
-
-**Binary resolution order:**
-1. `SPACEMOLT_CLI` environment variable (path to the binary)
-2. `spacemolt` binary in the same directory as smctl (or one level up, for the `dist/` layout)
-3. `spacemolt` on the system `PATH`
+**How it works:** the first arg after `playerId` is the `action` (posted with `toolGroup: "spacemolt"`). Remaining args are parsed as `key=value` pairs into `params` (numeric-looking values are coerced to numbers), or, if a single bare value is given with no `=`, it's sent as `params.id` — e.g. `travel sol_asteroid_belt` becomes `{"action":"travel","params":{"id":"sol_asteroid_belt"}}`. To reach a non-base tool group (e.g. `spacemolt_facility`), use the `POST /accounts/:playerId/raw` HTTP endpoint directly (see below) — `smctl raw` always targets the base `spacemolt` group.
 
 ### Help Commands
 
@@ -426,7 +419,6 @@ The daemon listens on `http://127.0.0.1:7580` by default. All responses are JSON
 | `POST` | `/accounts` | Add account (queued, 202) | `smctl accounts add` |
 | `POST` | `/accounts/register` | Register new account | `smctl accounts register` |
 | `DELETE` | `/accounts/:playerId` | Remove account | `smctl accounts remove` |
-| `GET` | `/accounts/:playerId/session` | Get session token | (used by `smctl raw`) |
 | `GET` | `/accounts/:playerId/state` | Full game state | `smctl state` |
 | `GET` | `/accounts/:playerId/state/:section` | State section | `smctl state <id> <section>` |
 | `POST` | `/accounts/:playerId/goal` | Execute goal (sync) | `smctl goal` |
@@ -437,7 +429,7 @@ The daemon listens on `http://127.0.0.1:7580` by default. All responses are JSON
 | `PATCH` | `/accounts/:playerId/loop` | Update loop options live (no restart) | `smctl loop update` |
 | `DELETE` | `/accounts/:playerId/loop` | Stop loop | `smctl loop stop` |
 | `DELETE` | `/accounts/:playerId/abort` | Release account from all in-progress work | `smctl abort` |
-| `POST` | `/accounts/:playerId/raw` | Raw API passthrough | -- |
+| `POST` | `/accounts/:playerId/raw` | Raw API passthrough | `smctl raw` |
 | `GET` | `/log-level` | Get log level | `smctl log-level` |
 | `POST` | `/log-level` | Set log level | `smctl log-level <level>` |
 

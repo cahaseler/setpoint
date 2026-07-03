@@ -11,6 +11,9 @@ import type { AccountClientLike, LibManagedAccount } from "./lib-types.js";
 
 const log = createLogger("lib-account-mgr");
 
+/** How long a `listOwned()` result is trusted before refreshing from Clerk. Keeps a polling dashboard from hammering Clerk's API on every GET /accounts request. */
+const OWNED_LIST_TTL_MS = 60_000;
+
 export interface LibAccountManagerOptions {
 	/** Called on every account state change: (playerId, changed sections, the account). Phase 2 wires the SQLite projector here. */
 	onStateChange?: (playerId: string, changed: StateSection[], account: LibManagedAccount) => void;
@@ -26,6 +29,8 @@ export class LibAccountManager {
 	private readonly usernameToPlayerId = new Map<string, string>();
 	/** Usernames/ids with an in-flight connectOne/register call. */
 	private readonly connecting = new Set<string>();
+	/** Cached `listOwned()` result and the time it was fetched, for the TTL below. */
+	private ownedListCache: { players: ClerkPlayer[]; fetchedAt: number } | undefined;
 
 	constructor(
 		private readonly client: AccountClientLike,
@@ -100,9 +105,29 @@ export class LibAccountManager {
 		}
 	}
 
-	/** List the player accounts the Clerk user owns (connected or not). */
-	listOwned(): Promise<ClerkPlayer[]> {
-		return this.client.listOwnedPlayers();
+	/**
+	 * List the player accounts the Clerk user owns (connected or not). Cached for
+	 * `OWNED_LIST_TTL_MS` so a polling dashboard doesn't trigger a Clerk network
+	 * call on every request. If a refresh fails and a stale cached value exists,
+	 * that value is returned instead of throwing — the `GET /accounts` handler
+	 * already degrades to connected-only accounts on error, so a stale-but-known
+	 * owned list is strictly better than dropping to nothing.
+	 */
+	async listOwned(): Promise<ClerkPlayer[]> {
+		const cache = this.ownedListCache;
+		if (cache && Date.now() - cache.fetchedAt < OWNED_LIST_TTL_MS) {
+			return cache.players;
+		}
+		try {
+			const players = await this.client.listOwnedPlayers();
+			this.ownedListCache = { players, fetchedAt: Date.now() };
+			return players;
+		} catch (err) {
+			if (cache) {
+				return cache.players;
+			}
+			throw err;
+		}
 	}
 
 	/** Whether a connectOne/register call for this id/username is currently in flight. */

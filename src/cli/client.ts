@@ -42,16 +42,6 @@ export class DaemonClient {
 		this.requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
 	}
 
-	/**
-	 * Base URL for the daemon's transparent game-API proxy. `smctl raw` sets the
-	 * spacemolt CLI's SPACEMOLT_URL to this so the CLI's traffic egresses through
-	 * the daemon (branded + compressed + bandwidth-tracked) instead of going
-	 * straight to game.spacemolt.com.
-	 */
-	gameProxyUrl(): string {
-		return `${this.baseUrl}/gameproxy/api/v2`;
-	}
-
 	async get(path: string, options?: { requestTimeoutMs?: number }): Promise<DaemonResponse> {
 		return this.request("GET", path, undefined, options?.requestTimeoutMs);
 	}

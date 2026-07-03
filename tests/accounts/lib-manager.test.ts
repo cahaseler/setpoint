@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import type { Account, ClerkPlayer } from "@spacemolt/lib";
 import { LibAccountManager } from "../../src/accounts/lib-manager.js";
 import type { LibManagedAccount } from "../../src/accounts/lib-types.js";
@@ -208,5 +208,39 @@ describe("LibAccountManager", () => {
 
 		const owned = await mgr.listOwned();
 		expect(owned.map((p) => p.username)).toEqual(["Alpha", "Beta"]);
+	});
+
+	describe("listOwned() TTL cache", () => {
+		afterEach(() => {
+			spyOn(Date, "now").mockRestore();
+		});
+
+		test("repeated calls within the TTL hit the client's listOwnedPlayers only once", async () => {
+			const { client } = setup([player("Alpha", "pid-a")]);
+			const mgr = new LibAccountManager(client, { clerkApiKey: "k" });
+
+			await mgr.listOwned();
+			await mgr.listOwned();
+			await mgr.listOwned();
+
+			expect(client.listOwnedPlayersCallCount).toBe(1);
+		});
+
+		test("a call after the TTL expires refreshes from the client", async () => {
+			const { client } = setup([player("Alpha", "pid-a")]);
+			const mgr = new LibAccountManager(client, { clerkApiKey: "k" });
+			const nowSpy = spyOn(Date, "now").mockReturnValue(1_000_000);
+
+			await mgr.listOwned();
+			expect(client.listOwnedPlayersCallCount).toBe(1);
+
+			nowSpy.mockReturnValue(1_000_000 + 30_000); // still within the 60s TTL
+			await mgr.listOwned();
+			expect(client.listOwnedPlayersCallCount).toBe(1);
+
+			nowSpy.mockReturnValue(1_000_000 + 60_001); // past the TTL
+			await mgr.listOwned();
+			expect(client.listOwnedPlayersCallCount).toBe(2);
+		});
 	});
 });
