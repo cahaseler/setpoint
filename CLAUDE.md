@@ -46,18 +46,21 @@ setpoint/
 │   │   ├── lib-manager.ts          # Account lifecycle via @spacemolt/lib's Clerk-based connectOwned
 │   │   ├── lib-config.ts           # Parses config/dispatcher.json (clerkApiKey, accountsFilter)
 │   │   └── config.ts               # Loads config/registration.json (registration_code)
-│   ├── state/                      # Game state tracking
+│   ├── state/                      # Game state tracking (read-only SQLite projection of the lib cache)
 │   │   ├── database.ts             # SQLite schema and queries
 │   │   ├── store.ts                # State store interface
-│   │   └── updater.ts              # Applies mutation responses to state
-│   ├── dispatcher/                 # Declarative goal engine
-│   │   ├── goals.ts                # Goal interface and types
-│   │   ├── sequence.ts             # Sequential goal execution
-│   │   ├── sequence-goal.ts        # Sequence goal wrapper
-│   │   ├── loops.ts                # Loop execution engine
-│   │   ├── primitives/             # Single-action goals (travel, dock, refuel, etc.)
-│   │   ├── compounds/              # Multi-step goal sequences
-│   │   └── loops/                  # Loop definitions (mining, trading, hauling, …)
+│   │   ├── projector.ts            # Writes lib-cache state changes into the SQLite store
+│   │   └── attach-projector.ts     # Wires an account's onStateChange stream to the projector
+│   ├── dispatcher/                 # Declarative goal engine (runs on @spacemolt/lib)
+│   │   ├── goals.ts                # Shared goal result/status types (GoalResult, LoopResult, …)
+│   │   ├── lib-goal-context.ts     # LibGoalContext + LibGoalAccount boundary; makeLibGoalContext
+│   │   ├── lib-sequence.ts         # runLibSequence — compound step runner
+│   │   ├── lib-loops.ts            # runLibLoop — loop execution engine
+│   │   ├── state-freshness.ts      # Age-based refreshState escalation (STATE_FRESHNESS_TTL_MS)
+│   │   ├── cargo.ts                # Cargo helpers
+│   │   ├── lib-primitives/         # Single-action goals (travel, dock, refuel, …) on the lib
+│   │   ├── lib-compounds/          # Multi-step goal sequences on the lib
+│   │   └── lib-loops/              # Loop definitions (mining, trading, hauling, …) on the lib
 │   ├── server/                     # Local HTTP API
 │   │   ├── index.ts                # Server startup and route registration
 │   │   ├── router.ts               # Route definitions and matching
