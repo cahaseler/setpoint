@@ -13,6 +13,7 @@ import type {
 } from "@setpoint/protocol";
 import type { SetpointClient } from "./client.js";
 import { type WaitForJobOptions, waitForJob } from "./jobs.js";
+import { type RawApi, createRawApi } from "./raw.js";
 
 export interface AbortOptions {
 	/** Fire abort signals and clean up in-memory state immediately, instead of just reporting status. */
@@ -124,6 +125,15 @@ export class AccountApi {
 	) {
 		this.loop = new AccountLoopApi(client, id);
 		this.state = new AccountStateApi(client, id);
+	}
+
+	/**
+	 * Typed raw-passthrough API for this account (`sp.account(id).raw`).
+	 * `raw.<group>.<action>(params)` POSTs `/accounts/:id/raw` and returns the
+	 * daemon's `RawEnvelope`, typed via `@spacemolt/lib`'s `Commands`.
+	 */
+	get raw(): RawApi {
+		return createRawApi(this.client, this.id);
 	}
 
 	/**

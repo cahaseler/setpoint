@@ -35,3 +35,4 @@ export {
 export type { SetpointHttpErrorBody } from "./errors.js";
 export { JobApi, waitForJob } from "./jobs.js";
 export type { WaitForJobOptions } from "./jobs.js";
+export type { RawApi } from "./raw.js";
