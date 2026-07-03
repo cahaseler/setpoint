@@ -1,4 +1,3 @@
-import type { GetPoiResponse, QueryResult } from "@spacemolt/lib";
 import { createLogger } from "../../util/logger.js";
 import type { IterationResult, LoopResult } from "../goals.js";
 import { LibPrepareAtStation } from "../lib-compounds/prepare-at-station.js";
@@ -7,6 +6,8 @@ import type { LibGoalContext } from "../lib-goal-context.js";
 const log = createLogger("loop:mining");
 
 export interface HarvesterPrecheckOptions {
+	/** System containing the mining target (for the faction-intel lookup). */
+	miningSystemId: string;
 	/** POI ID of the mining target (belt, gas cloud, ice field). */
 	beltPoiId: string;
 	/** System containing the sell station (for navigation on failure). */
@@ -21,33 +22,50 @@ export interface HarvesterPrecheckOptions {
  * Check whether the target mining POI requires a gas or ice harvester module,
  * and verify one is equipped.
  *
- * Returns null if no special module is required or if the required module is
- * equipped. If the POI is a gas_cloud or ice_field and the required harvester
- * is not equipped, navigates the ship to the sell station and returns a failed
- * LoopResult.
+ * The belt's type is looked up from the faction's Intel database
+ * (`query_intel`), the only way to learn about a POI the ship isn't at — the
+ * game deliberately withholds remote POI/system info (get_poi/get_system report
+ * only the current location). This runs at loop start, before travelling to the
+ * belt, so a direct query wouldn't work.
  *
- * If module data is unavailable in local state, the check is skipped.
+ * Returns null (don't block) when: no special module is required; the required
+ * module is equipped; the faction has no intel facility or the target POI isn't
+ * in the faction's intel yet (can't verify ahead of time — the run proceeds and
+ * any wrong-harvester problem surfaces when mining is attempted); or module data
+ * is unavailable in local state. If the POI is a gas_cloud or ice_field and the
+ * required harvester is not equipped, navigates the ship to the sell station and
+ * returns a failed LoopResult.
  */
 export async function checkHarvesterForPoi(
 	options: HarvesterPrecheckOptions,
 	ctx: LibGoalContext,
 ): Promise<LoopResult | null> {
-	// lib codegen gap: get_poi's generated TS signature takes no id parameter
-	// (see commands.gen.ts), even though the original REST call passed
-	// options.beltPoiId in the request body and the endpoint's schema does not
-	// set additionalProperties:false. Cast to send the id through as the
-	// original did — whether the live server actually honors it for an
-	// arbitrary (not-yet-visited) POI is unverified; if it doesn't, this reads
-	// the ship's current POI instead, same as before this port.
-	const poiResponse = await (
-		ctx.account.commands.spacemolt.get_poi as (params: {
-			id: string;
-		}) => Promise<QueryResult<GetPoiResponse>>
-	)({ id: options.beltPoiId });
-	const sc = poiResponse.structuredContent;
-	// GetPoiResponse is a union: the normal branch carries `poi`, but a
-	// mid-transit response carries `in_transit`/`ticks_remaining` instead.
-	const poiType = sc && "poi" in sc ? sc.poi.type : undefined;
+	let poiType: string | undefined;
+	try {
+		const intel = await ctx.account.commands.spacemolt_intel.query_intel({
+			system_id: options.miningSystemId,
+		});
+		for (const entry of intel.structuredContent?.entries ?? []) {
+			const poi = entry.pois?.find((p) => p.id === options.beltPoiId);
+			if (poi) {
+				poiType = poi.type;
+				break;
+			}
+		}
+	} catch (err) {
+		// No intel facility, allied-only access, or any query failure — we can't
+		// learn the belt type ahead of time, so don't block.
+		log.debug(
+			`Intel lookup for ${options.beltPoiId} unavailable (${err instanceof Error ? err.message : String(err)}) — skipping harvester precheck`,
+		);
+		return null;
+	}
+
+	if (poiType === undefined) {
+		// The POI isn't in the faction's intel yet — can't verify ahead of time.
+		log.debug(`No faction intel on ${options.beltPoiId} yet — skipping harvester precheck`);
+		return null;
+	}
 
 	let requiredPrefix: string;
 	let typeName: string;

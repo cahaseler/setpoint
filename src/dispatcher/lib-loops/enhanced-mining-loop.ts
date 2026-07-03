@@ -81,6 +81,7 @@ export async function runEnhancedMiningLoop(
 
 	const precheckResult = await checkHarvesterForPoi(
 		{
+			miningSystemId: options.miningSystemId,
 			beltPoiId: options.beltPoiId,
 			sellSystemId: options.sellSystemId,
 			sellStationPoiId: options.sellStationPoiId,
