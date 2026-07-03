@@ -1,5 +1,6 @@
 /** Transport core for `@setpoint/client` — fetch-based HTTP with retry/timeout. */
 
+import { AccountApi } from "./account.js";
 import { ConnectionError, DeprecatedGoalError, SetpointHttpError, TimeoutError } from "./errors.js";
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:7580";
@@ -94,5 +95,10 @@ export class SetpointClient {
 		}
 
 		throw new ConnectionError(this.baseUrl, lastErr);
+	}
+
+	/** Returns the account-scoped goal API for the given account id (player_id or username). */
+	account(id: string): AccountApi {
+		return new AccountApi(this, id);
 	}
 }
