@@ -30,47 +30,11 @@ cd setpoint
 bun install
 ```
 
-That installs the dev dependencies (Biome, TypeScript, `openapi-typescript`). There are no production runtime dependencies to install.
+That installs the dev tooling (Biome, TypeScript) and the `@spacemolt/lib` package, which provides all SpaceMolt API request/response types — there is no local type generation step. The `smctl raw` passthrough (`POST /accounts/:playerId/raw`) makes direct game API calls through the daemon's managed session — no external binary required.
 
 ---
 
-## 2. (Optional) The third-party `spacemolt` CLI binary
-
-The `smctl raw` passthrough command shells out to an external **`spacemolt`** CLI binary so you can issue arbitrary game API calls using the daemon's managed session token. **This binary is not included in this repository** — obtain it separately if you want the `smctl raw` feature.
-
-Everything else (goals, loops, state queries, account management, and the `POST /accounts/:playerId/raw` HTTP passthrough) works without it. You only need the `spacemolt` binary for the `smctl raw <playerId> ...` command.
-
-`smctl` resolves the binary in this order (from `src/cli/commands.ts`):
-
-1. The path in the `SPACEMOLT_CLI` environment variable, if set and it exists.
-2. A file named `spacemolt` sitting next to the `smctl` binary, or one directory up (covers the `dist/` layout).
-3. `spacemolt` on your system `PATH`.
-
-So either put `spacemolt` on your `PATH`, drop it next to `smctl`, or point at it explicitly:
-
-```bash
-export SPACEMOLT_CLI=/absolute/path/to/spacemolt
-```
-
-If the binary cannot be found, `smctl raw` prints an error and exits; no other command is affected.
-
----
-
-## 3. (Optional) Regenerating API types
-
-All SpaceMolt API request/response types are generated from the OpenAPI spec into `src/generated/api-types.ts`. **These generated types are committed**, so a normal clone, build, and run needs no type generation and no network access.
-
-You only need to regenerate if you are updating against a newer game server API:
-
-```bash
-bun run generate
-```
-
-Note: this repository does **not** vendor the OpenAPI spec. When no vendored spec is present, the generate script fetches it live from `https://game.spacemolt.com/api/v2/openapi.json`, so this step requires network access (verified in `scripts/generate-types.ts`).
-
----
-
-## 4. Configuration
+## 2. Configuration
 
 The daemon reads everything from a `config/` directory in the project root. This directory is gitignored — it holds your plaintext credentials, so treat it as a secret.
 
@@ -124,7 +88,7 @@ Schema (verified in `src/accounts/config.ts`, `parseAccountConfig`):
 | `password` | string | yes | Non-empty |
 | `player_id` | string | yes | Non-empty; the account UUID |
 
-> Note: account config files loaded at daemon startup require all three fields including `player_id`. (When you *add* an account at runtime via the API/CLI, you may omit `player_id` and the daemon discovers it by logging in — see section 5. Files written by that flow always include all three fields.)
+> Note: account config files loaded at daemon startup require all three fields including `player_id`. (When you *add* an account at runtime via the API/CLI, you may omit `player_id` and the daemon discovers it by logging in — see section 3. Files written by that flow always include all three fields.)
 
 ### Port and log level
 
@@ -141,7 +105,7 @@ chmod 600 config/registration.json config/accounts/*.json
 
 ---
 
-## 5. Registering vs. adding accounts
+## 3. Registering vs. adding accounts
 
 You can either register a brand-new SpaceMolt account or add an account you already have. Both can be done at startup (by dropping config files in `config/accounts/`) or at runtime via `smctl` once the daemon is running.
 
@@ -185,7 +149,7 @@ So when you add many accounts (or start the daemon with many configured), they c
 
 ---
 
-## 6. Run the daemon
+## 4. Run the daemon
 
 ```bash
 bun run start          # start the daemon
@@ -208,7 +172,7 @@ By default the daemon binds to **`127.0.0.1:7580`** (loopback only).
 
 ---
 
-## 7. First-run verification
+## 5. First-run verification
 
 With the daemon running, open another terminal:
 
@@ -236,7 +200,7 @@ All `:playerId` arguments accept either the `player_id` UUID or the username (ca
 
 ---
 
-## 8. (Optional) Build the standalone `smctl` binary
+## 6. (Optional) Build the standalone `smctl` binary
 
 For convenience you can compile a single self-contained `smctl` executable:
 
@@ -250,8 +214,6 @@ Then run it directly instead of going through Bun:
 dist/smctl health
 dist/smctl accounts list
 ```
-
-If you use `smctl raw`, remember the binary resolution from section 2 — placing the `spacemolt` binary in `dist/` (next to the compiled `smctl`) is one of the supported locations.
 
 ---
 

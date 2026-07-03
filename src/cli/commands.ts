@@ -11,8 +11,6 @@ export interface CommandContext {
 	output: CliOutput;
 	/** Raw JSON body from --json flag or --stdin. */
 	jsonBody: unknown | undefined;
-	/** Whether --output-json was passed. Currently unused by any handler — the daemon's raw passthrough already returns JSON. Kept on the context for CLI flag-parsing compatibility. */
-	outputJson?: boolean;
 	/** Whether --async was passed (for goal command). */
 	asyncMode?: boolean;
 	/** Whether --force was passed (for abort command). */

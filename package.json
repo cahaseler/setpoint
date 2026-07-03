@@ -8,14 +8,13 @@
 		"smctl": "src/cli/index.ts"
 	},
 	"scripts": {
-		"generate": "bun run scripts/generate-types.ts",
 		"build": "bun build src/index.ts --outdir dist --target bun",
 		"build:cli": "bun build src/cli/index.ts --compile --outfile dist/smctl",
 		"start": "bun run src/index.ts",
 		"dev": "bun run --watch src/index.ts",
 		"smctl": "bun run src/cli/index.ts",
-		"test": "bun test tests/accounts tests/api tests/cli tests/dispatcher tests/integration tests/scripts tests/server tests/state tests/util",
-		"test:coverage": "bun test --coverage tests/accounts tests/api tests/cli tests/dispatcher tests/integration tests/scripts tests/server tests/state tests/util",
+		"test": "bun test tests/accounts tests/api tests/cli tests/dispatcher tests/integration tests/server tests/state tests/util",
+		"test:coverage": "bun test --coverage tests/accounts tests/api tests/cli tests/dispatcher tests/integration tests/server tests/state tests/util",
 		"lint": "biome check .",
 		"lint:fix": "biome check --write .",
 		"format": "biome format --write .",
@@ -27,7 +26,6 @@
 	"devDependencies": {
 		"@biomejs/biome": "^1.9.0",
 		"@types/bun": "^1.3.9",
-		"openapi-typescript": "^7.0.0",
 		"typescript": "^5.7.0"
 	},
 	"dependencies": {

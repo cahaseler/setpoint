@@ -36,12 +36,9 @@ setpoint/
 ├── package.json
 ├── tsconfig.json
 ├── scripts/
-│   ├── bump-version.ts             # Auto-increment patch version on deploy
-│   └── generate-types.ts           # Generate API types from the OpenAPI spec
+│   └── bump-version.ts             # Auto-increment patch version on deploy
 ├── src/
 │   ├── index.ts                    # Entry point — starts the service
-│   ├── generated/                  # Auto-generated from the OpenAPI spec (DO NOT EDIT)
-│   │   └── api-types.ts
 │   ├── api/                        # SpaceMolt API client layer
 │   │   ├── client.ts               # HTTP client, request/response handling
 │   │   ├── session.ts              # Session creation, keepalive, recovery
@@ -135,12 +132,7 @@ Port and log level come from the `SM_PORT` and `SM_LOG_LEVEL` environment variab
 
 ## Type Generation
 
-All request and response types are generated from the SpaceMolt OpenAPI spec. **Never hand-write API types.**
-
-- `bun run generate` produces `src/generated/api-types.ts` via `openapi-typescript`.
-- The spec is read from a vendored `openapi/spacemolt-v2.json` if present, and otherwise fetched from the live endpoint (`game.spacemolt.com/api/v2/openapi.json`). This public distribution does not vendor the spec.
-- The generated file is committed, so a normal build needs no network — only regenerating types does.
-- Generated files are never edited by hand.
+All request and response types come from the `@spacemolt/lib` package. **Never hand-write API types.** There is no local OpenAPI codegen — the vendored spec and generated-types pipeline have been removed; types are updated by bumping the `@spacemolt/lib` dependency.
 
 ## State Management
 
@@ -168,7 +160,6 @@ Endpoints expose:
 
 ```bash
 bun install              # Install dependencies
-bun run generate         # Regenerate types from the OpenAPI spec
 bun run build            # Type-check and bundle
 bun run build:cli        # Compile the standalone smctl binary to dist/smctl
 bun run start            # Start the setpoint daemon
@@ -222,7 +213,6 @@ Read `src/server/index.ts` to verify the exact registered route path before usin
 ### Git
 - Conventional commits (`feat:`, `fix:`, `chore:`, `test:`, etc.)
 - The pre-commit hook runs `bun run check` (Biome lint + format) — don't bypass it
-- Don't commit generated code changes without regenerating from the spec
 
 ### Deploy Workflow
 After finishing a set of changes, run `bun run deploy`. It bumps the patch version (if there are uncommitted changes), runs lint + typecheck + tests, and compiles the standalone CLI binary (`dist/smctl`), then prints a summary block with the version and per-step status.
@@ -232,7 +222,7 @@ After finishing a set of changes, run `bun run deploy`. It bumps the patch versi
 - **Free the port if needed:** `npx kill-port 7580` — avoid broad `pkill` that kills unrelated processes.
 
 ### Important Patterns
-- **Never hardcode API types** — always use generated types from the OpenAPI spec
+- **Never hardcode API types** — always use the types exported by `@spacemolt/lib`
 - **Every mutation response updates state** — no mutation call should skip the state updater
 - **Per-account isolation** — accounts must never share sessions, state, or queues
 - **Respect rate limits proactively** — don't rely on 429 responses to pace; predict and prevent

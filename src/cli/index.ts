@@ -21,7 +21,6 @@ async function main(): Promise<void> {
 	let port: number | undefined;
 	let jsonBody: unknown | undefined;
 	let useStdin = false;
-	let outputJson = false;
 	let asyncMode = false;
 	let forceMode = false;
 	const positionalArgs: string[] = [];
@@ -47,8 +46,6 @@ async function main(): Promise<void> {
 			} catch {
 				return output.usageError("--json value is not valid JSON");
 			}
-		} else if (arg === "--output-json") {
-			outputJson = true;
 		} else if (arg === "--async") {
 			asyncMode = true;
 		} else if (arg === "--force") {
@@ -87,7 +84,7 @@ async function main(): Promise<void> {
 
 	const client = new DaemonClient({ port: resolvedPort });
 	const matched = await dispatch(
-		{ client, output, jsonBody, outputJson, asyncMode, forceMode },
+		{ client, output, jsonBody, asyncMode, forceMode },
 		positionalArgs,
 	);
 

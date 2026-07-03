@@ -255,7 +255,7 @@ SpaceMoltClient → Session → GameEndpoints → goals → server handlers → 
   updates), and handles expiry/recovery and busy-ship polling.
 - **`GameEndpoints`** ([`src/api/endpoints.ts`](./src/api/endpoints.ts)) — typed
   wrappers over individual game actions (`jump`, `dock`, `refuel`, `findRoute`,
-  …), using types generated from the OpenAPI spec.
+  …), using types from the `@spacemolt/lib` package.
 - **Goals** — the declarative layer described in §2, which calls endpoints.
 - **Server handlers** ([`src/server/handlers.ts`](./src/server/handlers.ts)) —
   translate HTTP requests into goal/loop/raw operations and read state from the
@@ -297,8 +297,6 @@ setpoint/
 │   └── bump-version.ts             # Patch-version bump used by deploy
 ├── src/
 │   ├── index.ts                    # Entry point — boot DB, manager, server; connect accounts
-│   ├── generated/
-│   │   └── api-types.ts            # Auto-generated from the OpenAPI spec (never hand-edited)
 │   ├── api/                        # SpaceMolt API client layer
 │   │   ├── client.ts               # Low-level HTTP client, envelope parsing, error classification
 │   │   ├── session.ts              # Session lifecycle, keepalive, 401 recovery, busy-ship polling
@@ -383,10 +381,9 @@ involved; work backwards from the timing to identify which constant matches.
 
 ## Conventions for contributors
 
-- **Types are generated, never hand-written.** All request/response types come
-  from the OpenAPI spec via `bun run generate`, which reads a vendored
-  `openapi/spacemolt-v2.json` if present and otherwise fetches the live spec.
-  Regenerate rather than editing `src/generated/`.
+- **Types are never hand-written.** All request/response types come from the
+  `@spacemolt/lib` package — there is no local type generation. Update types by
+  bumping the `@spacemolt/lib` dependency.
 - **Every mutation response updates state.** No mutation path should bypass the
   state updater.
 - **Per-account isolation is invariant.** Sessions, state, and queues must never
