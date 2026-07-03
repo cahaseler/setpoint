@@ -66,12 +66,15 @@ export interface JobRecord {
 /**
  * The daemon's normalized raw-passthrough envelope, returned by
  * `POST /accounts/:playerId/raw` (`handleRawAction`). NOT the lib's
- * WS-based `MutationResult`/`QueryResult` — this is the plain HTTP
- * `{ result, structuredContent, notifications }` shape, returned as-is
- * for both mutation and query actions.
+ * WS-based `MutationResult`/`QueryResult`. The daemon normalizes both:
+ * a mutation resolves as `{ result: delta, structuredContent: delta, tick, command }`
+ * and a query as `{ result, structuredContent }` — so `tick`/`command` are
+ * present only for mutations, and there is no `notifications` field (push
+ * events arrive on the event stream, not on command results).
  */
 export interface RawEnvelope {
 	result: unknown;
-	structuredContent: unknown;
-	notifications: unknown[];
+	structuredContent?: unknown;
+	tick?: number;
+	command?: string;
 }

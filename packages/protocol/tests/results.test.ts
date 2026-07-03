@@ -107,11 +107,17 @@ test("JobStatus union and JobRecord shape", () => {
 	expect(failedJob.error).toBe("something broke");
 });
 
-test("RawEnvelope shape (single shape for mutation and query responses)", () => {
-	const env: RawEnvelope = {
+test("RawEnvelope shape — mutation carries tick/command, query does not", () => {
+	const mutation: RawEnvelope = {
+		result: { location: { system_id: "sol" } },
+		structuredContent: { location: { system_id: "sol" } },
+		tick: 1252151,
+		command: "undock",
+	};
+	const query: RawEnvelope = {
 		result: "You travel to Sol.",
 		structuredContent: { location: { system_id: "sol" } },
-		notifications: [],
 	};
-	expect(env.notifications).toEqual([]);
+	expect(mutation.command).toBe("undock");
+	expect(query.tick).toBeUndefined();
 });
