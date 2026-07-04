@@ -109,6 +109,33 @@ describe("AccountApi.raw", () => {
 		expect("params" in bodyAsRecord).toBe(false);
 	});
 
+	test("raw() disables the timeout rather than inheriting the client's configured default", async () => {
+		// A client-wide short timeout would abort a slow raw mutation (e.g. a
+		// multi-tick craft batch) if raw() didn't override it per-request, the
+		// same way goal() does.
+		fetchCalls = [];
+		globalThis.fetch = ((url: string | URL | Request, init?: RequestInit) => {
+			fetchCalls.push({ url: url.toString(), method: init?.method, body: parseBody(init) });
+			return new Promise<Response>((resolve) => {
+				setTimeout(
+					() =>
+						resolve(
+							new Response(JSON.stringify(jumpEnvelope), {
+								status: 200,
+								headers: { "Content-Type": "application/json" },
+							}),
+						),
+					20,
+				);
+			});
+		}) as typeof fetch;
+		const client = new SetpointClient({ timeoutMs: 5 });
+
+		const result = await client.account("Player1").raw.spacemolt.jump({ id: "sol" });
+
+		expect(result).toEqual(jumpEnvelope);
+	});
+
 	test("raw encodeURIComponent's the account id", async () => {
 		mockFetchSequence([{ status: 200, body: jumpEnvelope }]);
 		const client = new SetpointClient();

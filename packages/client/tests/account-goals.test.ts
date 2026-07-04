@@ -178,6 +178,45 @@ describe("AccountApi", () => {
 		expect(fetchCalls[0]?.body).toBeUndefined();
 	});
 
+	test("abort({force:true}) disables the timeout rather than inheriting the client's configured default", async () => {
+		fetchCalls = [];
+		globalThis.fetch = ((url: string | URL | Request, init?: RequestInit) => {
+			fetchCalls.push({ url: url.toString(), method: init?.method, body: parseBody(init) });
+			return new Promise<Response>((resolve) => {
+				setTimeout(
+					() =>
+						resolve(
+							new Response(JSON.stringify({ message: "Account aborted." }), {
+								status: 200,
+								headers: { "Content-Type": "application/json" },
+							}),
+						),
+					20,
+				);
+			});
+		}) as typeof fetch;
+		const client = new SetpointClient({ timeoutMs: 5 });
+
+		const result = await client.account("Player1").abort({ force: true });
+
+		expect(result).toEqual({ message: "Account aborted." });
+	});
+
+	test("abort() without force keeps the client's configured default timeout", async () => {
+		fetchCalls = [];
+		globalThis.fetch = ((url: string | URL | Request, init?: RequestInit) => {
+			fetchCalls.push({ url: url.toString(), method: init?.method, body: parseBody(init) });
+			return new Promise<Response>((_resolve, reject) => {
+				init?.signal?.addEventListener("abort", () => {
+					reject(new DOMException("The operation was aborted", "AbortError"));
+				});
+			});
+		}) as unknown as typeof fetch;
+		const client = new SetpointClient({ timeoutMs: 5 });
+
+		await expect(client.account("Player1").abort()).rejects.toThrow();
+	});
+
 	test("goal() rejects mistyped options at compile time", async () => {
 		mockFetchSequence([{ status: 200, body: goalResult }]);
 		const client = new SetpointClient();

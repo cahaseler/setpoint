@@ -144,6 +144,38 @@ describe("SetpointClient.accounts", () => {
 		expect(fetchCalls[0]?.body).toEqual({ username: "Player1", empire: "solarian" });
 	});
 
+	test("register() disables the timeout rather than inheriting the client's configured default", async () => {
+		const registerResult = {
+			player_id: "p1",
+			username: "Player1",
+			password: "generated-password",
+			empire: "solarian",
+			status: "connected",
+			message: "Account registered and connected",
+		};
+		fetchCalls = [];
+		globalThis.fetch = ((url: string | URL | Request, init?: RequestInit) => {
+			fetchCalls.push({ url: url.toString(), method: init?.method, body: parseBody(init) });
+			return new Promise<Response>((resolve) => {
+				setTimeout(
+					() =>
+						resolve(
+							new Response(JSON.stringify(registerResult), {
+								status: 201,
+								headers: { "Content-Type": "application/json" },
+							}),
+						),
+					20,
+				);
+			});
+		}) as typeof fetch;
+		const client = new SetpointClient({ timeoutMs: 5 });
+
+		const result = await client.accounts.register({ username: "Player1", empire: "solarian" });
+
+		expect(result).toEqual(registerResult);
+	});
+
 	test("register() rejects an invalid empire at compile time", async () => {
 		mockFetchSequence([{ status: 201, body: {} }]);
 		const client = new SetpointClient();
@@ -163,5 +195,29 @@ describe("SetpointClient.accounts", () => {
 		expect(result).toEqual({ message: "Account disconnected", player_id: "p1" });
 		expect(fetchCalls[0]?.url).toBe("http://127.0.0.1:7580/accounts/Player1");
 		expect(fetchCalls[0]?.method).toBe("DELETE");
+	});
+
+	test("remove() disables the timeout rather than inheriting the client's configured default", async () => {
+		fetchCalls = [];
+		globalThis.fetch = ((url: string | URL | Request, init?: RequestInit) => {
+			fetchCalls.push({ url: url.toString(), method: init?.method, body: parseBody(init) });
+			return new Promise<Response>((resolve) => {
+				setTimeout(
+					() =>
+						resolve(
+							new Response(JSON.stringify({ message: "Account disconnected", player_id: "p1" }), {
+								status: 200,
+								headers: { "Content-Type": "application/json" },
+							}),
+						),
+					20,
+				);
+			});
+		}) as typeof fetch;
+		const client = new SetpointClient({ timeoutMs: 5 });
+
+		const result = await client.accounts.remove("Player1");
+
+		expect(result).toEqual({ message: "Account disconnected", player_id: "p1" });
 	});
 });
