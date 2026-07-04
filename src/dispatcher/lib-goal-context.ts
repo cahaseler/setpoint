@@ -1,4 +1,4 @@
-import type { Commands, GameState } from "@spacemolt/lib";
+import type { Commands, GameState, MarketBook, ObservationView } from "@spacemolt/lib";
 import type { GoalResult } from "./goals.js";
 import { isStateStale } from "./state-freshness.js";
 
@@ -24,6 +24,18 @@ export interface LibGoalAccount {
 	/** Force a live `get_status` re-seed of the cache. Returns the refreshed state. */
 	refresh(): Promise<Readonly<GameState>>;
 	readonly commands: Commands;
+	/**
+	 * The cached order book for a base, if subscribed (via
+	 * `commands.spacemolt_market.subscribe_market()`). A goal needing live
+	 * market data reads this after subscribing, instead of the one-off
+	 * `view_market` query.
+	 */
+	market(baseId: string): MarketBook | undefined;
+	/**
+	 * The current observation-watch view, if subscribed (via
+	 * `commands.spacemolt.subscribe_observation()`).
+	 */
+	observation(): ObservationView | null;
 }
 
 /** Context passed to a lib-backed goal during execution. */

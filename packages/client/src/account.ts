@@ -9,6 +9,8 @@ import type {
 	LoopOptionsMap,
 	LoopStatus,
 	LoopType,
+	MarketBookSnapshot,
+	ObservationSnapshot,
 	V2GameState,
 } from "@setpoint/protocol";
 import type { GetSystemResponse } from "@spacemolt/lib";
@@ -157,6 +159,57 @@ export class AccountSystemApi {
 	}
 }
 
+/**
+ * Live market API scoped to a single account. Mirrors the daemon's
+ * `GET /accounts/:id/market/:baseId` route (`handleGetMarket` in
+ * `src/server/handlers.ts`).
+ */
+export class AccountMarketApi {
+	constructor(
+		private readonly client: SetpointClient,
+		private readonly id: string,
+	) {}
+
+	/**
+	 * Gets the cached order book for a base. There is no subscribe method here —
+	 * subscribe first via `account.raw.spacemolt_market.subscribe_market()`
+	 * (throws `SetpointHttpError` 404 if not subscribed / no data cached yet).
+	 */
+	async get(baseId: string): Promise<MarketBookSnapshot> {
+		const result = await this.client.request(
+			"GET",
+			`/accounts/${encodeURIComponent(this.id)}/market/${encodeURIComponent(baseId)}`,
+		);
+		return result as MarketBookSnapshot;
+	}
+}
+
+/**
+ * Live observation-watch API scoped to a single account. Mirrors the
+ * daemon's `GET /accounts/:id/observation` route (`handleGetObservation` in
+ * `src/server/handlers.ts`).
+ */
+export class AccountObservationApi {
+	constructor(
+		private readonly client: SetpointClient,
+		private readonly id: string,
+	) {}
+
+	/**
+	 * Gets the cached observation-watch view. There is no subscribe method
+	 * here — subscribe first via
+	 * `account.raw.spacemolt.subscribe_observation()` (throws
+	 * `SetpointHttpError` 404 if not subscribed / no data cached yet).
+	 */
+	async get(): Promise<ObservationSnapshot> {
+		const result = await this.client.request(
+			"GET",
+			`/accounts/${encodeURIComponent(this.id)}/observation`,
+		);
+		return result as ObservationSnapshot;
+	}
+}
+
 /** Goal API scoped to a single account, identified by player_id or username. */
 export class AccountApi {
 	/** Loop sub-API for this account (`sp.account(id).loop`). */
@@ -168,6 +221,12 @@ export class AccountApi {
 	/** System/POI-map sub-API for this account (`sp.account(id).system`). */
 	readonly system: AccountSystemApi;
 
+	/** Live market sub-API for this account (`sp.account(id).market`). */
+	readonly market: AccountMarketApi;
+
+	/** Live observation-watch sub-API for this account (`sp.account(id).observation`). */
+	readonly observation: AccountObservationApi;
+
 	constructor(
 		private readonly client: SetpointClient,
 		private readonly id: string,
@@ -175,6 +234,8 @@ export class AccountApi {
 		this.loop = new AccountLoopApi(client, id);
 		this.state = new AccountStateApi(client, id);
 		this.system = new AccountSystemApi(client, id);
+		this.market = new AccountMarketApi(client, id);
+		this.observation = new AccountObservationApi(client, id);
 	}
 
 	/**

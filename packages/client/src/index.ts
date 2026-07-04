@@ -1,4 +1,11 @@
-export { AccountApi, AccountsApi, AccountStateApi, AccountSystemApi } from "./account.js";
+export {
+	AccountApi,
+	AccountMarketApi,
+	AccountObservationApi,
+	AccountsApi,
+	AccountStateApi,
+	AccountSystemApi,
+} from "./account.js";
 export type {
 	AbortOptions,
 	AccountDetailState,

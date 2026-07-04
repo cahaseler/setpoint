@@ -94,6 +94,22 @@ const commands: Command[] = [
 		description: "Get game state or a specific section",
 	},
 	{
+		pattern: "market",
+		positionals: ["playerId", "baseId"],
+		handler: handleMarket,
+		usage: "smctl market <playerId> <baseId>",
+		description:
+			"Get the cached order book for a base (subscribe first via the HTTP raw passthrough: toolGroup spacemolt_market, action subscribe_market)",
+	},
+	{
+		pattern: "observation",
+		positionals: ["playerId"],
+		handler: handleObservation,
+		usage: "smctl observation <playerId>",
+		description:
+			"Get the cached observation-watch view (subscribe first via `smctl raw <playerId> subscribe_observation`)",
+	},
+	{
 		pattern: "loop status",
 		positionals: ["playerId"],
 		handler: handleLoopStatus,
@@ -380,6 +396,23 @@ async function handleState(ctx: CommandContext, args: string[]): Promise<void> {
 		? `/accounts/${encodeURIComponent(playerId)}/state/${encodeURIComponent(section)}`
 		: `/accounts/${encodeURIComponent(playerId)}/state`;
 	await sendAndOutput(ctx, () => ctx.client.get(path));
+}
+
+async function handleMarket(ctx: CommandContext, args: string[]): Promise<void> {
+	const playerId = args[0] as string;
+	const baseId = args[1] as string;
+	await sendAndOutput(ctx, () =>
+		ctx.client.get(
+			`/accounts/${encodeURIComponent(playerId)}/market/${encodeURIComponent(baseId)}`,
+		),
+	);
+}
+
+async function handleObservation(ctx: CommandContext, args: string[]): Promise<void> {
+	const playerId = args[0] as string;
+	await sendAndOutput(ctx, () =>
+		ctx.client.get(`/accounts/${encodeURIComponent(playerId)}/observation`),
+	);
 }
 
 async function handleLoopStatus(ctx: CommandContext, args: string[]): Promise<void> {

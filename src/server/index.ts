@@ -17,6 +17,8 @@ import {
 	handleGetLogLevel,
 	handleGetLoop,
 	handleGetLoopSchemas,
+	handleGetMarket,
+	handleGetObservation,
 	handleGetState,
 	handleGetStateSection,
 	handleGetSystem,
@@ -136,6 +138,11 @@ export function startServer(options: ServerOptions): DispatcherServer {
 	// System data (routed through specific account)
 	router.get("/accounts/:playerId/system", handleGetSystem);
 	router.get("/accounts/:playerId/system/:systemId", handleGetSystem);
+
+	// Market / Observation (live subscription reads — subscribe first via the
+	// raw passthrough: spacemolt_market.subscribe_market / spacemolt.subscribe_observation)
+	router.get("/accounts/:playerId/market/:baseId", handleGetMarket);
+	router.get("/accounts/:playerId/observation", handleGetObservation);
 
 	const server = Bun.serve({
 		hostname: host,
