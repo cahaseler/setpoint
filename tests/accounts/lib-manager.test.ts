@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import type { Account, ClerkPlayer, GameState } from "@spacemolt/lib";
 import { LibAccountManager } from "../../src/accounts/lib-manager.js";
-import type { LibManagedAccount } from "../../src/accounts/lib-types.js";
+import type { AccountClientLike, LibManagedAccount } from "../../src/accounts/lib-types.js";
 import { STATE_FRESHNESS_TTL_MS, isStateStale } from "../../src/dispatcher/state-freshness.js";
 import { FakeAccount, FakeClient } from "./fakes.js";
 
@@ -55,6 +55,44 @@ describe("LibAccountManager", () => {
 		expect(mgr.getByUsername("alpha")).toBeDefined();
 		expect(mgr.getByUsername("beta")).toBeUndefined();
 		expect(client.lastFilter).toBeDefined();
+	});
+
+	test("connect() indexes each account as it connects, not after the whole batch resolves", async () => {
+		const { accounts } = setup([player("Alpha", "pid-a"), player("Beta", "pid-b")]);
+		let resolveBeta: () => void = () => {};
+		const betaGate = new Promise<void>((resolve) => {
+			resolveBeta = resolve;
+		});
+		const client: AccountClientLike = {
+			connectOwned: async (opts) => {
+				const alpha = accounts.get("Alpha") as unknown as LibManagedAccount;
+				const beta = accounts.get("Beta") as unknown as LibManagedAccount;
+				opts.onConnect?.(alpha);
+				await betaGate;
+				opts.onConnect?.(beta);
+				return [alpha, beta];
+			},
+			connect: () => Promise.reject(new Error("not used by this test")),
+			register: () => Promise.reject(new Error("not used by this test")),
+			listOwnedPlayers: () => Promise.resolve([]),
+			accounts: () => [],
+			account: () => undefined,
+			remove: () => Promise.resolve(),
+			closeAll: () => {},
+		};
+		const mgr = new LibAccountManager(client, { clerkApiKey: "k" });
+		const connectPromise = mgr.connect();
+
+		// Give the onConnect microtask for Alpha a chance to run while Beta is
+		// still gated — this is the "single connection shouldn't wait on the
+		// whole fleet" behavior connectOwned's onConnect callback exists for.
+		await Promise.resolve();
+		expect(mgr.getByPlayerId("pid-a")).toBeDefined();
+		expect(mgr.getByPlayerId("pid-b")).toBeUndefined();
+
+		resolveBeta();
+		await connectPromise;
+		expect(mgr.getByPlayerId("pid-b")).toBeDefined();
 	});
 
 	test("wires onStateChange per account, passing playerId and the account", async () => {

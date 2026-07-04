@@ -106,14 +106,16 @@ export class LibAccountManager {
 
 	async connect(): Promise<void> {
 		const filter = buildOwnedFilter(this.config.filter);
-		const accounts = await this.client.connectOwned({ filter });
-		for (const account of accounts) {
-			if (!account.player?.id) {
-				log.warn("Connected account has no player_id after connect; skipping index");
-				continue;
-			}
-			this.indexAndWire(account);
-		}
+		await this.client.connectOwned({
+			filter,
+			onConnect: (account) => {
+				if (!account.player?.id) {
+					log.warn("Connected account has no player_id after connect; skipping index");
+					return;
+				}
+				this.indexAndWire(account);
+			},
+		});
 		log.info(`Connected ${this.byPlayerId.size} account(s)`);
 	}
 

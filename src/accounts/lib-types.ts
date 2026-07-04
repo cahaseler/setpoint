@@ -77,7 +77,17 @@ export type LibAccountLike = Pick<
 
 /** The subset of the lib `SpacemoltClient` the account layer depends on. */
 export interface AccountClientLike {
-	connectOwned(opts: { filter?: (p: ClerkPlayer) => boolean }): Promise<LibManagedAccount[]>;
+	/**
+	 * `onConnect` fires as each account finishes connecting — a fleet-wide call
+	 * can legitimately take minutes (the lib paces connects to respect the
+	 * server's per-IP WS-connection cap), so callers that need each account
+	 * usable as soon as it's up (not just once the whole batch settles) should
+	 * index/wire it here rather than waiting on the returned array.
+	 */
+	connectOwned(opts: {
+		filter?: (p: ClerkPlayer) => boolean;
+		onConnect?: (account: LibManagedAccount) => void;
+	}): Promise<LibManagedAccount[]>;
 	/** Connect one stored account by store-key/username. Requires creds already in the lib's credential store. */
 	connect(id: string): Promise<LibManagedAccount>;
 	/** Register a brand-new account: connect, register, and persist the generated credentials. */
