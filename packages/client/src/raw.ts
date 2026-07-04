@@ -78,9 +78,14 @@ function createActionProxy(client: SetpointClient, id: string, group: string): u
 		{
 			get(_target, action): unknown {
 				if (!isRoutableProp(action)) return undefined;
+				// Raw mutations (e.g. craft, mine) can legitimately take minutes to
+				// resolve — they block until the game tick executes them. Disable the
+				// timeout rather than inherit the client's default, matching goal()'s
+				// treatment of the same tick-bound blocking behavior.
 				return (params?: unknown): Promise<RawEnvelope> =>
 					client.request("POST", `/accounts/${encodeURIComponent(id)}/raw`, {
 						body: { toolGroup: group, action, params },
+						timeoutMs: 0,
 					}) as Promise<RawEnvelope>;
 			},
 		},

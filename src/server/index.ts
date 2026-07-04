@@ -50,6 +50,24 @@ export function resolveBindHost(env: Record<string, string | undefined> = proces
 	return env["SM_HOST"] ?? "127.0.0.1";
 }
 
+/**
+ * Whether a request can legitimately block on a tick-based game mutation for
+ * longer than Bun's 255s idleTimeout cap, and so needs that cap disabled
+ * entirely via `server.timeout(req, 0)`. Mirrors the CLI's own
+ * `GAME_API_TIMEOUT_MS=0` treatment of these same routes (sync goal, raw,
+ * accounts register, accounts remove, abort) in `src/cli/commands.ts`.
+ */
+export function isUnboundedRequest(req: Request): boolean {
+	const { pathname } = new URL(req.url);
+	if (req.method === "POST") {
+		return /\/goal$/.test(pathname) || /\/raw$/.test(pathname) || pathname === "/accounts/register";
+	}
+	if (req.method === "DELETE") {
+		return /^\/accounts\/[^/]+$/.test(pathname) || /\/abort$/.test(pathname);
+	}
+	return false;
+}
+
 export interface ServerOptions {
 	port?: number;
 	manager: LibAccountManager;
@@ -147,19 +165,23 @@ export function startServer(options: ServerOptions): DispatcherServer {
 	const server = Bun.serve({
 		hostname: host,
 		port,
-		// Increase idle timeout from Bun's default 10s — sync goals can take
-		// many minutes (craft batches, navigation, etc.) and the default kills
-		// the connection, terminating smctl with SIGTERM (exit 143).
+		// Increase idle timeout from Bun's default 10s — sync goals, raw mutations
+		// (craft batches, navigation, etc.), account registration, and account
+		// removal can all take many minutes, and the default kills the
+		// connection, terminating smctl with SIGTERM (exit 143).
 		// 255 is the max allowed value (4.25 minutes).
 		//
 		// NOTE: server.timeout(req, 0) only disables the per-request deadline;
-		// it does NOT override the server-level idleTimeout. Goals longer than
-		// ~4 minutes WILL drop the sync connection. Use --async for those.
+		// it does NOT override the server-level idleTimeout. Requests longer than
+		// ~4 minutes WILL drop the sync connection. Use --async goals for those.
 		idleTimeout: 255,
 		fetch: (req, server) => {
-			// Disable per-request deadline for sync goal requests.
-			// (Does not extend past the 255s idle timeout — use --async for long goals.)
-			if (req.method === "POST" && /\/goal$/.test(new URL(req.url).pathname)) {
+			// Disable the per-request deadline for requests that can legitimately
+			// block on a tick-based game mutation for a long time — matches the CLI's
+			// own GAME_API_TIMEOUT_MS=0 treatment of these same routes (sync goal,
+			// raw, accounts register, accounts remove, abort).
+			// (Does not extend past the 255s idle timeout — use --async goals for long-running work.)
+			if (isUnboundedRequest(req)) {
 				server.timeout(req, 0);
 			}
 			return router.handle(req, ctx);

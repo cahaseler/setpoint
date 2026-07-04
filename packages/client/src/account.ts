@@ -300,13 +300,19 @@ export class AccountApi {
 		return job.result as GoalResult;
 	}
 
-	/** Releases the account from all in-progress work (loop, sync goal, or async job). */
+	/**
+	 * Releases the account from all in-progress work (loop, sync goal, or async
+	 * job). A forced abort can wait on in-progress game mutations to release, so
+	 * its timeout is disabled rather than inherited from the client default; a
+	 * non-forced abort keeps the client's default (it's expected to fail fast).
+	 */
 	async abort(opts?: AbortOptions): Promise<{ message: string }> {
 		const result = await this.client.request(
 			"DELETE",
 			`/accounts/${encodeURIComponent(this.id)}/abort`,
 			{
 				body: opts?.force !== undefined ? { force: opts.force } : undefined,
+				...(opts?.force ? { timeoutMs: 0 } : {}),
 			},
 		);
 		return result as { message: string };
@@ -443,17 +449,27 @@ export class AccountsApi {
 		return result as AddAccountResult;
 	}
 
-	/** Registers a brand-new account with the game server and connects it. */
+	/**
+	 * Registers a brand-new account with the game server and connects it.
+	 * Calls the game API twice (createSession + register), so the timeout is
+	 * disabled rather than inherited from the client default.
+	 */
 	async register(options: RegisterAccountOptions): Promise<RegisterAccountResult> {
 		const result = await this.client.request("POST", "/accounts/register", {
 			body: { username: options.username, empire: options.empire },
+			timeoutMs: 0,
 		});
 		return result as RegisterAccountResult;
 	}
 
-	/** Disconnects and removes an account, by player_id or username. */
+	/**
+	 * Disconnects and removes an account, by player_id or username. The
+	 * timeout is disabled rather than inherited from the client default.
+	 */
 	async remove(id: string): Promise<RemoveAccountResult> {
-		const result = await this.client.request("DELETE", `/accounts/${encodeURIComponent(id)}`);
+		const result = await this.client.request("DELETE", `/accounts/${encodeURIComponent(id)}`, {
+			timeoutMs: 0,
+		});
 		return result as RemoveAccountResult;
 	}
 }
