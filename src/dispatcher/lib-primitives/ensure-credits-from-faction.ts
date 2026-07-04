@@ -10,13 +10,11 @@ const log = createLogger("goal:ensure-credits-from-faction");
 const DEFAULT_MIN_CREDITS = 1000;
 
 /**
- * View result — the union member returned by action=view (has an `items` array).
- *
- * Upstream spec gap: the vendored StorageResponse view branch omits `credits`
- * even though the live server includes it for target=faction (verified live).
- * The schema marks this branch additionalProperties:false and never declares it.
+ * The faction storage view branch (action=view, target=faction): carries the
+ * treasury `credits` balance alongside `items`. Discriminated from the personal
+ * view by `faction_id`, which only the faction branch declares.
  */
-type StorageViewResult = Extract<StorageResponse, { items: unknown }> & { credits?: number };
+type StorageViewResult = Extract<StorageResponse, { items: unknown; faction_id: unknown }>;
 
 /** Options for the EnsureCreditsFromFaction primitive. */
 export interface EnsureCreditsFromFactionOptions {
