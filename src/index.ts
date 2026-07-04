@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { SpacemoltClient, type StateSection } from "@spacemolt/lib";
+import { type GameState, SpacemoltClient, type StateSection } from "@spacemolt/lib";
 import { parseLibConfig } from "./accounts/lib-config.js";
 import { LibAccountManager } from "./accounts/lib-manager.js";
 import { type LibManagedAccount, playerId as playerIdOf } from "./accounts/lib-types.js";
@@ -11,7 +11,10 @@ import type { JobManager } from "./server/job-manager.js";
 import { LoopManager } from "./server/loop-manager.js";
 import { makeProjectingOnStateChange } from "./state/attach-projector.js";
 import { createDatabase } from "./state/database.js";
+import { logDrift } from "./state/drift-logger.js";
+import { startDriftSweep } from "./state/drift-sweep.js";
 import { StateProjector } from "./state/projector.js";
+import { diffGameState } from "./state/state-diff.js";
 import { StateStore } from "./state/store.js";
 import { bandwidthTracker } from "./util/bandwidth-tracker.js";
 import { errorMessage } from "./util/errors.js";
@@ -64,12 +67,29 @@ async function main(): Promise<void> {
 		log.info(`[${playerId}] State updated: ${changed.join(", ")}`);
 	};
 
+	// Log server-side state drift a refresh() reveals that no push notification
+	// already applied — diagnostic data for deciding which lib notification
+	// types need wiring. See state/state-diff.ts and state/drift-logger.ts.
+	const onDrift = (
+		playerId: string,
+		before: Readonly<GameState>,
+		after: Readonly<GameState>,
+		account: LibManagedAccount,
+	): void => {
+		logDrift({ playerId, username: account.id, drifts: diffGameState(before, after) });
+	};
+
 	// Create the lib client and account manager
 	const client = new SpacemoltClient({ clerkApiKey: libConfig.clerkApiKey });
-	const manager = new LibAccountManager(client, libConfig, { onStateChange });
+	const manager = new LibAccountManager(client, libConfig, { onStateChange, onDrift });
 
 	// Start bandwidth rollup logging (5-minute windows)
 	bandwidthTracker.start();
+
+	// Periodically force a refresh() across the whole fleet so idle accounts
+	// (no goals/loops running) still get checked for drift, not just ones that
+	// happen to trigger an opportunistic refresh.
+	const driftSweep = startDriftSweep(manager);
 
 	// Start the HTTP API server BEFORE connecting accounts, so health checks and
 	// state queries are live immediately. A cold start re-authenticates every
@@ -82,13 +102,21 @@ async function main(): Promise<void> {
 	// internally). The server is already serving; accounts come online as they
 	// connect, and loops/jobs resume once the bulk connect finishes.
 	log.info("Connecting accounts in the background...");
-	connectAccounts(manager, store, server).catch((err) => {
-		log.error(`Background account connection failed: ${errorMessage(err)}`);
-	});
+	connectAccounts(manager, store, server)
+		.then(() => {
+			// Run one drift sweep pass as soon as the fleet is connected, instead of
+			// waiting up to a full intervalMs for the first scheduled pass —
+			// startDriftSweep() was called before any accounts existed to sweep.
+			void driftSweep.runOnce();
+		})
+		.catch((err) => {
+			log.error(`Background account connection failed: ${errorMessage(err)}`);
+		});
 
 	// Graceful shutdown
 	const shutdown = (): void => {
 		log.info("Shutting down...");
+		driftSweep.stop();
 		bandwidthTracker.stop();
 		server.stop().catch(() => {});
 		manager.disconnectAll();

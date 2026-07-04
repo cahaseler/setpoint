@@ -1,5 +1,6 @@
 import {
 	type ClerkPlayer,
+	type GameState,
 	type RegisterParams,
 	type RegisterResult,
 	STATE_SECTIONS,
@@ -18,6 +19,21 @@ const OWNED_LIST_TTL_MS = 60_000;
 export interface LibAccountManagerOptions {
 	/** Called on every account state change: (playerId, changed sections, the account). Phase 2 wires the SQLite projector here. */
 	onStateChange?: (playerId: string, changed: StateSection[], account: LibManagedAccount) => void;
+	/**
+	 * Called whenever a live `refresh()` reveals fields that changed without a
+	 * corresponding push update having already applied them to the cache —
+	 * i.e. a gap in the lib's notification coverage. Wired by wrapping
+	 * `account.refresh()` once per account in `indexAndWire`, so every
+	 * existing and future call site (opportunistic post-mutation refreshes,
+	 * the diagnostic sweep in `state/drift-sweep.ts`, etc.) is covered without
+	 * changes at the call site.
+	 */
+	onDrift?: (
+		playerId: string,
+		before: Readonly<GameState>,
+		after: Readonly<GameState>,
+		account: LibManagedAccount,
+	) => void;
 }
 
 /**
@@ -66,6 +82,20 @@ export class LibAccountManager {
 			// filters undefined sections and applyUpdate skips null/undefined, so passing
 			// the full section list is safe and idempotent.
 			onChange(playerId, [...STATE_SECTIONS], account);
+		}
+		const onDrift = this.opts.onDrift;
+		if (onDrift) {
+			const originalRefresh = account.refresh.bind(account);
+			// Wraps the single instance every caller (dispatcher, server handlers,
+			// the drift sweep) already shares via byPlayerId/usernameToPlayerId — an
+			// own-property override shadows the lib's prototype method, so no call
+			// site needs to change.
+			(account as { refresh: LibManagedAccount["refresh"] }).refresh = async () => {
+				const before = account.state;
+				const after = await originalRefresh();
+				onDrift(playerId, before, after, account);
+				return after;
+			};
 		}
 		// The lib seeds state during connect() without firing onStateChange (no
 		// replay), so mark freshness explicitly here — otherwise a freshly-connected

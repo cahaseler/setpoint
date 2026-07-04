@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import type { Account, ClerkPlayer } from "@spacemolt/lib";
+import type { Account, ClerkPlayer, GameState } from "@spacemolt/lib";
 import { LibAccountManager } from "../../src/accounts/lib-manager.js";
 import type { LibManagedAccount } from "../../src/accounts/lib-types.js";
 import { STATE_FRESHNESS_TTL_MS, isStateStale } from "../../src/dispatcher/state-freshness.js";
@@ -79,6 +79,61 @@ describe("LibAccountManager", () => {
 		expect(events).toEqual([
 			{ playerId: "pid-b", changed: ["location", "ship"], accountId: "Beta" },
 		]);
+	});
+
+	test("wires onDrift, passing the pre- and post-refresh state plus the account", async () => {
+		const { client, accounts } = setup([player("Alpha", "pid-a")]);
+		const account = accounts.get("Alpha") as unknown as FakeAccount & {
+			refresh: () => Promise<GameState>;
+		};
+		// Override BEFORE connect(): indexAndWire binds the original refresh at
+		// connect time, so an override afterward would never be called.
+		account.refresh = () => {
+			account.emitStateChange([], { player: { credits: 500 } } as unknown as GameState);
+			return Promise.resolve(account.state);
+		};
+
+		const drifts: Array<{
+			playerId: string;
+			before: GameState;
+			after: GameState;
+			accountId: string | undefined;
+		}> = [];
+		const mgr = new LibAccountManager(
+			client,
+			{ clerkApiKey: "k" },
+			{
+				onDrift: (playerId, before, after, drAccount) =>
+					drifts.push({ playerId, before, after, accountId: drAccount.id }),
+			},
+		);
+		await mgr.connect();
+
+		await mgr.getByPlayerId("pid-a")?.refresh();
+
+		expect(drifts).toEqual([
+			{
+				playerId: "pid-a",
+				before: {},
+				after: { player: { credits: 500 } },
+				accountId: "Alpha",
+			},
+		]);
+	});
+
+	test("calls onDrift even when refresh() returns unchanged state — diffing is the caller's job", async () => {
+		const { client } = setup([player("Alpha", "pid-a")]);
+		const drifts: unknown[] = [];
+		const mgr = new LibAccountManager(
+			client,
+			{ clerkApiKey: "k" },
+			{ onDrift: (playerId, before, after) => drifts.push({ playerId, before, after }) },
+		);
+		await mgr.connect();
+
+		await mgr.getByPlayerId("pid-a")?.refresh();
+
+		expect(drifts).toHaveLength(1);
 	});
 
 	test("connect() skips accounts with no player_id", async () => {
