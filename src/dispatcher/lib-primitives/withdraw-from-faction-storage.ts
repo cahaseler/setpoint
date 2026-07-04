@@ -7,15 +7,11 @@ import type { LibGoal, LibGoalContext } from "../lib-goal-context.js";
 const log = createLogger("goal:withdraw-from-faction-storage");
 
 /**
- * View result — the union member returned by action=view (has an `items` array).
- *
- * Upstream spec gap: the vendored StorageResponse view branch omits `credits`
- * (and other faction-only fields like `buckets`/`faction_id`) even though the
- * live server includes them for target=faction; the schema marks this branch
- * additionalProperties:false and never declares them. Verified live: view
- * target=faction returns a top-level `credits` (faction treasury balance).
+ * The faction storage view branch (action=view, target=faction): carries the
+ * treasury `credits` balance (and faction-only fields like `buckets`) alongside
+ * `items`. Discriminated by `faction_id`, which only the faction branch declares.
  */
-type StorageViewResult = Extract<StorageResponse, { items: unknown }> & { credits?: number };
+type StorageViewResult = Extract<StorageResponse, { items: unknown; faction_id: unknown }>;
 
 export interface WithdrawFromFactionStorageOptions {
 	itemId: string;
