@@ -60,11 +60,13 @@ export class LibTransferStorageToFaction implements LibGoal {
 			};
 		}
 
-		// Query personal storage
+		// Query personal storage for items. Credits are not held in storage — they
+		// live in the player wallet — so read the transferable credit amount from
+		// player state, not the storage view (which never reports credits).
 		const storageResponse = await ctx.account.commands.spacemolt_storage.view({ target: "self" });
 		const view = storageResponse.structuredContent as StorageViewResult | undefined;
 		const items = view?.items ?? [];
-		const credits = view?.credits ?? 0;
+		const credits = ctx.state.player?.credits ?? 0;
 
 		if (items.length === 0 && credits <= 0) {
 			return {
@@ -77,7 +79,7 @@ export class LibTransferStorageToFaction implements LibGoal {
 		}
 
 		log.info(
-			`Transferring ${items.length} item type(s) and ${credits} credits from personal to faction storage`,
+			`Transferring ${items.length} item type(s) (personal storage) and ${credits} credits (wallet) to faction`,
 		);
 
 		// Process each item independently — don't let one cap error stop others.
@@ -160,13 +162,17 @@ export class LibTransferStorageToFaction implements LibGoal {
 		itemId: string,
 		quantity: number,
 	): Promise<GoalResult> {
+		// Credits come from the wallet (source "cargo" covers the ship hold and
+		// wallet); stored items come from personal storage (source "storage").
+		const source = itemId === "credits" ? "cargo" : "storage";
+		const origin = itemId === "credits" ? "wallet" : "personal storage";
 		try {
-			log.info(`Transferring ${quantity}x ${itemId}: personal storage → faction storage`);
+			log.info(`Transferring ${quantity}x ${itemId}: ${origin} → faction storage`);
 			await ctx.account.commands.spacemolt_storage.deposit({
 				item_id: itemId,
 				quantity,
 				target: "faction",
-				source: "storage",
+				source,
 			});
 			return succeeded(`Transferred ${quantity}x ${itemId} to faction storage`, 1);
 		} catch (err) {
@@ -201,7 +207,7 @@ export class LibTransferStorageToFaction implements LibGoal {
 					item_id: itemId,
 					quantity: transferAmount,
 					target: "faction",
-					source: "storage",
+					source,
 				});
 				return succeeded(
 					`Transferred ${transferAmount}x ${itemId} to faction storage (capped at ${cap}, had ${current})`,
