@@ -7,11 +7,9 @@ import type { LibGoal, LibGoalContext } from "../lib-goal-context.js";
 const log = createLogger("goal:transfer-storage");
 
 /**
- * View result — the union member returned by action=view (has an `items` array).
- *
- * Upstream spec gap: the vendored StorageResponse view branch omits `credits`
- * even though the live server includes it for target=faction (verified live).
- * The schema marks this branch additionalProperties:false and never declares it.
+ * A storage view (action=view) — either personal or faction depending on
+ * `target`. Both branches carry `items`; only the faction branch carries a
+ * top-level `credits` (treasury balance), so `credits` is modelled as optional.
  */
 type StorageViewResult = Extract<StorageResponse, { items: unknown }> & { credits?: number };
 
@@ -55,12 +53,18 @@ export class LibTransferStorage implements LibGoal {
 		const { source, target, itemId } = this.options;
 		const isCredits = itemId === "credits";
 
-		// Check how much is available in the source storage
+		// Check how much is available in the source. Credits are never held in
+		// personal storage — they live in the player wallet (self) or the faction
+		// treasury (faction) — so for credits read from player state (self) or the
+		// faction storage view (faction); stored items come from the storage view.
 		const r = await ctx.account.commands.spacemolt_storage.view({ target: source });
 		const view = r.structuredContent as StorageViewResult | undefined;
-		const available = isCredits
-			? (view?.credits ?? 0)
-			: (view?.items?.find((i) => i.item_id === itemId)?.quantity ?? 0);
+		let available: number;
+		if (isCredits) {
+			available = source === "self" ? (ctx.state.player?.credits ?? 0) : (view?.credits ?? 0);
+		} else {
+			available = view?.items?.find((i) => i.item_id === itemId)?.quantity ?? 0;
+		}
 
 		if (available <= 0) {
 			return alreadySatisfied(`No ${itemId} in ${source} storage`);
@@ -73,14 +77,17 @@ export class LibTransferStorage implements LibGoal {
 			return alreadySatisfied("Nothing to transfer");
 		}
 
-		log.info(`Transferring ${toTransfer}x ${itemId}: ${source} storage → ${target} storage`);
+		const label = (side: "self" | "faction"): string =>
+			isCredits ? (side === "self" ? "wallet" : "faction treasury") : `${side} storage`;
+		log.info(`Transferring ${toTransfer}x ${itemId}: ${label(source)} → ${label(target)}`);
 
 		if (source === "self" && target === "faction") {
 			await ctx.account.commands.spacemolt_storage.deposit({
 				item_id: itemId,
 				quantity: toTransfer,
 				target: "faction",
-				source: "storage",
+				// Credits come from the wallet (source "cargo"); items from storage.
+				source: isCredits ? "cargo" : "storage",
 			});
 		} else {
 			// source === "faction" && target === "self"

@@ -71,6 +71,31 @@ describe("LibTransferStorage", () => {
 		});
 	});
 
+	test("transfers self -> faction credits from the wallet via deposit source=cargo", async () => {
+		const account = new FakeLibGoalAccount(
+			// Self credits come from the player wallet, not personal storage.
+			{ location: { docked_at: "station-1" }, player: { credits: 750 } },
+			{
+				view: () => ({ result: "", structuredContent: { base_id: "station-1", items: [] } }),
+				deposit: () => fakeMutationResult("deposit"),
+			},
+		);
+		const result = await new LibTransferStorage({
+			source: "self",
+			target: "faction",
+			itemId: "credits",
+			quantity: 300,
+		}).execute(makeLibGoalContext(account));
+		expect(result.success).toBe(true);
+		const depositCall = account.calls.find((c) => c.action === "deposit");
+		expect(depositCall?.params).toEqual({
+			item_id: "credits",
+			quantity: 300,
+			target: "faction",
+			source: "cargo",
+		});
+	});
+
 	test("transfers faction -> self credits via deposit source=faction", async () => {
 		const account = new FakeLibGoalAccount(
 			{ location: { docked_at: "station-1" } },
