@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { RawEnvelope } from "@setpoint/protocol";
+import type { JumpResponse, StateDelta, UndockResponse, ViewMarketResponse } from "@spacemolt/lib";
 import { SetpointClient } from "../src/client.js";
+
+// A mutation's raw structuredContent is the full state delta with its
+// action-specific `details` narrowed to that action's response type — the
+// same shape `MutationResult<TDetails>['delta']` resolves to.
+type MutationDelta<TDetails> = Omit<StateDelta, "details"> & { details?: TDetails };
 
 describe("AccountApi.raw", () => {
 	const originalFetch = globalThis.fetch;
@@ -31,9 +37,17 @@ describe("AccountApi.raw", () => {
 		globalThis.fetch = originalFetch;
 	});
 
-	const jumpEnvelope: RawEnvelope = {
+	const jumpEnvelope: RawEnvelope<MutationDelta<JumpResponse>> = {
 		result: { moved: true },
-		structuredContent: { moved: true },
+		structuredContent: {
+			details: {
+				action: "jump",
+				from_system: "alpha",
+				system: "Sol",
+				system_id: "sol",
+				navigation_xp: 5,
+			},
+		},
 		tick: 42,
 		command: "jump",
 	};
@@ -56,7 +70,7 @@ describe("AccountApi.raw", () => {
 	});
 
 	test("raw.spacemolt_market.view_market(params) routes through the spacemolt_market group", async () => {
-		const marketEnvelope: RawEnvelope = { result: { orders: [] } };
+		const marketEnvelope: RawEnvelope<ViewMarketResponse> = { result: { orders: [] } };
 		mockFetchSequence([{ status: 200, body: marketEnvelope }]);
 		const client = new SetpointClient();
 
@@ -75,7 +89,11 @@ describe("AccountApi.raw", () => {
 	});
 
 	test("raw.spacemolt.undock() (no-arg action) sends params: undefined", async () => {
-		const undockEnvelope: RawEnvelope = { result: {}, tick: 1, command: "undock" };
+		const undockEnvelope: RawEnvelope<MutationDelta<UndockResponse>> = {
+			result: {},
+			tick: 1,
+			command: "undock",
+		};
 		mockFetchSequence([{ status: 200, body: undockEnvelope }]);
 		const client = new SetpointClient();
 

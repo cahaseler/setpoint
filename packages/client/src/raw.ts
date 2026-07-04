@@ -6,30 +6,56 @@
  *
  * Param types are taken directly from `Commands[group][action]`, so the
  * typed surface tracks the lib's generated command signatures. The return
- * type is NOT the lib's WS-based `MutationResult`/`QueryResult` — it's the
- * daemon's normalized `RawEnvelope`, since the daemon's HTTP raw route
- * flattens both into one shape (see `RawEnvelope`'s doc comment).
+ * type is NOT the lib's WS-based `MutationResult`/`QueryResult` directly —
+ * it's the daemon's normalized `RawEnvelope`, since the daemon's HTTP raw
+ * route flattens both into one shape (see `RawEnvelope`'s doc comment) — but
+ * `RawEnvelope`'s `structuredContent` is still inferred per action from the
+ * lib's own return type below, so it's never `unknown` for a real command.
  */
 
-import type { RawEnvelope } from "@setpoint/protocol";
+import type { MutationResult, QueryResult, RawEnvelope } from "@setpoint/protocol";
 import type { Commands } from "@spacemolt/lib";
 import type { SetpointClient } from "./client.js";
 
 /**
+ * `structuredContent`'s shape for a given lib return type `R`: a query's own
+ * response type (`R extends QueryResult<infer T>`), or a mutation's whole
+ * delta shape — including its action-specific `details` — read directly off
+ * `R['delta']` rather than reconstructed, so it stays in lockstep with
+ * whatever `MutationResult<TDetails>['delta']` actually is.
+ *
+ * Checked against the real `QueryResult`/`MutationResult` interfaces, not a
+ * hand-rolled `{ structuredContent?: infer T }` shape — `structuredContent`
+ * is optional on `QueryResult` itself, and TS conditional-type inference on
+ * an optional property matches *any* type (including ones missing the
+ * property entirely), inferring `unknown` — silently discarding the
+ * mutation branch below for every action. `QueryResult`'s required `result`
+ * field is what actually anchors the check.
+ */
+type StructuredContentOf<R> = R extends QueryResult<infer T>
+	? T
+	: R extends MutationResult<infer _TDetails>
+		? R["delta"]
+		: unknown;
+
+/**
  * Typed facade over `Commands`: each group/action keeps the lib's exact
  * parameter list (including zero-arg and optional-param actions, e.g.
- * `spacemolt.undock()` or `spacemolt.accept_mission()`), but returns
- * `Promise<RawEnvelope>` instead of the lib's result type.
+ * `spacemolt.undock()` or `spacemolt.accept_mission()`), and now also keeps
+ * the lib's exact per-action response shape — `structuredContent` is typed
+ * to the query's response, or to the mutation's delta (with its
+ * action-specific `delta.details`, e.g. `JumpResponse` for `jump`) — instead
+ * of collapsing every action to the same generic `RawEnvelope`.
  *
- * `Commands[G][A] extends (...args: infer Args) => unknown` preserves the
- * source function's arity/optionality via `Args` rather than collapsing
- * every action to a single `(params: X) => ...` shape — that's what makes
- * both `undock()` (no args) and `jump({id})` (required arg) typecheck.
+ * `Commands[G][A] extends (...args: infer Args) => Promise<infer R>`
+ * preserves the source function's arity/optionality via `Args` (so both
+ * `undock()` and `jump({id})` typecheck) while also capturing its resolved
+ * value `R` to infer `structuredContent`'s type from.
  */
 export type RawApi = {
 	[G in keyof Commands]: {
-		[A in keyof Commands[G]]: Commands[G][A] extends (...args: infer Args) => unknown
-			? (...args: Args) => Promise<RawEnvelope>
+		[A in keyof Commands[G]]: Commands[G][A] extends (...args: infer Args) => Promise<infer R>
+			? (...args: Args) => Promise<RawEnvelope<StructuredContentOf<R>>>
 			: never;
 	};
 };

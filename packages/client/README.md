@@ -168,17 +168,30 @@ before data appears.
 ### Raw passthrough (`account.raw`)
 
 ```ts
-await account.raw.spacemolt.travel({ id: "sol_asteroid_belt" });
+const jump = await account.raw.spacemolt.travel({ id: "sol_asteroid_belt" });
+jump.structuredContent?.details?.system_id; // typed — no cast needed
+
 await account.raw.spacemolt.undock(); // zero-arg actions work too
-await account.raw.spacemolt_facility.list();
+
+const market = await account.raw.spacemolt_facility.list();
+market.structuredContent; // typed to that query's real response shape
 ```
 
 `account.raw.<group>.<action>(params)` is a typed proxy over `@spacemolt/lib`'s
 generated `Commands` — the param types for every group/action come straight
 from the lib, so this stays in sync with the game's command catalog
 automatically. Each call POSTs `/accounts/:id/raw` and returns the daemon's
-`RawEnvelope` (`{ result, structuredContent }`, plus `tick`/`command` for
-mutations) — not the lib's own WS result type.
+`RawEnvelope<T>` (`{ result, structuredContent }`, plus `tick`/`command` for
+mutations) — not the lib's own WS result type — but `T` (`structuredContent`'s
+shape) is still inferred per action from the lib's `Commands`, not `unknown`:
+
+- **query** — `T` is that query's actual response type (e.g. `view_market`
+  returns `RawEnvelope<ViewMarketResponse>`).
+- **mutation** — `T` is the full state delta with `delta.details` narrowed to
+  that action's own response type (e.g. `jump` returns
+  `RawEnvelope<Omit<StateDelta, "details"> & { details?: JumpResponse }>`) —
+  the rest of the delta (which state sections changed) is the same generic
+  shape every mutation shares; only `details` is action-specific.
 
 ### Abort
 

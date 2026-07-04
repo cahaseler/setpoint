@@ -73,10 +73,18 @@ export interface JobRecord {
  * and a query as `{ result, structuredContent }` — so `tick`/`command` are
  * present only for mutations, and there is no `notifications` field (push
  * events arrive on the event stream, not on command results).
+ *
+ * `T` is `structuredContent`'s shape — a query's own response type (e.g.
+ * `GetVersionResponse`), or a mutation's delta type (e.g. `MutationResult<
+ * JumpResponse>['delta']`, so `structuredContent.details` is the action's own
+ * shape, not a generic blob). `@setpoint/client`'s raw passthrough
+ * (`packages/client/src/raw.ts`) infers this per action from
+ * `@spacemolt/lib`'s `Commands`, so `structuredContent` is never `unknown`
+ * for a real command call — only truly generic/untyped callers default to it.
  */
-export interface RawEnvelope {
+export interface RawEnvelope<T = unknown> {
 	result: unknown;
-	structuredContent?: unknown;
+	structuredContent?: T;
 	tick?: number;
 	command?: string;
 }
