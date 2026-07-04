@@ -157,6 +157,20 @@ describe("dispatch", () => {
 		expect(client.get).toHaveBeenCalledWith("/accounts/player-123/state/ship");
 	});
 
+	test("market calls GET /accounts/:playerId/market/:baseId", async () => {
+		const { ctx, client } = makeCtx();
+		await dispatch(ctx, ["market", "player-123", "base-1"]);
+
+		expect(client.get).toHaveBeenCalledWith("/accounts/player-123/market/base-1");
+	});
+
+	test("observation calls GET /accounts/:playerId/observation", async () => {
+		const { ctx, client } = makeCtx();
+		await dispatch(ctx, ["observation", "player-123"]);
+
+		expect(client.get).toHaveBeenCalledWith("/accounts/player-123/observation");
+	});
+
 	test("loop status calls GET /accounts/:playerId/loop", async () => {
 		const { ctx, client } = makeCtx();
 		await dispatch(ctx, ["loop", "status", "player-123"]);

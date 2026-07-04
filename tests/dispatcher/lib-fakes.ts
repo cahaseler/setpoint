@@ -2,7 +2,9 @@ import type {
 	ClerkPlayer,
 	Commands,
 	GameState,
+	MarketBook,
 	MutationResult,
+	ObservationView,
 	QueryResult,
 	RegisterResult,
 	StateSection,
@@ -48,6 +50,8 @@ export class FakeLibGoalAccount implements LibGoalAccount {
 	/** State returned by the next `refresh()` (defaults to current state). */
 	refreshReturns?: GameState;
 	readonly commands: Commands;
+	private readonly marketBooks = new Map<string, MarketBook>();
+	private _observation: ObservationView | null = null;
 
 	constructor(initial: GameState = {}, handlers: FakeCommandHandlers = {}) {
 		this._state = initial;
@@ -94,6 +98,24 @@ export class FakeLibGoalAccount implements LibGoalAccount {
 			this._state = this.refreshReturns;
 		}
 		return Promise.resolve(this._state);
+	}
+
+	market(baseId: string): MarketBook | undefined {
+		return this.marketBooks.get(baseId);
+	}
+
+	/** Simulates having subscribed and received data for a base's order book. */
+	setMarketBook(baseId: string, book: MarketBook): void {
+		this.marketBooks.set(baseId, book);
+	}
+
+	observation(): ObservationView | null {
+		return this._observation;
+	}
+
+	/** Simulates having subscribed and received observation-watch data. */
+	setObservation(view: ObservationView | null): void {
+		this._observation = view;
 	}
 }
 

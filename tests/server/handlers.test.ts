@@ -13,6 +13,8 @@ import {
 	handleGetJob,
 	handleGetLogLevel,
 	handleGetLoop,
+	handleGetMarket,
+	handleGetObservation,
 	handleGetState,
 	handleGetStateSection,
 	handleGetSystem,
@@ -2644,6 +2646,153 @@ describe("handleGetSystem", () => {
 
 		const res = await handleGetSystem(
 			new Request("http://localhost/accounts/unknown/system"),
+			{ playerId: "unknown" },
+			ctx,
+		);
+
+		expect(res.status).toBe(404);
+	});
+});
+
+describe("handleGetMarket", () => {
+	test("returns the serialized book when subscribed", () => {
+		const account = makeAccount("p1");
+		account.setMarketBook("base-1", {
+			base_id: "base-1",
+			base_name: "Test Station",
+			tick: 5,
+			items: new Map([
+				[
+					"iron_ore",
+					{
+						item_id: "iron_ore",
+						item_name: "Iron Ore",
+						buy_orders: [],
+						sell_orders: [{ price_each: 10, quantity: 5 }],
+					},
+				],
+			]),
+		});
+		const ctx = makeContext({ accounts: [account] });
+
+		const res = handleGetMarket(
+			new Request("http://localhost/accounts/p1/market/base-1"),
+			{ playerId: "p1", baseId: "base-1" },
+			ctx,
+		);
+
+		expect(res.status).toBe(200);
+	});
+
+	test("body flattens items Map to an array", async () => {
+		const account = makeAccount("p1");
+		account.setMarketBook("base-1", {
+			base_id: "base-1",
+			tick: 5,
+			items: new Map([["iron_ore", { item_id: "iron_ore", buy_orders: [], sell_orders: [] }]]),
+		});
+		const ctx = makeContext({ accounts: [account] });
+
+		const res = handleGetMarket(
+			new Request("http://localhost/accounts/p1/market/base-1"),
+			{ playerId: "p1", baseId: "base-1" },
+			ctx,
+		);
+		const body = (await res.json()) as { base_id: string; tick: number; items: unknown[] };
+
+		expect(body.base_id).toBe("base-1");
+		expect(body.tick).toBe(5);
+		expect(body.items).toEqual([{ item_id: "iron_ore", buy_orders: [], sell_orders: [] }]);
+	});
+
+	test("returns 404 when not subscribed", () => {
+		const account = makeAccount("p1");
+		const ctx = makeContext({ accounts: [account] });
+
+		const res = handleGetMarket(
+			new Request("http://localhost/accounts/p1/market/base-1"),
+			{ playerId: "p1", baseId: "base-1" },
+			ctx,
+		);
+
+		expect(res.status).toBe(404);
+	});
+
+	test("returns 404 for unknown account", () => {
+		const ctx = makeContext();
+
+		const res = handleGetMarket(
+			new Request("http://localhost/accounts/unknown/market/base-1"),
+			{ playerId: "unknown", baseId: "base-1" },
+			ctx,
+		);
+
+		expect(res.status).toBe(404);
+	});
+
+	test("returns 400 when baseId missing", () => {
+		const ctx = makeContext();
+
+		const res = handleGetMarket(
+			new Request("http://localhost/accounts/p1/market/"),
+			{ playerId: "p1" },
+			ctx,
+		);
+
+		expect(res.status).toBe(400);
+	});
+});
+
+describe("handleGetObservation", () => {
+	test("returns the serialized view when subscribed", async () => {
+		const account = makeAccount("p1");
+		account.setObservation({
+			poi_id: "sol_station",
+			system_id: "sol",
+			tick: 3,
+			nearby: new Map([["p2", { player_id: "p2", username: "Other", in_combat: false }]]),
+			system: new Map(),
+			cloaked: new Map(),
+			unknownSignature: false,
+			activeScan: true,
+		});
+		const ctx = makeContext({ accounts: [account] });
+
+		const res = handleGetObservation(
+			new Request("http://localhost/accounts/p1/observation"),
+			{ playerId: "p1" },
+			ctx,
+		);
+		const body = (await res.json()) as {
+			poi_id: string;
+			nearby: unknown[];
+			activeScan: boolean;
+		};
+
+		expect(res.status).toBe(200);
+		expect(body.poi_id).toBe("sol_station");
+		expect(body.activeScan).toBe(true);
+		expect(body.nearby).toEqual([{ player_id: "p2", username: "Other", in_combat: false }]);
+	});
+
+	test("returns 404 when not subscribed", () => {
+		const account = makeAccount("p1");
+		const ctx = makeContext({ accounts: [account] });
+
+		const res = handleGetObservation(
+			new Request("http://localhost/accounts/p1/observation"),
+			{ playerId: "p1" },
+			ctx,
+		);
+
+		expect(res.status).toBe(404);
+	});
+
+	test("returns 404 for unknown account", () => {
+		const ctx = makeContext();
+
+		const res = handleGetObservation(
+			new Request("http://localhost/accounts/unknown/observation"),
 			{ playerId: "unknown" },
 			ctx,
 		);

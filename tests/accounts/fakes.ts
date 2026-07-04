@@ -2,7 +2,9 @@ import type {
 	ClerkPlayer,
 	Commands,
 	GameState,
+	MarketBook,
 	MutationResult,
+	ObservationView,
 	QueryResult,
 	RegisterParams,
 	RegisterResult,
@@ -39,6 +41,8 @@ export class FakeAccount implements LibManagedAccount {
 	private _state: GameState;
 	private listener: ((changed: StateSection[]) => void) | null = null;
 	readonly commands: Commands = makeFakeCommands();
+	private readonly marketBooks = new Map<string, MarketBook>();
+	private _observation: ObservationView | null = null;
 	constructor(
 		private readonly playerId: string,
 		readonly id: string,
@@ -84,6 +88,20 @@ export class FakeAccount implements LibManagedAccount {
 	}
 	close(): void {
 		this.closed = true;
+	}
+	market(baseId: string): MarketBook | undefined {
+		return this.marketBooks.get(baseId);
+	}
+	/** Simulates having subscribed and received data for a base's order book. */
+	setMarketBook(baseId: string, book: MarketBook): void {
+		this.marketBooks.set(baseId, book);
+	}
+	observation(): ObservationView | null {
+		return this._observation;
+	}
+	/** Simulates having subscribed and received observation-watch data. */
+	setObservation(view: ObservationView | null): void {
+		this._observation = view;
 	}
 }
 

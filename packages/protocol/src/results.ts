@@ -1,3 +1,5 @@
+import type { CloakedContact, MarketItem, ObservedPlayer } from "./game.js";
+
 /** The outcome of executing a goal. */
 export interface GoalResult {
 	/** Whether the desired state was achieved. */
@@ -77,4 +79,42 @@ export interface RawEnvelope {
 	structuredContent?: unknown;
 	tick?: number;
 	command?: string;
+}
+
+/**
+ * JSON-safe snapshot of a subscribed station's order book (the lib's
+ * `account.market(baseId)`), as returned by `GET /accounts/:playerId/market/:baseId`.
+ * The lib's `MarketBook.items` is a `Map<item_id, MarketItem>` (not
+ * JSON-serializable); `items` here is the same data flattened to an array,
+ * matching the shape the game server itself sends in `subscribe_market` and
+ * `market_update`. Subscribing is not exposed as a dedicated endpoint — issue
+ * `spacemolt_market.subscribe_market` via the raw passthrough first.
+ */
+export interface MarketBookSnapshot {
+	base_id: string;
+	base_name?: string;
+	/** Tick of the most recent update (0 if only the initial baseline has been seen). */
+	tick: number;
+	items: MarketItem[];
+}
+
+/**
+ * JSON-safe snapshot of the observation watch (the lib's `account.observation()`),
+ * as returned by `GET /accounts/:playerId/observation`. The lib's
+ * `ObservationView` keys `nearby`/`system`/`cloaked` as `Map`s (not
+ * JSON-serializable); here they are flattened to arrays, matching the shape
+ * the game server sends in `subscribe_observation` and `observation_update`.
+ * Subscribing is not exposed as a dedicated endpoint — issue
+ * `spacemolt.subscribe_observation` via the raw passthrough first.
+ */
+export interface ObservationSnapshot {
+	poi_id?: string;
+	system_id?: string;
+	/** Tick of the most recent update (0 if only the initial baseline has been seen). */
+	tick: number;
+	nearby: ObservedPlayer[];
+	system: ObservedPlayer[];
+	cloaked: CloakedContact[];
+	unknownSignature: boolean;
+	activeScan: boolean;
 }

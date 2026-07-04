@@ -2,7 +2,9 @@ import type {
 	ClerkPlayer,
 	Commands,
 	GameState,
+	MarketBook,
 	MutationResult,
+	ObservationView,
 	QueryResult,
 	RegisterParams,
 	RegisterResult,
@@ -49,6 +51,22 @@ export interface LibManagedAccount {
 	mutate(tool: string, action: string, payload?: Record<string, unknown>): Promise<MutationResult>;
 	onStateChange(listener: (changed: StateSection[]) => void): void;
 	close(): void;
+	/**
+	 * The cached order book for a base, if subscribed. Subscribing itself is not
+	 * part of this boundary — issue `spacemolt_market.subscribe_market` via
+	 * `query`/`commands` (or the HTTP raw passthrough) first; the lib's internal
+	 * `market_update` listener keeps this cache current afterward regardless of
+	 * how the subscribe call was made.
+	 */
+	market(baseId: string): MarketBook | undefined;
+	/**
+	 * The current observation-watch view, if subscribed. Subscribing itself is
+	 * not part of this boundary — issue `spacemolt.subscribe_observation` via
+	 * `query`/`commands` (or the HTTP raw passthrough) first; the lib's internal
+	 * `observation_update` listener keeps this cache current afterward
+	 * regardless of how the subscribe call was made.
+	 */
+	observation(): ObservationView | null;
 }
 
 /** The subset of a lib `Account` the account layer (connection/state) depends on. */

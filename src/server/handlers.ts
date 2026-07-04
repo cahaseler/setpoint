@@ -1,5 +1,6 @@
+import type { MarketBookSnapshot, ObservationSnapshot } from "@setpoint/protocol";
 import { type LoopType, loopPatchSchemas, loopSchemas } from "@setpoint/protocol";
-import type { SpacemoltClient } from "@spacemolt/lib";
+import type { MarketBook, ObservationView, SpacemoltClient } from "@spacemolt/lib";
 import { loadRegistrationConfig } from "../accounts/config.js";
 import type { LibAccountManager } from "../accounts/lib-manager.js";
 import { type LibManagedAccount, playerId as playerIdOf } from "../accounts/lib-types.js";
@@ -1525,4 +1526,83 @@ export async function handleGetSystem(
 	} catch (err) {
 		return errorResponse(`System fetch failed: ${errorMessage(err)}`, 500);
 	}
+}
+
+// ── Market / Observation ────────────────────────────────────────────
+//
+// These read the lib's `MarketCache`/`ObservationCache` directly (no SQLite
+// mirror — the same as `account.state` for goals). There is no subscribe
+// endpoint here: issue `spacemolt_market.subscribe_market` or
+// `spacemolt.subscribe_observation` via the raw passthrough
+// (`POST /accounts/:playerId/raw`) first, then read with these.
+
+function serializeMarketBook(book: MarketBook): MarketBookSnapshot {
+	return {
+		base_id: book.base_id,
+		...(book.base_name !== undefined ? { base_name: book.base_name } : {}),
+		tick: book.tick,
+		items: [...book.items.values()],
+	};
+}
+
+function serializeObservation(view: ObservationView): ObservationSnapshot {
+	return {
+		...(view.poi_id !== undefined ? { poi_id: view.poi_id } : {}),
+		...(view.system_id !== undefined ? { system_id: view.system_id } : {}),
+		tick: view.tick,
+		nearby: [...view.nearby.values()],
+		system: [...view.system.values()],
+		cloaked: [...view.cloaked.values()],
+		unknownSignature: view.unknownSignature,
+		activeScan: view.activeScan,
+	};
+}
+
+export function handleGetMarket(_req: Request, params: RouteParams, ctx: HandlerContext): Response {
+	const playerId = params["playerId"];
+	const baseId = params["baseId"];
+	if (!playerId || !baseId) {
+		return errorResponse("Missing playerId or baseId", 400);
+	}
+
+	const account = resolveAccount(ctx, playerId);
+	if (!account) {
+		return errorResponse("Account not found", 404);
+	}
+
+	const book = account.market(baseId);
+	if (!book) {
+		return errorResponse(
+			`No market data for base "${baseId}" — subscribe first via the raw passthrough (toolGroup: "spacemolt_market", action: "subscribe_market")`,
+			404,
+		);
+	}
+
+	return jsonResponse(serializeMarketBook(book));
+}
+
+export function handleGetObservation(
+	_req: Request,
+	params: RouteParams,
+	ctx: HandlerContext,
+): Response {
+	const playerId = params["playerId"];
+	if (!playerId) {
+		return errorResponse("Missing playerId", 400);
+	}
+
+	const account = resolveAccount(ctx, playerId);
+	if (!account) {
+		return errorResponse("Account not found", 404);
+	}
+
+	const view = account.observation();
+	if (!view) {
+		return errorResponse(
+			'No observation data — subscribe first via the raw passthrough (toolGroup: "spacemolt", action: "subscribe_observation")',
+			404,
+		);
+	}
+
+	return jsonResponse(serializeObservation(view));
 }

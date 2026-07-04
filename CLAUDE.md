@@ -93,13 +93,15 @@ setpoint/
 
 ### Rate Limits (game-side, per-IP)
 
-These limits are enforced by the game server, not by setpoint — `@spacemolt/lib` paces connects and token minting internally (staggered `connectOwned`, a separate per-user token-mint budget from gameplay) so a large fleet won't trip them. setpoint does not implement its own connection stagger or rate limiter.
+These limits are enforced by the game server, not by setpoint — `@spacemolt/lib` paces connects and token minting internally so a large fleet won't trip them. setpoint does not implement its own connection stagger or rate limiter.
 
 | Category | Limit | Notes |
 |----------|-------|-------|
-| Session creation | 20/min | Separate counter from auth |
-| Auth (login/register) | 10/min | Total attempts |
-| Failed auth | 5/min | Blocks ALL auth on failure threshold |
+| WS connection cap | 100/min per IP | Checked at the HTTP upgrade, before credentials are read — can't be scoped per player. `connectAll`/`connectOwned` batch connects at `connectBatchSize` (default 100) with a `connectBatchWaitMs` pause (default 65s) between batches so a fleet of any size never actually asks for more than this in a window, plus a `connectStaggerMs` (default 250ms) delay between connects within a batch. |
+| Token mint (Clerk `ws-token`) | Separate per-user budget | Doesn't compete with gameplay traffic. |
+| `login_token` redemption | Rate limited per player, not per IP | A fleet connecting once each from one IP doesn't compete for a shared budget — only an individual account re-authenticating repeatedly gets throttled. |
+
+For a fleet of N accounts, expect roughly `ceil(N / 100) - 1` waits of 65s plus `N * 250ms` of stagger — e.g. ~200 accounts connects in ~3 minutes, not the ~10 minutes a naive 10-20/min auth-rate model would suggest.
 
 ### Connection Lifecycle
 
@@ -225,7 +227,7 @@ After finishing a set of changes, run `bun run deploy`. It bumps the patch versi
 - **The lib's push-fed cache is the source of truth** — the SQLite store is a read-only mirror of it (via `StateProjector`), kept current by wiring every account's `onStateChange` to the projector. No code path should read stale state by bypassing `account.state`.
 - **Per-account isolation** — accounts must never share a lib connection, state, or queues
 - **Respect rate limits proactively** — `@spacemolt/lib` already paces auth/connects and retries `rate_limited` mutations; don't add a second layer of pacing on top
-- **Queue-based account connection** — `POST /accounts` (username of an account already owned by the configured Clerk API key) returns 202 Accepted and connects in the background; `@spacemolt/lib` staggers the underlying auth calls to respect the 10 auth/min rate limit. Use `GET /accounts` to check connection status.
+- **Queue-based account connection** — `POST /accounts` (username of an account already owned by the configured Clerk API key) returns 202 Accepted and connects in the background; `@spacemolt/lib` batches and staggers the underlying connects to respect the 100/min per-IP WS-connection cap. Use `GET /accounts` to check connection status.
 - **Account resolution by ID or username** — all API endpoints accepting a `playerId` parameter also accept a username (case-insensitive). Handlers use `resolveAccount()` to look up by player_id first, then by username.
 - **Idempotent goals** — if a goal is already satisfied (e.g., already at the target location), it should succeed immediately without making API calls.
 
@@ -416,6 +418,8 @@ The daemon listens on `http://127.0.0.1:7580` by default. All responses are JSON
 | `DELETE` | `/accounts/:playerId/loop` | Stop loop | `smctl loop stop` |
 | `DELETE` | `/accounts/:playerId/abort` | Release account from all in-progress work | `smctl abort` |
 | `POST` | `/accounts/:playerId/raw` | Raw API passthrough | `smctl raw` |
+| `GET` | `/accounts/:playerId/market/:baseId` | Cached order book for a base (subscribe first via `raw`) | `smctl market <id> <baseId>` |
+| `GET` | `/accounts/:playerId/observation` | Cached observation-watch view (subscribe first via `raw`) | `smctl observation <id>` |
 | `GET` | `/log-level` | Get log level | `smctl log-level` |
 | `POST` | `/log-level` | Set log level | `smctl log-level <level>` |
 
