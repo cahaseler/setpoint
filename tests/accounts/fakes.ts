@@ -114,13 +114,17 @@ export class FakeClient implements AccountClientLike {
 		private readonly players: ClerkPlayer[],
 		private readonly accountsByUsername: Map<string, FakeAccount>,
 	) {}
-	connectOwned(opts: { filter?: (p: ClerkPlayer) => boolean }): Promise<LibManagedAccount[]> {
+	connectOwned(opts: {
+		filter?: (p: ClerkPlayer) => boolean;
+		onConnect?: (account: LibManagedAccount) => void;
+	}): Promise<LibManagedAccount[]> {
 		this.lastFilter = opts.filter;
 		const selected = opts.filter ? this.players.filter(opts.filter) : this.players;
 		for (const player of selected) {
 			const acct = this.accountsByUsername.get(player.username);
 			if (acct) {
 				this.connected.set(player.username, acct);
+				opts.onConnect?.(acct);
 			}
 		}
 		return Promise.resolve([...this.connected.values()]);
