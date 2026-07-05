@@ -91,6 +91,7 @@ describe("LibAccountManager", () => {
 				connectedListeners.add(listener);
 				return () => connectedListeners.delete(listener);
 			},
+			onAccountReconnected: () => () => {},
 			onAccountDisconnected: () => () => {},
 		};
 		const mgr = new LibAccountManager(client, { clerkApiKey: "k" });
@@ -295,7 +296,10 @@ describe("LibAccountManager", () => {
 		expect(accounts.get("Beta")?.closed).toBe(true);
 	});
 
-	test("a reconnect replaces the indexed account with the new instance", async () => {
+	test("a reconnect does not replace the indexed account — same instance throughout", async () => {
+		// Reconnection is in place (see the lib's Account.reconnectOnce), not a
+		// new instance — anything holding a direct reference to the account
+		// (e.g. a running loop) must keep working transparently across it.
 		const { client, accounts } = setup([player("Alpha", "pid-a")]);
 		const mgr = new LibAccountManager(client, { clerkApiKey: "k" });
 		await mgr.connect();
@@ -303,16 +307,14 @@ describe("LibAccountManager", () => {
 		const original = mgr.getByPlayerId("pid-a");
 		expect(original).toBe(accounts.get("Alpha"));
 
-		const reconnected = new FakeAccount("pid-a", "Alpha");
-		client.simulateReconnect("Alpha", reconnected);
+		client.simulateReconnect("Alpha");
 
-		expect(mgr.getByPlayerId("pid-a")).toBe(reconnected);
-		expect(mgr.getByPlayerId("pid-a")).not.toBe(original);
-		expect(mgr.getByUsername("alpha")).toBe(reconnected);
+		expect(mgr.getByPlayerId("pid-a")).toBe(original);
+		expect(mgr.getByUsername("alpha")).toBe(original);
 	});
 
-	test("a reconnect re-wires onStateChange on the new instance", async () => {
-		const { client } = setup([player("Alpha", "pid-a")]);
+	test("onStateChange keeps working across a reconnect without needing to be re-wired", async () => {
+		const { client, accounts } = setup([player("Alpha", "pid-a")]);
 		const stateChanges: string[][] = [];
 		const mgr = new LibAccountManager(
 			client,
@@ -322,12 +324,22 @@ describe("LibAccountManager", () => {
 		await mgr.connect();
 		stateChanges.length = 0; // clear the connect-time backfill call
 
-		const reconnected = new FakeAccount("pid-a", "Alpha");
-		client.simulateReconnect("Alpha", reconnected);
-		stateChanges.length = 0; // clear the reconnect's own backfill call
+		client.simulateReconnect("Alpha");
+		// onAccountReconnected is purely informational — no re-index, no backfill.
+		expect(stateChanges).toEqual([]);
 
-		reconnected.emitStateChange(["ship"]);
+		accounts.get("Alpha")?.emitStateChange(["ship"]);
 		expect(stateChanges).toEqual([["ship"]]);
+	});
+
+	test("onAccountReconnected is logged and does not throw", async () => {
+		const { client } = setup([player("Alpha", "pid-a")]);
+		const mgr = new LibAccountManager(client, { clerkApiKey: "k" });
+		await mgr.connect();
+
+		expect(() => {
+			client.simulateReconnect("Alpha");
+		}).not.toThrow();
 	});
 
 	test("onAccountDisconnected is logged and does not throw", async () => {
