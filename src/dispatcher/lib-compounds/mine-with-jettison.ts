@@ -166,22 +166,43 @@ export class LibMineWithJettison implements LibGoal {
 				`Mining attempt ${ticksUsed + 1} (cargo: ${currentState.ship?.cargo_used ?? 0}/${currentState.ship?.cargo_capacity ?? 0})`,
 			);
 
+			const cargoBeforeAttempt = currentState.ship?.cargo_used ?? 0;
+
 			try {
 				await ctx.account.commands.spacemolt.mine();
 				ticksUsed++;
+				currentState = await ctx.refreshState();
 			} catch (err) {
-				if (err instanceof SpacemoltError) {
-					if (err.code === "cargo_full") {
-						log.info(`Mine rejected (cargo full): ${err.message}`);
-						return succeeded(`Cargo full after ${ticksUsed} attempt(s)`, ticksUsed);
+				if (!(err instanceof SpacemoltError)) throw err;
+
+				if (err.code === "cargo_full") {
+					log.info(`Mine rejected (cargo full): ${err.message}`);
+					return succeeded(`Cargo full after ${ticksUsed} attempt(s)`, ticksUsed);
+				}
+
+				if (err.code === "mutation_timeout") {
+					// The ack means this mine WAS queued — only its outcome frame
+					// arrived too late (or not at all) to match the mutate() call
+					// still awaiting it. The push-fed cache updates from that
+					// frame regardless of whether anyone was still listening for
+					// it, so a live re-check can reveal the mine actually landed
+					// before this attempt is written off as a failure.
+					const refreshed = await ctx.refreshState({ force: true });
+					if ((refreshed.ship?.cargo_used ?? 0) > cargoBeforeAttempt) {
+						log.info(
+							`Mine timed out but cargo increased (${cargoBeforeAttempt} -> ${refreshed.ship?.cargo_used}) — treating as a successful attempt`,
+						);
+						ticksUsed++;
+						currentState = refreshed;
+					} else {
+						log.warn(`Mine rejected: ${err.message}`);
+						return failed(`Mine rejected: ${err.message}`, ticksUsed);
 					}
+				} else {
 					log.warn(`Mine rejected: ${err.message}`);
 					return failed(`Mine rejected: ${err.message}`, ticksUsed);
 				}
-				throw err;
 			}
-
-			currentState = await ctx.refreshState();
 
 			if (!currentState.ship) {
 				return failed(`Ship state lost after ${ticksUsed} mine attempt(s)`, ticksUsed);

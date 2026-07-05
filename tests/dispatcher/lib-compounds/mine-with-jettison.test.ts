@@ -69,4 +69,55 @@ describe("LibMineWithJettison", () => {
 		expect(result.success).toBe(false);
 		expect(result.message).toContain("Mining failed");
 	});
+
+	test("mutation_timeout is treated as a successful attempt if a live refresh shows cargo increased", async () => {
+		let mineCalls = 0;
+		const account = new FakeLibGoalAccount(
+			{ ship: { cargo_used: 0, cargo_capacity: 100 }, cargo: [] },
+			{
+				mine: () => {
+					mineCalls++;
+					if (mineCalls === 1) {
+						// The outcome frame arrived late (after the caller gave up),
+						// but its delta still updated the push-fed cache.
+						account.setState({
+							ship: { cargo_used: 10, cargo_capacity: 100 },
+							cargo: [{ item_id: "iron_ore", quantity: 10 }],
+						});
+						throw new SpacemoltError(
+							"mutation_timeout",
+							"No action_result for mutation r1 within 180000ms",
+						);
+					}
+					account.setState({ ship: { cargo_used: 100, cargo_capacity: 100 } });
+					return fakeMutationResult("mine");
+				},
+			},
+		);
+		const result = await new LibMineWithJettison({ junkItemIds: ["rock_dust"] }).execute(
+			makeLibGoalContext(account),
+		);
+		expect(result.success).toBe(true);
+		expect(mineCalls).toBe(2);
+		expect(result.ticksUsed).toBe(2);
+	});
+
+	test("mutation_timeout is a real failure if a live refresh shows cargo unchanged", async () => {
+		const account = new FakeLibGoalAccount(
+			{ ship: { cargo_used: 0, cargo_capacity: 100 }, cargo: [] },
+			{
+				mine: () => {
+					throw new SpacemoltError(
+						"mutation_timeout",
+						"No action_result for mutation r1 within 180000ms",
+					);
+				},
+			},
+		);
+		const result = await new LibMineWithJettison({ junkItemIds: ["rock_dust"] }).execute(
+			makeLibGoalContext(account),
+		);
+		expect(result.success).toBe(false);
+		expect(result.message).toContain("Mine rejected");
+	});
 });
