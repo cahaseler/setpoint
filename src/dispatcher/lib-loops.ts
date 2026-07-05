@@ -55,7 +55,9 @@ async function refreshBeforeRetry(
 	try {
 		return await ctx.refreshState();
 	} catch (err) {
-		log.warn(`Failed to refresh state before retry: ${errorMessage(err)}`);
+		log.warn(
+			`[${fallback.player?.id ?? "?"}] Failed to refresh state before retry: ${errorMessage(err)}`,
+		);
 		return fallback;
 	}
 }
@@ -75,6 +77,10 @@ export async function runLibLoop(
 	ctx: LibGoalContext,
 	options: LoopOptions = {},
 ): Promise<LoopResult> {
+	// Included on every log line below — otherwise a [loop]-tagged failure can't be
+	// traced back to the account that produced it (multiple accounts' loops interleave
+	// in the daemon's log, all under the same "loop" component tag).
+	const playerId = ctx.state.player?.id ?? "?";
 	const iterations: IterationResult[] = [];
 	let totalTicks = 0;
 	// Refresh (free) before the first iteration so the loop starts with current data.
@@ -88,7 +94,7 @@ export async function runLibLoop(
 
 	while (i < maxIterations) {
 		if (options.signal?.aborted) {
-			log.info(`Loop cancelled after ${i} iteration(s)`);
+			log.info(`[${playerId}] Loop cancelled after ${i} iteration(s)`);
 			return {
 				success: true,
 				message: `Loop cancelled after ${i} iteration(s)`,
@@ -106,7 +112,7 @@ export async function runLibLoop(
 			options.shouldContinue &&
 			!options.shouldContinue(i, currentState as unknown as StoredGameState)
 		) {
-			log.info(`Loop stopped by shouldContinue after ${i} iteration(s)`);
+			log.info(`[${playerId}] Loop stopped by shouldContinue after ${i} iteration(s)`);
 			return {
 				success: true,
 				message: `Loop stopped after ${i} iteration(s)`,
@@ -118,7 +124,7 @@ export async function runLibLoop(
 		}
 
 		const goal = factory(currentState);
-		log.info(`Loop iteration ${i + 1}: running ${goal.name}`);
+		log.info(`[${playerId}] Loop iteration ${i + 1}: running ${goal.name}`);
 
 		let result: GoalResult;
 		try {
@@ -126,7 +132,7 @@ export async function runLibLoop(
 			result = await goal.execute(iterationCtx);
 		} catch (err) {
 			if (options.signal?.aborted) {
-				log.info(`Loop cancelled during iteration ${i + 1}`);
+				log.info(`[${playerId}] Loop cancelled during iteration ${i + 1}`);
 				return {
 					success: true,
 					message: `Loop cancelled after ${i} iteration(s)`,
@@ -138,7 +144,7 @@ export async function runLibLoop(
 			}
 			consecutiveFailures++;
 			log.warn(
-				`Loop iteration ${i + 1} threw exception (failure ${consecutiveFailures}/${maxConsecutiveFailures}): ${errorMessage(err)}`,
+				`[${playerId}] Loop iteration ${i + 1} threw exception (failure ${consecutiveFailures}/${maxConsecutiveFailures}): ${errorMessage(err)}`,
 			);
 
 			if (consecutiveFailures >= maxConsecutiveFailures) {
@@ -153,7 +159,7 @@ export async function runLibLoop(
 				};
 			}
 
-			log.info(`Retrying iteration ${i + 1} in ${retryDelayMs}ms...`);
+			log.info(`[${playerId}] Retrying iteration ${i + 1} in ${retryDelayMs}ms...`);
 			await abortableDelay(retryDelayMs, options.signal);
 			currentState = await refreshBeforeRetry(ctx, currentState);
 			continue;
@@ -164,7 +170,7 @@ export async function runLibLoop(
 			options.onIterationComplete?.(i + 1, result);
 
 			if (options.signal?.aborted) {
-				log.info(`Loop cancelled during iteration ${i + 1}`);
+				log.info(`[${playerId}] Loop cancelled during iteration ${i + 1}`);
 				return {
 					success: true,
 					message: `Loop cancelled after ${i} iteration(s)`,
@@ -176,8 +182,10 @@ export async function runLibLoop(
 			}
 
 			if (options.ignoreFailure?.(result)) {
-				log.info(`Loop iteration ${i + 1} will retry (not counted as failure): ${result.message}`);
-				log.info(`Retrying iteration ${i + 1} in ${retryDelayMs}ms...`);
+				log.info(
+					`[${playerId}] Loop iteration ${i + 1} will retry (not counted as failure): ${result.message}`,
+				);
+				log.info(`[${playerId}] Retrying iteration ${i + 1} in ${retryDelayMs}ms...`);
 				await abortableDelay(retryDelayMs, options.signal);
 				currentState = await refreshBeforeRetry(ctx, currentState);
 				continue;
@@ -185,7 +193,7 @@ export async function runLibLoop(
 
 			consecutiveFailures++;
 			log.warn(
-				`Loop failed on iteration ${i + 1} (failure ${consecutiveFailures}/${maxConsecutiveFailures}): ${result.message}`,
+				`[${playerId}] Loop failed on iteration ${i + 1} (failure ${consecutiveFailures}/${maxConsecutiveFailures}): ${result.message}`,
 			);
 
 			if (consecutiveFailures >= maxConsecutiveFailures) {
@@ -200,7 +208,7 @@ export async function runLibLoop(
 				};
 			}
 
-			log.info(`Retrying iteration ${i + 1} in ${retryDelayMs}ms...`);
+			log.info(`[${playerId}] Retrying iteration ${i + 1} in ${retryDelayMs}ms...`);
 			await abortableDelay(retryDelayMs, options.signal);
 			currentState = await refreshBeforeRetry(ctx, currentState);
 			continue;
@@ -210,13 +218,15 @@ export async function runLibLoop(
 		pushIteration(iterations, { iteration: i, result });
 		totalTicks += result.ticksUsed;
 		options.onIterationComplete?.(i + 1, result);
-		log.info(`Loop iteration ${i + 1} complete: ${result.ticksUsed} tick(s)`);
+		log.info(`[${playerId}] Loop iteration ${i + 1} complete: ${result.ticksUsed} tick(s)`);
 
 		currentState = await refreshBeforeRetry(ctx, currentState);
 		i++;
 	}
 
-	log.info(`Loop completed ${iterations.length} iteration(s), ${totalTicks} total tick(s)`);
+	log.info(
+		`[${playerId}] Loop completed ${iterations.length} iteration(s), ${totalTicks} total tick(s)`,
+	);
 	return {
 		success: true,
 		message: `Loop completed ${iterations.length} iteration(s) (${totalTicks} tick(s))`,

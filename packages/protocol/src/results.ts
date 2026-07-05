@@ -45,6 +45,8 @@ export interface LoopStatus {
 	running: boolean;
 	/** Message from the most recently completed iteration, updated while running. */
 	lastStep?: string;
+	/** When `lastStep` was recorded — a `running: true` loop with a stale `lastStepAt` is stalled, not dead. */
+	lastStepAt?: string;
 	result?: LoopResult;
 	/** Original API options (system IDs, etc.) for route visualization. */
 	options?: Record<string, unknown>;

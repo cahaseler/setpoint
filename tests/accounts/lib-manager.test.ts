@@ -132,6 +132,30 @@ describe("LibAccountManager", () => {
 		]);
 	});
 
+	test("a throwing onStateChange handler is caught and logged, not left to escape into the lib", async () => {
+		// Regression: an onStateChange consumer failure (e.g. the SQLite projector)
+		// must never propagate back into the lib's frame routing — it should be
+		// caught and logged here so it's visible in daemon.log, and so subsequent
+		// state changes for the same account keep being delivered normally.
+		const { client, accounts } = setup([player("Alpha", "pid-a")]);
+		const seen: string[][] = [];
+		let calls = 0;
+		const mgr = new LibAccountManager(
+			client,
+			{ clerkApiKey: "k" },
+			{
+				onStateChange: (_playerId, changed) => {
+					calls++;
+					if (calls === 1) throw new Error("simulated: projector failed");
+					seen.push(changed);
+				},
+			},
+		);
+		await expect(mgr.connect()).resolves.toBeUndefined();
+		accounts.get("Alpha")?.emitStateChange(["location"]);
+		expect(seen).toEqual([["location"]]);
+	});
+
 	test("wires onDrift, passing the pre- and post-refresh state plus the account", async () => {
 		const { client, accounts } = setup([player("Alpha", "pid-a")]);
 		const account = accounts.get("Alpha") as unknown as FakeAccount & {

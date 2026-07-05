@@ -68,6 +68,8 @@ export interface LoopStatus {
 	running: boolean;
 	/** Message from the most recently completed iteration, updated while running. */
 	lastStep?: string;
+	/** When `lastStep` was recorded — a `running: true` loop with a stale `lastStepAt` is stalled, not dead. */
+	lastStepAt?: string;
 	result?: LoopResult;
 	/** Original API options (system IDs, etc.) for route visualization. */
 	options?: Record<string, unknown>;
@@ -76,6 +78,14 @@ export interface LoopStatus {
 /** Mutable step tracker shared between the loop callback and the ActiveLoop. */
 interface StepRef {
 	last: string | undefined;
+	/** When `last` was set — lets a caller detect a loop that's `running: true` but stalled. */
+	lastAt: string | undefined;
+}
+
+/** Record a completed iteration's message and timestamp on a StepRef. */
+function recordStep(stepRef: StepRef, result: { message: string }): void {
+	stepRef.last = result.message;
+	stepRef.lastAt = new Date().toISOString();
 }
 
 /** Internal tracking for an active loop. */
@@ -300,6 +310,7 @@ export class LoopManager {
 			startedAt: loop.startedAt,
 			running: loop.result === undefined,
 			...(loop.stepRef.last !== undefined ? { lastStep: loop.stepRef.last } : {}),
+			...(loop.stepRef.lastAt !== undefined ? { lastStepAt: loop.stepRef.lastAt } : {}),
 			...(loop.result !== undefined ? { result: loop.result } : {}),
 			options: loop.options,
 		};
@@ -388,7 +399,7 @@ export class LoopManager {
 		const controller = new AbortController();
 		const ctx = makeLibGoalContext(account);
 
-		const stepRef: StepRef = { last: undefined };
+		const stepRef: StepRef = { last: undefined, lastAt: undefined };
 		const loopOptions: MiningLoopOptions = {
 			miningSystemId: options.miningSystemId,
 			beltPoiId: options.beltPoiId,
@@ -409,9 +420,7 @@ export class LoopManager {
 				: {}),
 			loopOptions: {
 				signal: controller.signal,
-				onIterationComplete: (_iter, result) => {
-					stepRef.last = result.message;
-				},
+				onIterationComplete: (_iter, result) => recordStep(stepRef, result),
 				...(options.maxIterations !== undefined ? { maxIterations: options.maxIterations } : {}),
 			},
 		};
@@ -459,7 +468,7 @@ export class LoopManager {
 		const controller = new AbortController();
 		const ctx = makeLibGoalContext(account);
 
-		const stepRef: StepRef = { last: undefined };
+		const stepRef: StepRef = { last: undefined, lastAt: undefined };
 		const loopOptions: EnhancedMiningLoopOptions = {
 			miningSystemId: options.miningSystemId,
 			beltPoiId: options.beltPoiId,
@@ -484,9 +493,7 @@ export class LoopManager {
 				: {}),
 			loopOptions: {
 				signal: controller.signal,
-				onIterationComplete: (_iter, result) => {
-					stepRef.last = result.message;
-				},
+				onIterationComplete: (_iter, result) => recordStep(stepRef, result),
 				...(options.maxIterations !== undefined ? { maxIterations: options.maxIterations } : {}),
 			},
 		};
@@ -534,7 +541,7 @@ export class LoopManager {
 		const controller = new AbortController();
 		const ctx = makeLibGoalContext(account);
 
-		const stepRef: StepRef = { last: undefined };
+		const stepRef: StepRef = { last: undefined, lastAt: undefined };
 		const loopOptions: SalvageLoopOptions = {
 			salvageSystemId: options.salvageSystemId,
 			salvagePoiId: options.salvagePoiId,
@@ -550,9 +557,7 @@ export class LoopManager {
 			...(options.minCredits !== undefined ? { minCredits: options.minCredits } : {}),
 			loopOptions: {
 				signal: controller.signal,
-				onIterationComplete: (_iter, result) => {
-					stepRef.last = result.message;
-				},
+				onIterationComplete: (_iter, result) => recordStep(stepRef, result),
 				...(options.maxIterations !== undefined ? { maxIterations: options.maxIterations } : {}),
 			},
 		};
@@ -600,7 +605,7 @@ export class LoopManager {
 		const controller = new AbortController();
 		const ctx = makeLibGoalContext(account);
 
-		const stepRef: StepRef = { last: undefined };
+		const stepRef: StepRef = { last: undefined, lastAt: undefined };
 		const loopOptions: TradingLoopOptions = {
 			buyStation: options.buyStation,
 			sellStation: options.sellStation,
@@ -608,9 +613,7 @@ export class LoopManager {
 			...(options.refuel !== undefined ? { refuel: options.refuel } : {}),
 			loopOptions: {
 				signal: controller.signal,
-				onIterationComplete: (_iter, result) => {
-					stepRef.last = result.message;
-				},
+				onIterationComplete: (_iter, result) => recordStep(stepRef, result),
 				...(options.maxIterations !== undefined ? { maxIterations: options.maxIterations } : {}),
 			},
 		};
@@ -658,16 +661,14 @@ export class LoopManager {
 		const controller = new AbortController();
 		const ctx = makeLibGoalContext(account);
 
-		const stepRef: StepRef = { last: undefined };
+		const stepRef: StepRef = { last: undefined, lastAt: undefined };
 		const loopOptions: HaulingLoopOptions = {
 			source: options.source,
 			destination: options.destination,
 			...(options.refuel !== undefined ? { refuel: options.refuel } : {}),
 			loopOptions: {
 				signal: controller.signal,
-				onIterationComplete: (_iter, result) => {
-					stepRef.last = result.message;
-				},
+				onIterationComplete: (_iter, result) => recordStep(stepRef, result),
 				...(options.maxIterations !== undefined ? { maxIterations: options.maxIterations } : {}),
 			},
 		};
@@ -715,7 +716,7 @@ export class LoopManager {
 		const controller = new AbortController();
 		const ctx = makeLibGoalContext(account);
 
-		const stepRef: StepRef = { last: undefined };
+		const stepRef: StepRef = { last: undefined, lastAt: undefined };
 		const loopOptions: StorageTransferLoopOptions = {
 			systemId: options.systemId,
 			stationPoiId: options.stationPoiId,
@@ -724,9 +725,7 @@ export class LoopManager {
 			...(options.excludeCredits !== undefined ? { excludeCredits: options.excludeCredits } : {}),
 			loopOptions: {
 				signal: controller.signal,
-				onIterationComplete: (_iter, result) => {
-					stepRef.last = result.message;
-				},
+				onIterationComplete: (_iter, result) => recordStep(stepRef, result),
 				...(options.maxIterations !== undefined ? { maxIterations: options.maxIterations } : {}),
 			},
 		};
@@ -773,7 +772,7 @@ export class LoopManager {
 		const controller = new AbortController();
 		const ctx = makeLibGoalContext(account);
 
-		const stepRef: StepRef = { last: undefined };
+		const stepRef: StepRef = { last: undefined, lastAt: undefined };
 		const loopOptions: ExplorationLoopOptions = {
 			systemId: options.systemId,
 			stationPoiId: options.stationPoiId,
@@ -789,9 +788,7 @@ export class LoopManager {
 				: {}),
 			loopOptions: {
 				signal: controller.signal,
-				onIterationComplete: (_iter, result) => {
-					stepRef.last = result.message;
-				},
+				onIterationComplete: (_iter, result) => recordStep(stepRef, result),
 				...(options.maxIterations !== undefined ? { maxIterations: options.maxIterations } : {}),
 			},
 		};
@@ -838,7 +835,7 @@ export class LoopManager {
 		const controller = new AbortController();
 		const ctx = makeLibGoalContext(account);
 
-		const stepRef: StepRef = { last: undefined };
+		const stepRef: StepRef = { last: undefined, lastAt: undefined };
 		const loopOptions: GuardLoopOptions = {
 			homeSystemId: options.homeSystemId,
 			homeStationPoiId: options.homeStationPoiId,
@@ -852,9 +849,7 @@ export class LoopManager {
 				: {}),
 			loopOptions: {
 				signal: controller.signal,
-				onIterationComplete: (_iter, result) => {
-					stepRef.last = result.message;
-				},
+				onIterationComplete: (_iter, result) => recordStep(stepRef, result),
 				...(options.maxIterations !== undefined ? { maxIterations: options.maxIterations } : {}),
 			},
 		};
@@ -902,7 +897,7 @@ export class LoopManager {
 		const controller = new AbortController();
 		const ctx = makeLibGoalContext(account);
 
-		const stepRef: StepRef = { last: undefined };
+		const stepRef: StepRef = { last: undefined, lastAt: undefined };
 		const loopOptions: RoamingSalvageLoopOptions = {
 			homeSystemId: options.homeSystemId,
 			homeStationPoiId: options.homeStationPoiId,
@@ -919,9 +914,7 @@ export class LoopManager {
 				: {}),
 			loopOptions: {
 				signal: controller.signal,
-				onIterationComplete: (_iter, result) => {
-					stepRef.last = result.message;
-				},
+				onIterationComplete: (_iter, result) => recordStep(stepRef, result),
 				...(options.maxIterations !== undefined ? { maxIterations: options.maxIterations } : {}),
 			},
 		};
@@ -965,7 +958,7 @@ export class LoopManager {
 
 		const controller = new AbortController();
 		const ctx = makeLibGoalContext(account);
-		const stepRef: StepRef = { last: undefined };
+		const stepRef: StepRef = { last: undefined, lastAt: undefined };
 
 		const loopOptions: TowSalvageLoopOptions = {
 			mode: "fixed",
@@ -978,9 +971,7 @@ export class LoopManager {
 			...(options.storageTarget !== undefined ? { storageTarget: options.storageTarget } : {}),
 			loopOptions: {
 				signal: controller.signal,
-				onIterationComplete: (_iter, result) => {
-					stepRef.last = result.message;
-				},
+				onIterationComplete: (_iter, result) => recordStep(stepRef, result),
 				...(options.maxIterations !== undefined ? { maxIterations: options.maxIterations } : {}),
 			},
 		};

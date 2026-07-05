@@ -125,4 +125,33 @@ describe("runLibLoop", () => {
 		expect(result.success).toBe(true);
 		expect(result.iterationCount).toBe(1);
 	});
+
+	test("onIterationComplete fires on a successful iteration", async () => {
+		const account = new FakeLibGoalAccount({});
+		const calls: Array<[number, string]> = [];
+		await runLibLoop(() => goal("x", () => succeeded("done", 1)), makeLibGoalContext(account), {
+			maxIterations: 1,
+			onIterationComplete: (iter, result) => calls.push([iter, result.message]),
+		});
+		expect(calls).toEqual([[1, "done"]]);
+	});
+
+	test("onIterationComplete fires on a failed iteration, before the retry", async () => {
+		// loop-manager.ts relies on this firing even on failure — it's how a stuck
+		// loop's LoopStatus.lastStep/lastStepAt still advances on every retry attempt,
+		// not just on eventual success.
+		const account = new FakeLibGoalAccount({});
+		const calls: Array<[number, string]> = [];
+		const result = await runLibLoop(
+			() => goal("x", () => failed("nope", 0)),
+			makeLibGoalContext(account),
+			{
+				maxConsecutiveFailures: 1,
+				retryDelayMs: 1,
+				onIterationComplete: (iter, r) => calls.push([iter, r.message]),
+			},
+		);
+		expect(result.success).toBe(false);
+		expect(calls).toEqual([[1, "nope"]]);
+	});
 });
