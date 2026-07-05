@@ -115,16 +115,26 @@ export interface AccountClientLike {
 	remove(id: string): Promise<void>;
 	closeAll(): void;
 	/**
-	 * Fires whenever an account becomes connected+authenticated — both the
-	 * initial connect and every later reconnect after an unexpected
-	 * disconnect (the lib now drives reconnection itself, through the same
-	 * rate-limited connect path used for the initial connect, rather than
-	 * each account reconnecting independently — see the lib's
-	 * `SpacemoltClient.handleAccountDisconnected`). A reconnect replaces the
-	 * `LibManagedAccount` instance for that id, so this is how a caller
-	 * knows to re-index/re-wire it. Returns an unsubscribe function.
+	 * Fires the first time an id becomes a connected+authenticated
+	 * `LibManagedAccount` — the initial connect only. Does NOT fire again for
+	 * a later reconnect after an unexpected disconnect: the lib reconnects
+	 * the same instance in place (fresh socket, re-authenticated,
+	 * subscriptions restored — see the lib's `Account.reconnectOnce`) rather
+	 * than replacing it, through the same rate-limited queue used for the
+	 * initial connect (`SpacemoltClient.handleAccountDisconnected`) — so
+	 * anything holding a direct reference to the account (e.g. a running
+	 * loop) keeps working transparently across a reconnect. See
+	 * `onAccountReconnected` for that event. Returns an unsubscribe function.
 	 */
 	onAccountConnected(listener: (account: LibManagedAccount) => void): () => void;
+	/**
+	 * Fires after an already-connected account's connection is restored
+	 * following an unexpected disconnect — the same `LibManagedAccount`
+	 * instance throughout, reconnected in place. Purely informational (e.g.
+	 * logging); nothing needs re-indexing since the instance never changed.
+	 * Returns an unsubscribe function.
+	 */
+	onAccountReconnected(listener: (account: LibManagedAccount) => void): () => void;
 	/**
 	 * Fires when an account is dropped for good: a terminal close (session
 	 * replaced by another connection, or an auth timeout) that is never
