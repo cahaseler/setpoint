@@ -21,6 +21,7 @@ import { StateStore } from "./state/store.js";
 import { bandwidthTracker } from "./util/bandwidth-tracker.js";
 import { errorMessage } from "./util/errors.js";
 import { type LogLevel, createLogger, enableFileLogging, setLogLevel } from "./util/logger.js";
+import { installCrashSafetyHandlers } from "./util/process-safety.js";
 
 const VALID_LOG_LEVELS: ReadonlySet<string> = new Set(["debug", "info", "warn", "error"]);
 const envLogLevel = process.env["SM_LOG_LEVEL"];
@@ -32,6 +33,7 @@ if (envLogLevel && VALID_LOG_LEVELS.has(envLogLevel)) {
 enableFileLogging();
 
 const log = createLogger("main");
+installCrashSafetyHandlers(log);
 
 const CONFIG_DIR = join(import.meta.dir, "..", "config");
 const DB_PATH = join(import.meta.dir, "..", "data", "dispatcher.db");

@@ -1,6 +1,7 @@
 import type {
 	ClerkPlayer,
 	Commands,
+	ConnectionClosedError,
 	GameState,
 	MarketBook,
 	MutationResult,
@@ -129,6 +130,10 @@ export class FakeClient implements AccountClientLike {
 	/** Number of times listOwnedPlayers() has been called — for TTL-cache tests. */
 	listOwnedPlayersCallCount = 0;
 	private connected = new Map<string, FakeAccount>();
+	private readonly connectedListeners = new Set<(account: LibManagedAccount) => void>();
+	private readonly disconnectedListeners = new Set<
+		(id: string, err: ConnectionClosedError) => void
+	>();
 	constructor(
 		private readonly players: ClerkPlayer[],
 		private readonly accountsByUsername: Map<string, FakeAccount>,
@@ -144,6 +149,7 @@ export class FakeClient implements AccountClientLike {
 			if (acct) {
 				this.connected.set(player.username, acct);
 				opts.onConnect?.(acct);
+				this.notifyConnected(acct);
 			}
 		}
 		return Promise.resolve([...this.connected.values()]);
@@ -155,6 +161,7 @@ export class FakeClient implements AccountClientLike {
 			return Promise.reject(new Error(`FakeClient.connect: no stored account for "${id}"`));
 		}
 		this.connected.set(id, acct);
+		this.notifyConnected(acct);
 		return Promise.resolve(acct);
 	}
 	/** Registers a brand-new account: creates and connects a FakeAccount keyed by username, playerId `pid-<username>`. */
@@ -165,6 +172,7 @@ export class FakeClient implements AccountClientLike {
 		const account = new FakeAccount(playerId, params.username);
 		this.accountsByUsername.set(params.username, account);
 		this.connected.set(params.username, account);
+		this.notifyConnected(account);
 		return Promise.resolve({
 			account,
 			result: { password: "generated-password", player_id: playerId, state: {} },
@@ -191,5 +199,26 @@ export class FakeClient implements AccountClientLike {
 			a.close();
 		}
 		this.connected.clear();
+	}
+	onAccountConnected(listener: (account: LibManagedAccount) => void): () => void {
+		this.connectedListeners.add(listener);
+		return () => this.connectedListeners.delete(listener);
+	}
+	onAccountDisconnected(listener: (id: string, err: ConnectionClosedError) => void): () => void {
+		this.disconnectedListeners.add(listener);
+		return () => this.disconnectedListeners.delete(listener);
+	}
+	private notifyConnected(account: LibManagedAccount): void {
+		for (const listener of this.connectedListeners) listener(account);
+	}
+	/** Test helper: simulates a reconnect replacing the account instance for `id`, firing onAccountConnected with the new one. */
+	simulateReconnect(id: string, newAccount: FakeAccount): void {
+		this.connected.set(id, newAccount);
+		this.notifyConnected(newAccount);
+	}
+	/** Test helper: simulates a terminal disconnect (no reconnect) for `id`. */
+	simulateDisconnected(id: string, err: ConnectionClosedError): void {
+		this.connected.delete(id);
+		for (const listener of this.disconnectedListeners) listener(id, err);
 	}
 }

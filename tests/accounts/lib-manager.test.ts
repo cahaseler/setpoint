@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import type { Account, ClerkPlayer, GameState } from "@spacemolt/lib";
+import {
+	type Account,
+	type ClerkPlayer,
+	ConnectionClosedError,
+	type GameState,
+} from "@spacemolt/lib";
 import { LibAccountManager } from "../../src/accounts/lib-manager.js";
 import type { AccountClientLike, LibManagedAccount } from "../../src/accounts/lib-types.js";
 import { STATE_FRESHNESS_TTL_MS, isStateStale } from "../../src/dispatcher/state-freshness.js";
@@ -63,13 +68,16 @@ describe("LibAccountManager", () => {
 		const betaGate = new Promise<void>((resolve) => {
 			resolveBeta = resolve;
 		});
+		const connectedListeners = new Set<(account: LibManagedAccount) => void>();
 		const client: AccountClientLike = {
 			connectOwned: async (opts) => {
 				const alpha = accounts.get("Alpha") as unknown as LibManagedAccount;
 				const beta = accounts.get("Beta") as unknown as LibManagedAccount;
 				opts.onConnect?.(alpha);
+				for (const listener of connectedListeners) listener(alpha);
 				await betaGate;
 				opts.onConnect?.(beta);
+				for (const listener of connectedListeners) listener(beta);
 				return [alpha, beta];
 			},
 			connect: () => Promise.reject(new Error("not used by this test")),
@@ -79,6 +87,11 @@ describe("LibAccountManager", () => {
 			account: () => undefined,
 			remove: () => Promise.resolve(),
 			closeAll: () => {},
+			onAccountConnected: (listener) => {
+				connectedListeners.add(listener);
+				return () => connectedListeners.delete(listener);
+			},
+			onAccountDisconnected: () => () => {},
 		};
 		const mgr = new LibAccountManager(client, { clerkApiKey: "k" });
 		const connectPromise = mgr.connect();
@@ -256,6 +269,51 @@ describe("LibAccountManager", () => {
 		expect(mgr.size).toBe(0);
 		expect(accounts.get("Alpha")?.closed).toBe(true);
 		expect(accounts.get("Beta")?.closed).toBe(true);
+	});
+
+	test("a reconnect replaces the indexed account with the new instance", async () => {
+		const { client, accounts } = setup([player("Alpha", "pid-a")]);
+		const mgr = new LibAccountManager(client, { clerkApiKey: "k" });
+		await mgr.connect();
+
+		const original = mgr.getByPlayerId("pid-a");
+		expect(original).toBe(accounts.get("Alpha"));
+
+		const reconnected = new FakeAccount("pid-a", "Alpha");
+		client.simulateReconnect("Alpha", reconnected);
+
+		expect(mgr.getByPlayerId("pid-a")).toBe(reconnected);
+		expect(mgr.getByPlayerId("pid-a")).not.toBe(original);
+		expect(mgr.getByUsername("alpha")).toBe(reconnected);
+	});
+
+	test("a reconnect re-wires onStateChange on the new instance", async () => {
+		const { client } = setup([player("Alpha", "pid-a")]);
+		const stateChanges: string[][] = [];
+		const mgr = new LibAccountManager(
+			client,
+			{ clerkApiKey: "k" },
+			{ onStateChange: (_playerId, changed) => stateChanges.push(changed) },
+		);
+		await mgr.connect();
+		stateChanges.length = 0; // clear the connect-time backfill call
+
+		const reconnected = new FakeAccount("pid-a", "Alpha");
+		client.simulateReconnect("Alpha", reconnected);
+		stateChanges.length = 0; // clear the reconnect's own backfill call
+
+		reconnected.emitStateChange(["ship"]);
+		expect(stateChanges).toEqual([["ship"]]);
+	});
+
+	test("onAccountDisconnected is logged and does not throw", async () => {
+		const { client } = setup([player("Alpha", "pid-a")]);
+		const mgr = new LibAccountManager(client, { clerkApiKey: "k" });
+		await mgr.connect();
+
+		expect(() => {
+			client.simulateDisconnected("Alpha", new ConnectionClosedError("session replaced", 4001));
+		}).not.toThrow();
 	});
 
 	test("connectOne() indexes the account and backfills the projector", async () => {

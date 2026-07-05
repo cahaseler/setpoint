@@ -1,6 +1,7 @@
 import type {
 	ClerkPlayer,
 	Commands,
+	ConnectionClosedError,
 	GameState,
 	MarketBook,
 	MutationResult,
@@ -113,6 +114,23 @@ export interface AccountClientLike {
 	account(id: string): LibManagedAccount | undefined;
 	remove(id: string): Promise<void>;
 	closeAll(): void;
+	/**
+	 * Fires whenever an account becomes connected+authenticated — both the
+	 * initial connect and every later reconnect after an unexpected
+	 * disconnect (the lib now drives reconnection itself, through the same
+	 * rate-limited connect path used for the initial connect, rather than
+	 * each account reconnecting independently — see the lib's
+	 * `SpacemoltClient.handleAccountDisconnected`). A reconnect replaces the
+	 * `LibManagedAccount` instance for that id, so this is how a caller
+	 * knows to re-index/re-wire it. Returns an unsubscribe function.
+	 */
+	onAccountConnected(listener: (account: LibManagedAccount) => void): () => void;
+	/**
+	 * Fires when an account is dropped for good: a terminal close (session
+	 * replaced by another connection, or an auth timeout) that is never
+	 * reconnected, or a reconnect attempt that exhausted its retries.
+	 */
+	onAccountDisconnected(listener: (id: string, err: ConnectionClosedError) => void): () => void;
 }
 
 /** The player_id for a managed account. Throws if the account has no `player.id` yet. */
