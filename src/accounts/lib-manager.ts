@@ -8,6 +8,7 @@ import {
 	type StateSection,
 } from "@spacemolt/lib";
 import { markStateFresh } from "../dispatcher/state-freshness.js";
+import { errorMessage } from "../util/errors.js";
 import { createLogger } from "../util/logger.js";
 import { type LibConfig, buildOwnedFilter } from "./lib-config.js";
 import type { AccountClientLike, LibManagedAccount } from "./lib-types.js";
@@ -107,16 +108,27 @@ export class LibAccountManager {
 		}
 		const onChange = this.opts.onStateChange;
 		if (onChange) {
+			// A throwing onChange (e.g. the SQLite projector) must never escape into the
+			// lib's frame routing — the lib itself now tolerates this too, but logging it
+			// here, through setpoint's own logger, is what actually makes it visible in
+			// daemon.log (a bare console.warn from the lib may not be captured there).
+			const safeOnChange = (changed: StateSection[]): void => {
+				try {
+					onChange(playerId, changed, account);
+				} catch (err) {
+					log.error(`[${playerId}] onStateChange handler threw: ${errorMessage(err)}`);
+				}
+			};
 			account.onStateChange((changed) => {
 				markStateFresh(account);
-				onChange(playerId, changed, account);
+				safeOnChange(changed);
 			});
 			// Backfill: the lib seeds full state during connect(), before our listener
 			// was attached (onStateChange has no replay). Fire once with the current
 			// state so the projection reflects freshly-connected accounts. The projector
 			// filters undefined sections and applyUpdate skips null/undefined, so passing
 			// the full section list is safe and idempotent.
-			onChange(playerId, [...STATE_SECTIONS], account);
+			safeOnChange([...STATE_SECTIONS]);
 		}
 		const onDrift = this.opts.onDrift;
 		if (onDrift) {
