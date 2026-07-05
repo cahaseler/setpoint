@@ -97,4 +97,26 @@ describe("CraftingEventsStore", () => {
 		store.record("p2", makeEvent("job-2", 1));
 		expect(received).toHaveLength(0);
 	});
+
+	test("record() still buffers the event even if every subscriber throws", () => {
+		const store = new CraftingEventsStore();
+		store.subscribe("p1", () => {
+			throw new Error("controller already closed");
+		});
+
+		expect(() => store.record("p1", makeEvent("job-1", 1))).not.toThrow();
+		expect(store.recent("p1")).toHaveLength(1);
+	});
+
+	test("a throwing subscriber does not prevent other subscribers on the same account from receiving the event", () => {
+		const store = new CraftingEventsStore();
+		const received: CraftingUpdateEvent[] = [];
+		store.subscribe("p1", () => {
+			throw new Error("controller already closed");
+		});
+		store.subscribe("p1", (envelope) => received.push(envelope.event));
+
+		store.record("p1", makeEvent("job-1", 1));
+		expect(received).toHaveLength(1);
+	});
 });

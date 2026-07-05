@@ -146,7 +146,18 @@ export class LibAccountManager {
 		}
 		const onCraftingUpdate = this.opts.onCraftingUpdate;
 		if (onCraftingUpdate) {
-			account.on("crafting_update", (event) => onCraftingUpdate(playerId, event, account));
+			// Wrapped in try/catch so a throwing handler (e.g. an SSE consumer's
+			// controller.enqueue() failing) can never escape back into the lib's
+			// TypedEmitter.emit() call stack — that emit loop has no isolation of
+			// its own between listeners, and a frame-routing call with no
+			// try/catch above it must never see an exception from application code.
+			account.on("crafting_update", (event) => {
+				try {
+					onCraftingUpdate(playerId, event, account);
+				} catch (err) {
+					log.error(`[${playerId}] onCraftingUpdate handler threw: ${errorMessage(err)}`);
+				}
+			});
 		}
 		// The lib seeds state during connect() without firing onStateChange (no
 		// replay), so mark freshness explicitly here — otherwise a freshly-connected

@@ -249,6 +249,39 @@ describe("LibAccountManager", () => {
 		expect(updates).toEqual([{ playerId: "pid-a", runsDone: 2, accountId: "Alpha" }]);
 	});
 
+	test("a throwing onCraftingUpdate handler is caught and logged, not left to escape into the lib", async () => {
+		const { client, accounts } = setup([player("Alpha", "pid-a")]);
+		const mgr = new LibAccountManager(
+			client,
+			{ clerkApiKey: "k" },
+			{
+				onCraftingUpdate: () => {
+					throw new Error("controller already closed");
+				},
+			},
+		);
+		await mgr.connect();
+
+		expect(() =>
+			accounts.get("Alpha")?.emitNotification("crafting_update", {
+				tick: 100,
+				jobs: [
+					{
+						job_id: "job-1",
+						completed: false,
+						deposited: [],
+						mode: "craft",
+						recipe: "widget",
+						runs_done: 2,
+						runs_remaining: 3,
+						storage: "personal",
+						venue: "workshop",
+					},
+				],
+			}),
+		).not.toThrow();
+	});
+
 	test("connect() skips accounts with no player_id", async () => {
 		const players = [player("Ghost", "")]; // FakeAccount(playerId="") -> player.id === "" is falsy
 		const accounts = new Map<string, FakeAccount>();
