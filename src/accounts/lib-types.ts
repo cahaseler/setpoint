@@ -4,11 +4,13 @@ import type {
 	GameState,
 	MarketBook,
 	MutationResult,
+	NotificationPayloads,
 	ObservationView,
 	QueryResult,
 	RegisterParams,
 	RegisterResult,
 	StateSection,
+	TypedNotificationType,
 } from "@spacemolt/lib";
 
 /**
@@ -67,6 +69,19 @@ export interface LibManagedAccount {
 	 * regardless of how the subscribe call was made.
 	 */
 	observation(): ObservationView | null;
+	/**
+	 * Listen for a typed server push by notification type (e.g. `crafting_update`).
+	 * Returns an unsubscribe function. Unlike market/observation, most
+	 * notification types (including `crafting_update`) require no explicit
+	 * subscribe call — the server sends them automatically whenever relevant.
+	 * Two overloads (matching the real lib `Account.on`): a typed one for
+	 * known notification types, and a loose one for untyped/future ones.
+	 */
+	on<K extends TypedNotificationType>(
+		type: K,
+		handler: (payload: NotificationPayloads[K]) => void,
+	): () => void;
+	on(type: string, handler: (payload: Record<string, unknown>) => void): () => void;
 }
 
 /** The subset of a lib `Account` the account layer (connection/state) depends on. */

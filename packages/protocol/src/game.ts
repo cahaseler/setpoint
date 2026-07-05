@@ -7,7 +7,14 @@ export type {
 	MarketItem,
 	ObservedPlayer,
 	CloakedContact,
+	NotificationPayloads,
+	TypedNotificationType,
 } from "@spacemolt/lib";
+
+import type { NotificationPayloads } from "@spacemolt/lib";
+
+/** Per-job crafting progress push, as sent by the game server's `crafting_update` notification. */
+export type CraftingUpdateEvent = NotificationPayloads["crafting_update"];
 
 // @spacemolt/lib has no exported canonical Empire type — the five empire names
 // only appear as inline string-literal unions on individual generated command

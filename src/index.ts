@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import type { CraftingUpdateEvent } from "@setpoint/protocol";
 import { type GameState, SpacemoltClient, type StateSection } from "@spacemolt/lib";
 import { parseLibConfig } from "./accounts/lib-config.js";
 import { LibAccountManager } from "./accounts/lib-manager.js";
@@ -10,6 +11,7 @@ import { startServer } from "./server/index.js";
 import type { JobManager } from "./server/job-manager.js";
 import { LoopManager } from "./server/loop-manager.js";
 import { makeProjectingOnStateChange } from "./state/attach-projector.js";
+import { CraftingEventsStore } from "./state/crafting-events-store.js";
 import { createDatabase } from "./state/database.js";
 import { logDrift } from "./state/drift-logger.js";
 import { startDriftSweep } from "./state/drift-sweep.js";
@@ -79,9 +81,19 @@ async function main(): Promise<void> {
 		logDrift({ playerId, username: account.id, drifts: diffGameState(before, after) });
 	};
 
+	// Buffers crafting_update pushes per account for GET /accounts/:id/crafting/events (SSE).
+	const craftingEventsStore = new CraftingEventsStore();
+	const onCraftingUpdate = (playerId: string, event: CraftingUpdateEvent): void => {
+		craftingEventsStore.record(playerId, event);
+	};
+
 	// Create the lib client and account manager
 	const client = new SpacemoltClient({ clerkApiKey: libConfig.clerkApiKey });
-	const manager = new LibAccountManager(client, libConfig, { onStateChange, onDrift });
+	const manager = new LibAccountManager(client, libConfig, {
+		onStateChange,
+		onDrift,
+		onCraftingUpdate,
+	});
 
 	// Start bandwidth rollup logging (5-minute windows)
 	bandwidthTracker.start();
@@ -95,7 +107,15 @@ async function main(): Promise<void> {
 	// state queries are live immediately. A cold start re-authenticates every
 	// owned account under the auth rate limit, which for a large fleet can take
 	// many minutes — we must not hold the server down for that whole window.
-	const server = startServer({ port: API_PORT, manager, store, db, client, configDir: CONFIG_DIR });
+	const server = startServer({
+		port: API_PORT,
+		manager,
+		store,
+		db,
+		client,
+		configDir: CONFIG_DIR,
+		craftingEventsStore,
+	});
 	log.info(`Dispatcher running on port ${server.port}. Press Ctrl+C to stop.`);
 
 	// Connect all owned accounts in the background (the lib staggers connections

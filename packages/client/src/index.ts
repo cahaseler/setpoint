@@ -1,5 +1,6 @@
 export {
 	AccountApi,
+	AccountCraftingApi,
 	AccountMarketApi,
 	AccountObservationApi,
 	AccountsApi,

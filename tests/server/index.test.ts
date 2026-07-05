@@ -48,7 +48,13 @@ describe("isUnboundedRequest", () => {
 		).toBe(false);
 	});
 
-	test("GET requests are never unbounded", () => {
+	test("GET .../crafting/events is unbounded (long-lived SSE stream)", () => {
+		expect(
+			isUnboundedRequest(new Request("http://x/accounts/p1/crafting/events", { method: "GET" })),
+		).toBe(true);
+	});
+
+	test("other GET requests are not unbounded", () => {
 		expect(isUnboundedRequest(new Request("http://x/accounts/p1/raw", { method: "GET" }))).toBe(
 			false,
 		);

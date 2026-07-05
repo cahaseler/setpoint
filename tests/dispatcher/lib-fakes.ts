@@ -147,6 +147,10 @@ export class FakeLibManagedAccount extends FakeLibGoalAccount implements LibMana
 	readonly id?: string | undefined;
 	private readonly listeners: Array<(changed: StateSection[]) => void> = [];
 	private readonly sendHandlers: FakeCommandHandlers;
+	private readonly notificationHandlers = new Map<
+		string,
+		Set<(payload: Record<string, unknown>) => void>
+	>();
 
 	constructor(opts: FakeLibManagedAccountOptions = {}) {
 		super(opts.state ?? {}, opts.handlers ?? {});
@@ -195,6 +199,23 @@ export class FakeLibManagedAccount extends FakeLibGoalAccount implements LibMana
 	emitStateChange(changed: StateSection[]): void {
 		for (const l of this.listeners) {
 			l(changed);
+		}
+	}
+
+	on(type: string, handler: (payload: Record<string, unknown>) => void): () => void {
+		let handlers = this.notificationHandlers.get(type);
+		if (!handlers) {
+			handlers = new Set();
+			this.notificationHandlers.set(type, handlers);
+		}
+		handlers.add(handler);
+		return () => handlers?.delete(handler);
+	}
+
+	/** Test helper: simulates a typed server push (e.g. crafting_update) arriving. */
+	emitNotification(type: string, payload: Record<string, unknown>): void {
+		for (const handler of this.notificationHandlers.get(type) ?? []) {
+			handler(payload);
 		}
 	}
 }

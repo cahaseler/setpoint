@@ -1,4 +1,4 @@
-import type { CloakedContact, MarketItem, ObservedPlayer } from "./game.js";
+import type { CloakedContact, CraftingUpdateEvent, MarketItem, ObservedPlayer } from "./game.js";
 
 /** The outcome of executing a goal. */
 export interface GoalResult {
@@ -125,4 +125,17 @@ export interface ObservationSnapshot {
 	cloaked: CloakedContact[];
 	unknownSignature: boolean;
 	activeScan: boolean;
+}
+
+/**
+ * A single `crafting_update` push, timestamped on receipt and delivered over
+ * `GET /accounts/:playerId/crafting/events` (SSE) — both as backlog on
+ * connect and live as new pushes arrive. Unlike market/observation, crafting
+ * progress requires no explicit subscribe call; the server sends
+ * `crafting_update` automatically whenever the account has jobs in progress.
+ */
+export interface CraftingUpdateEnvelope {
+	/** Wall-clock time setpoint received this push (ISO 8601) — the server payload only carries a game tick. */
+	receivedAt: string;
+	event: CraftingUpdateEvent;
 }

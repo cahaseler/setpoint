@@ -230,6 +230,7 @@ After finishing a set of changes, run `bun run deploy`. It bumps the patch versi
 - **Queue-based account connection** — `POST /accounts` (username of an account already owned by the configured Clerk API key) returns 202 Accepted and connects in the background; `@spacemolt/lib` batches and staggers the underlying connects to respect the 100/min per-IP WS-connection cap. Use `GET /accounts` to check connection status.
 - **Account resolution by ID or username** — all API endpoints accepting a `playerId` parameter also accept a username (case-insensitive). Handlers use `resolveAccount()` to look up by player_id first, then by username.
 - **Idempotent goals** — if a goal is already satisfied (e.g., already at the target location), it should succeed immediately without making API calls.
+- **Crafting progress is push-only, no subscribe step** — unlike market/observation, the game server sends `crafting_update` automatically whenever an account has jobs in progress. `GET /accounts/:playerId/crafting/events` streams it as Server-Sent Events: the buffered backlog (`CraftingEventsStore`, last ~50 per account, in-memory only) immediately on connect, then each new push live. It's the one GET route in `isUnboundedRequest` (`src/server/index.ts`) — a long-lived stream, not a tick-bound mutation, but needs the same idle-timeout override.
 
 ### Known Timing Behaviors
 Key timing constants that interact — understand these before debugging any lock or retry issue:
@@ -420,6 +421,7 @@ The daemon listens on `http://127.0.0.1:7580` by default. All responses are JSON
 | `POST` | `/accounts/:playerId/raw` | Raw API passthrough | `smctl raw` |
 | `GET` | `/accounts/:playerId/market/:baseId` | Cached order book for a base (subscribe first via `raw`) | `smctl market <id> <baseId>` |
 | `GET` | `/accounts/:playerId/observation` | Cached observation-watch view (subscribe first via `raw`) | `smctl observation <id>` |
+| `GET` | `/accounts/:playerId/crafting/events` | Live crafting progress (Server-Sent Events) — no subscribe step needed | — (use `@setpoint/client`'s `account.crafting.events()`) |
 | `GET` | `/log-level` | Get log level | `smctl log-level` |
 | `POST` | `/log-level` | Set log level | `smctl log-level <level>` |
 

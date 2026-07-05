@@ -18,6 +18,7 @@ import {
 import { JobManager } from "../../src/server/job-manager.js";
 import { LoopManager } from "../../src/server/loop-manager.js";
 import { Router } from "../../src/server/router.js";
+import { CraftingEventsStore } from "../../src/state/crafting-events-store.js";
 import { createMemoryDatabase } from "../../src/state/database.js";
 import type { StateStore } from "../../src/state/store.js";
 import type { StoredGameState } from "../../src/state/store.js";
@@ -103,6 +104,7 @@ describe("Server integration", () => {
 			configDir: "config",
 			startedAt: new Date().toISOString(),
 			executingGoals: new Map(),
+			craftingEventsStore: new CraftingEventsStore(),
 		};
 
 		const router = new Router<HandlerContext>();
