@@ -174,6 +174,44 @@ describe("LibAccountManager", () => {
 		expect(drifts).toHaveLength(1);
 	});
 
+	test("wires onCraftingUpdate, passing playerId, the event, and the account", async () => {
+		const { client, accounts } = setup([player("Alpha", "pid-a")]);
+		const updates: Array<{ playerId: string; runsDone: number; accountId: string | undefined }> =
+			[];
+		const mgr = new LibAccountManager(
+			client,
+			{ clerkApiKey: "k" },
+			{
+				onCraftingUpdate: (playerId, event, account) =>
+					updates.push({
+						playerId,
+						runsDone: (event as { jobs: Array<{ runs_done: number }> }).jobs[0]?.runs_done ?? -1,
+						accountId: account.id,
+					}),
+			},
+		);
+		await mgr.connect();
+
+		accounts.get("Alpha")?.emitNotification("crafting_update", {
+			tick: 100,
+			jobs: [
+				{
+					job_id: "job-1",
+					completed: false,
+					deposited: [],
+					mode: "craft",
+					recipe: "widget",
+					runs_done: 2,
+					runs_remaining: 3,
+					storage: "personal",
+					venue: "workshop",
+				},
+			],
+		});
+
+		expect(updates).toEqual([{ playerId: "pid-a", runsDone: 2, accountId: "Alpha" }]);
+	});
+
 	test("connect() skips accounts with no player_id", async () => {
 		const players = [player("Ghost", "")]; // FakeAccount(playerId="") -> player.id === "" is falsy
 		const accounts = new Map<string, FakeAccount>();

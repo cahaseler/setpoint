@@ -1,12 +1,14 @@
 import type { Database } from "bun:sqlite";
 import type { SpacemoltClient } from "@spacemolt/lib";
 import type { LibAccountManager } from "../accounts/lib-manager.js";
+import type { CraftingEventsStore } from "../state/crafting-events-store.js";
 import type { StateStore } from "../state/store.js";
 import { createLogger } from "../util/logger.js";
 import {
 	type HandlerContext,
 	handleAbortAccount,
 	handleAddAccount,
+	handleCraftingEvents,
 	handleDashboardData,
 	handleDeleteAccount,
 	handleExecuteGoal,
@@ -51,14 +53,18 @@ export function resolveBindHost(env: Record<string, string | undefined> = proces
 }
 
 /**
- * Whether a request can legitimately block on a tick-based game mutation for
- * longer than Bun's 255s idleTimeout cap, and so needs that cap disabled
+ * Whether a request can legitimately block — either on a tick-based game
+ * mutation for longer than Bun's 255s idleTimeout cap, or as a long-lived SSE
+ * stream meant to stay open indefinitely — and so needs that cap disabled
  * entirely via `server.timeout(req, 0)`. Mirrors the CLI's own
- * `GAME_API_TIMEOUT_MS=0` treatment of these same routes (sync goal, raw,
+ * `GAME_API_TIMEOUT_MS=0` treatment of the mutation routes (sync goal, raw,
  * accounts register, accounts remove, abort) in `src/cli/commands.ts`.
  */
 export function isUnboundedRequest(req: Request): boolean {
 	const { pathname } = new URL(req.url);
+	if (req.method === "GET") {
+		return /\/crafting\/events$/.test(pathname);
+	}
 	if (req.method === "POST") {
 		return /\/goal$/.test(pathname) || /\/raw$/.test(pathname) || pathname === "/accounts/register";
 	}
@@ -75,6 +81,7 @@ export interface ServerOptions {
 	db: Database;
 	client: SpacemoltClient;
 	configDir: string;
+	craftingEventsStore: CraftingEventsStore;
 }
 
 export interface DispatcherServer {
@@ -105,6 +112,7 @@ export function startServer(options: ServerOptions): DispatcherServer {
 		configDir: options.configDir,
 		startedAt: new Date().toISOString(),
 		executingGoals: new Map(),
+		craftingEventsStore: options.craftingEventsStore,
 	};
 
 	const router = new Router<HandlerContext>();
@@ -161,6 +169,10 @@ export function startServer(options: ServerOptions): DispatcherServer {
 	// raw passthrough: spacemolt_market.subscribe_market / spacemolt.subscribe_observation)
 	router.get("/accounts/:playerId/market/:baseId", handleGetMarket);
 	router.get("/accounts/:playerId/observation", handleGetObservation);
+
+	// Crafting progress (SSE) — no subscribe-first step; the server pushes
+	// crafting_update automatically whenever the account has jobs in progress.
+	router.get("/accounts/:playerId/crafting/events", handleCraftingEvents);
 
 	const server = Bun.serve({
 		hostname: host,

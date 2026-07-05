@@ -43,6 +43,10 @@ export class FakeAccount implements LibManagedAccount {
 	readonly commands: Commands = makeFakeCommands();
 	private readonly marketBooks = new Map<string, MarketBook>();
 	private _observation: ObservationView | null = null;
+	private readonly notificationHandlers = new Map<
+		string,
+		Set<(payload: Record<string, unknown>) => void>
+	>();
 	constructor(
 		private readonly playerId: string,
 		readonly id: string,
@@ -102,6 +106,21 @@ export class FakeAccount implements LibManagedAccount {
 	/** Simulates having subscribed and received observation-watch data. */
 	setObservation(view: ObservationView | null): void {
 		this._observation = view;
+	}
+	on(type: string, handler: (payload: Record<string, unknown>) => void): () => void {
+		let handlers = this.notificationHandlers.get(type);
+		if (!handlers) {
+			handlers = new Set();
+			this.notificationHandlers.set(type, handlers);
+		}
+		handlers.add(handler);
+		return () => handlers?.delete(handler);
+	}
+	/** Test helper: simulates a typed server push (e.g. crafting_update) arriving. */
+	emitNotification(type: string, payload: Record<string, unknown>): void {
+		for (const handler of this.notificationHandlers.get(type) ?? []) {
+			handler(payload);
+		}
 	}
 }
 

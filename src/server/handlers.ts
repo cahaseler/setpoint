@@ -6,6 +6,7 @@ import type { LibAccountManager } from "../accounts/lib-manager.js";
 import { type LibManagedAccount, playerId as playerIdOf } from "../accounts/lib-types.js";
 import type { ProgressRef } from "../dispatcher/goals.js";
 import { makeLibGoalContext } from "../dispatcher/lib-goal-context.js";
+import type { CraftingEventsStore } from "../state/crafting-events-store.js";
 import { STATE_SECTION_KEYS, type StateSectionKey, type StateStore } from "../state/store.js";
 import { ApiError, HttpError, errorMessage } from "../util/errors.js";
 import { createLogger } from "../util/logger.js";
@@ -40,6 +41,7 @@ export interface HandlerContext {
 	client: SpacemoltClient;
 	configDir: string;
 	startedAt: string;
+	craftingEventsStore: CraftingEventsStore;
 	/** Accounts with a synchronous goal currently executing. Used to prevent races. */
 	executingGoals: Map<
 		string,
@@ -1605,4 +1607,56 @@ export function handleGetObservation(
 	}
 
 	return jsonResponse(serializeObservation(view));
+}
+
+// ── Crafting Events ──────────────────────────────────────────────────
+
+const SSE_HEADERS: Record<string, string> = {
+	"Content-Type": "text/event-stream",
+	"Cache-Control": "no-cache",
+	Connection: "keep-alive",
+};
+
+/**
+ * Streams `crafting_update` pushes for an account as Server-Sent Events:
+ * the buffered backlog immediately on connect, then each new push live as it
+ * arrives. Unlike market/observation, no subscribe-first step is needed —
+ * the server sends `crafting_update` automatically whenever the account has
+ * jobs in progress (see `CraftingEventsStore`/`onCraftingUpdate` in
+ * `lib-manager.ts`).
+ */
+export function handleCraftingEvents(
+	_req: Request,
+	params: RouteParams,
+	ctx: HandlerContext,
+): Response {
+	const playerId = params["playerId"];
+	if (!playerId) {
+		return errorResponse("Missing playerId", 400);
+	}
+
+	const account = resolveAccount(ctx, playerId);
+	if (!account) {
+		return errorResponse("Account not found", 404);
+	}
+
+	const actualId = playerIdOf(account);
+	const encoder = new TextEncoder();
+	let unsubscribe: (() => void) | undefined;
+
+	const stream = new ReadableStream<Uint8Array>({
+		start(controller): void {
+			for (const envelope of ctx.craftingEventsStore.recent(actualId)) {
+				controller.enqueue(encoder.encode(`data: ${JSON.stringify(envelope)}\n\n`));
+			}
+			unsubscribe = ctx.craftingEventsStore.subscribe(actualId, (envelope) => {
+				controller.enqueue(encoder.encode(`data: ${JSON.stringify(envelope)}\n\n`));
+			});
+		},
+		cancel(): void {
+			unsubscribe?.();
+		},
+	});
+
+	return new Response(stream, { headers: SSE_HEADERS });
 }

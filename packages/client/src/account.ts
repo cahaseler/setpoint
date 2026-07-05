@@ -1,6 +1,7 @@
 /** Account-scoped goal/loop/state API, plus the top-level accounts collection API, for `@setpoint/client`. */
 
 import type {
+	CraftingUpdateEnvelope,
 	Empire,
 	GoalOptionsMap,
 	GoalResult,
@@ -15,7 +16,7 @@ import type {
 } from "@setpoint/protocol";
 import type { GetSystemResponse } from "@spacemolt/lib";
 import type { SetpointClient } from "./client.js";
-import { GoalFailedError } from "./errors.js";
+import { GoalFailedError, SetpointHttpError } from "./errors.js";
 import { type WaitForJobOptions, waitForJob } from "./jobs.js";
 import { type RawApi, createRawApi } from "./raw.js";
 
@@ -210,6 +211,67 @@ export class AccountObservationApi {
 	}
 }
 
+/**
+ * Live crafting-progress API scoped to a single account. Mirrors the
+ * daemon's `GET /accounts/:id/crafting/events` route (`handleCraftingEvents`
+ * in `src/server/handlers.ts`) — a Server-Sent Events stream, unlike every
+ * other account sub-API here, since crafting progress needs no subscribe-first
+ * step and consumers want each push as it happens, not just the latest cache.
+ */
+export class AccountCraftingApi {
+	constructor(
+		private readonly client: SetpointClient,
+		private readonly id: string,
+	) {}
+
+	/**
+	 * Streams `crafting_update` pushes for this account: the daemon's buffered
+	 * backlog (last ~50 events) immediately, then each new push live as it
+	 * arrives. The generator runs until the connection closes or `signal`
+	 * aborts — consume with `for await (const envelope of account.crafting.events())`.
+	 */
+	async *events(opts?: { signal?: AbortSignal }): AsyncGenerator<
+		CraftingUpdateEnvelope,
+		void,
+		void
+	> {
+		const url = `${this.client.baseUrl}/accounts/${encodeURIComponent(this.id)}/crafting/events`;
+		const response = await fetch(url, opts?.signal ? { signal: opts.signal } : {});
+
+		if (!response.ok || !response.body) {
+			let body: { error?: string } = {};
+			try {
+				body = (await response.json()) as { error?: string };
+			} catch {
+				/* non-JSON error body */
+			}
+			throw new SetpointHttpError(response.status, body);
+		}
+
+		const reader = response.body.getReader();
+		const decoder = new TextDecoder();
+		let buffered = "";
+		try {
+			while (true) {
+				const { value, done } = await reader.read();
+				if (done) return;
+				buffered += decoder.decode(value, { stream: true });
+				let boundary = buffered.indexOf("\n\n");
+				while (boundary !== -1) {
+					const frame = buffered.slice(0, boundary);
+					buffered = buffered.slice(boundary + 2);
+					if (frame.startsWith("data: ")) {
+						yield JSON.parse(frame.slice("data: ".length)) as CraftingUpdateEnvelope;
+					}
+					boundary = buffered.indexOf("\n\n");
+				}
+			}
+		} finally {
+			await reader.cancel().catch(() => {});
+		}
+	}
+}
+
 /** Goal API scoped to a single account, identified by player_id or username. */
 export class AccountApi {
 	/** Loop sub-API for this account (`sp.account(id).loop`). */
@@ -227,6 +289,9 @@ export class AccountApi {
 	/** Live observation-watch sub-API for this account (`sp.account(id).observation`). */
 	readonly observation: AccountObservationApi;
 
+	/** Live crafting-progress sub-API for this account (`sp.account(id).crafting`). */
+	readonly crafting: AccountCraftingApi;
+
 	constructor(
 		private readonly client: SetpointClient,
 		private readonly id: string,
@@ -236,6 +301,7 @@ export class AccountApi {
 		this.system = new AccountSystemApi(client, id);
 		this.market = new AccountMarketApi(client, id);
 		this.observation = new AccountObservationApi(client, id);
+		this.crafting = new AccountCraftingApi(client, id);
 	}
 
 	/**

@@ -1,10 +1,12 @@
 import { describe, expect, mock, test } from "bun:test";
+import type { CraftingUpdateEnvelope, CraftingUpdateEvent } from "@setpoint/protocol";
 import type { ClerkPlayer, GameState } from "@spacemolt/lib";
 import { markStateFresh } from "../../src/dispatcher/state-freshness.js";
 import {
 	type HandlerContext,
 	handleAbortAccount,
 	handleAddAccount,
+	handleCraftingEvents,
 	handleDashboardData,
 	handleDeleteAccount,
 	handleExecuteGoal,
@@ -30,6 +32,7 @@ import {
 } from "../../src/server/handlers.js";
 import { JobManager } from "../../src/server/job-manager.js";
 import type { LoopManager, LoopStatus } from "../../src/server/loop-manager.js";
+import { CraftingEventsStore } from "../../src/state/crafting-events-store.js";
 import { createMemoryDatabase } from "../../src/state/database.js";
 import type { StateStore } from "../../src/state/store.js";
 import type { StoredGameState } from "../../src/state/store.js";
@@ -175,6 +178,7 @@ function makeContext(
 		configDir: "config",
 		startedAt: "2026-01-01T00:00:00.000Z",
 		executingGoals: new Map(),
+		craftingEventsStore: new CraftingEventsStore(),
 	};
 }
 
@@ -2798,5 +2802,148 @@ describe("handleGetObservation", () => {
 		);
 
 		expect(res.status).toBe(404);
+	});
+});
+
+describe("handleCraftingEvents", () => {
+	function craftingUpdate(runsDone: number): CraftingUpdateEvent {
+		return {
+			tick: 100 + runsDone,
+			jobs: [
+				{
+					job_id: "job-1",
+					completed: runsDone === 5,
+					deposited: [],
+					mode: "craft",
+					recipe: "widget",
+					runs_done: runsDone,
+					runs_remaining: 5 - runsDone,
+					storage: "personal",
+					venue: "workshop",
+				},
+			],
+		};
+	}
+
+	async function readSseEvents(res: Response, count: number): Promise<CraftingUpdateEnvelope[]> {
+		const reader = res.body?.getReader();
+		if (!reader) throw new Error("Response has no body");
+		const decoder = new TextDecoder();
+		let buffered = "";
+		const events: CraftingUpdateEnvelope[] = [];
+		while (events.length < count) {
+			const { value, done } = await reader.read();
+			if (done) break;
+			buffered += decoder.decode(value, { stream: true });
+			let boundary = buffered.indexOf("\n\n");
+			while (boundary !== -1) {
+				const frame = buffered.slice(0, boundary);
+				buffered = buffered.slice(boundary + 2);
+				if (frame.startsWith("data: ")) {
+					events.push(JSON.parse(frame.slice("data: ".length)));
+				}
+				boundary = buffered.indexOf("\n\n");
+			}
+		}
+		await reader.cancel();
+		return events;
+	}
+
+	test("returns 400 when playerId missing", () => {
+		const ctx = makeContext();
+		const res = handleCraftingEvents(
+			new Request("http://localhost/accounts//crafting/events"),
+			{},
+			ctx,
+		);
+		expect(res.status).toBe(400);
+	});
+
+	test("returns 404 for unknown account", () => {
+		const ctx = makeContext();
+		const res = handleCraftingEvents(
+			new Request("http://localhost/accounts/unknown/crafting/events"),
+			{ playerId: "unknown" },
+			ctx,
+		);
+		expect(res.status).toBe(404);
+	});
+
+	test("sets SSE headers", () => {
+		const account = makeAccount("p1");
+		const ctx = makeContext({ accounts: [account] });
+		const res = handleCraftingEvents(
+			new Request("http://localhost/accounts/p1/crafting/events"),
+			{ playerId: "p1" },
+			ctx,
+		);
+		expect(res.headers.get("Content-Type")).toBe("text/event-stream");
+		expect(res.headers.get("Cache-Control")).toBe("no-cache");
+		expect(res.headers.get("Connection")).toBe("keep-alive");
+	});
+
+	test("streams the buffered backlog immediately on connect", async () => {
+		const account = makeAccount("p1");
+		const ctx = makeContext({ accounts: [account] });
+		ctx.craftingEventsStore.record("p1", craftingUpdate(1));
+		ctx.craftingEventsStore.record("p1", craftingUpdate(2));
+
+		const res = handleCraftingEvents(
+			new Request("http://localhost/accounts/p1/crafting/events"),
+			{ playerId: "p1" },
+			ctx,
+		);
+
+		const events = await readSseEvents(res, 2);
+		expect(events).toHaveLength(2);
+		expect(events[0]?.event.jobs[0]?.runs_done).toBe(1);
+		expect(events[1]?.event.jobs[0]?.runs_done).toBe(2);
+	});
+
+	test("streams live events recorded after connecting", async () => {
+		const account = makeAccount("p1");
+		const ctx = makeContext({ accounts: [account] });
+
+		const res = handleCraftingEvents(
+			new Request("http://localhost/accounts/p1/crafting/events"),
+			{ playerId: "p1" },
+			ctx,
+		);
+
+		ctx.craftingEventsStore.record("p1", craftingUpdate(3));
+		const events = await readSseEvents(res, 1);
+		expect(events[0]?.event.jobs[0]?.runs_done).toBe(3);
+	});
+
+	test("resolves the account by username, keying the store by player_id", async () => {
+		const account = makeAccount("p1", "Alice");
+		const ctx = makeContext({ accounts: [account] });
+		ctx.craftingEventsStore.record("p1", craftingUpdate(1));
+
+		const res = handleCraftingEvents(
+			new Request("http://localhost/accounts/Alice/crafting/events"),
+			{ playerId: "Alice" },
+			ctx,
+		);
+
+		const events = await readSseEvents(res, 1);
+		expect(events[0]?.event.jobs[0]?.runs_done).toBe(1);
+	});
+
+	test("does not deliver another account's events", async () => {
+		const account = makeAccount("p1");
+		const ctx = makeContext({ accounts: [account] });
+
+		const res = handleCraftingEvents(
+			new Request("http://localhost/accounts/p1/crafting/events"),
+			{ playerId: "p1" },
+			ctx,
+		);
+		ctx.craftingEventsStore.record("p2", craftingUpdate(1));
+		ctx.craftingEventsStore.record("p1", craftingUpdate(9));
+
+		const events = await readSseEvents(res, 1);
+		expect(events).toHaveLength(1);
+		expect(events[0]?.event.jobs[0]?.runs_done).toBe(9);
 	});
 });

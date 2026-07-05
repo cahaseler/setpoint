@@ -165,6 +165,35 @@ before data appears.
 | `account.market.get(baseId)` | `GET /accounts/:id/market/:baseId` |
 | `account.observation.get()` | `GET /accounts/:id/observation` |
 
+### Live crafting progress (`account.crafting`)
+
+Unlike market/observation, crafting progress needs no subscribe call — the
+game server sends `crafting_update` automatically whenever the account has
+jobs in progress. `account.crafting.events()` streams it over Server-Sent
+Events: the daemon's buffered backlog (last ~50 pushes) immediately, then
+each new push live as it arrives.
+
+```ts
+for await (const { receivedAt, event } of account.crafting.events()) {
+  for (const job of event.jobs) {
+    console.log(`${job.recipe}: ${job.runs_done}/${job.runs_done + job.runs_remaining} runs, completed=${job.completed}`);
+  }
+}
+```
+
+The generator runs until the connection closes or you abort it — pass a
+signal to stop consuming:
+
+```ts
+const controller = new AbortController();
+const stream = account.crafting.events({ signal: controller.signal });
+// later: controller.abort();
+```
+
+| Call | Daemon route |
+|---|---|
+| `account.crafting.events(opts?)` | `GET /accounts/:id/crafting/events` (SSE) |
+
 ### Raw passthrough (`account.raw`)
 
 ```ts
@@ -230,7 +259,8 @@ daemon and a dead daemon fail differently and are reported as such.
 (`GoalResult`, `LoopStatus`, `JobRecord`, `RawEnvelope`, `V2GameState`,
 `GoalType`/`GoalOptionsMap`, `LoopType`/`LoopOptionsMap`, `Empire`,
 `MarketBookSnapshot`, `ObservationSnapshot`, `MarketItem`, `ObservedPlayer`,
-`CloakedContact`, etc.), so a consumer only needs the one dependency.
+`CloakedContact`, `CraftingUpdateEnvelope`, `CraftingUpdateEvent`, etc.), so a
+consumer only needs the one dependency.
 
 ## Full example
 

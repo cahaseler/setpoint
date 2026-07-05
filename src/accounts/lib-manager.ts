@@ -1,3 +1,4 @@
+import type { CraftingUpdateEvent } from "@setpoint/protocol";
 import {
 	type ClerkPlayer,
 	type GameState,
@@ -32,6 +33,19 @@ export interface LibAccountManagerOptions {
 		playerId: string,
 		before: Readonly<GameState>,
 		after: Readonly<GameState>,
+		account: LibManagedAccount,
+	) => void;
+	/**
+	 * Called on every `crafting_update` push for an account. Unlike
+	 * market/observation, this notification type requires no explicit
+	 * subscribe call — the server sends it automatically whenever the account
+	 * has jobs in progress — so wiring it here (once per account, in
+	 * `indexAndWire`) is sufficient; there's no subscribe-first step for
+	 * callers to remember.
+	 */
+	onCraftingUpdate?: (
+		playerId: string,
+		event: CraftingUpdateEvent,
 		account: LibManagedAccount,
 	) => void;
 }
@@ -96,6 +110,10 @@ export class LibAccountManager {
 				onDrift(playerId, before, after, account);
 				return after;
 			};
+		}
+		const onCraftingUpdate = this.opts.onCraftingUpdate;
+		if (onCraftingUpdate) {
+			account.on("crafting_update", (event) => onCraftingUpdate(playerId, event, account));
 		}
 		// The lib seeds state during connect() without firing onStateChange (no
 		// replay), so mark freshness explicitly here — otherwise a freshly-connected
