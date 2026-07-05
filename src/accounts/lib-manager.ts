@@ -67,7 +67,28 @@ export class LibAccountManager {
 		private readonly client: AccountClientLike,
 		private readonly config: LibConfig,
 		private readonly opts: LibAccountManagerOptions = {},
-	) {}
+	) {
+		// The single place indexAndWire ever runs — covers the initial connect
+		// AND every later reconnect (the lib now drives reconnection itself
+		// through the same rate-limited connect path used for the initial
+		// connect, replacing the LibManagedAccount instance for that id; see
+		// AccountClientLike.onAccountConnected). Registered once here, up
+		// front, rather than per connect()/connectOne()/register() call, so a
+		// reconnect firing long after any of those calls returned still gets
+		// re-indexed the same way.
+		this.client.onAccountConnected((account) => {
+			if (!account.player?.id) {
+				log.warn("Connected account has no player_id after connect; skipping index");
+				return;
+			}
+			this.indexAndWire(account);
+		});
+		this.client.onAccountDisconnected((id, err) => {
+			log.warn(
+				`[${id}] Account disconnected and will not be reconnected (code=${err.code ?? "?"}): ${err.message}`,
+			);
+		});
+	}
 
 	/**
 	 * Index a newly-connected account by player_id and username, wire its
@@ -124,39 +145,45 @@ export class LibAccountManager {
 
 	async connect(): Promise<void> {
 		const filter = buildOwnedFilter(this.config.filter);
-		await this.client.connectOwned({
-			filter,
-			onConnect: (account) => {
-				if (!account.player?.id) {
-					log.warn("Connected account has no player_id after connect; skipping index");
-					return;
-				}
-				this.indexAndWire(account);
-			},
-		});
+		// Indexing happens via the onAccountConnected listener registered in
+		// the constructor, not an onConnect param here — the same listener
+		// also covers every later reconnect, so there's one path, not two.
+		await this.client.connectOwned({ filter });
 		log.info(`Connected ${this.byPlayerId.size} account(s)`);
 	}
 
-	/** Connect a single stored account by store-key/username, indexing and wiring it like `connect()` does. */
+	/**
+	 * Connect a single stored account by store-key/username. Indexing happens
+	 * via the onAccountConnected listener registered in the constructor,
+	 * which — unlike this method — treats a missing player_id as a
+	 * skip-and-warn (appropriate for a fleet-wide connect where one bad
+	 * account shouldn't fail the rest). A single, explicit connectOne() call
+	 * should surface that failure to its caller instead of silently
+	 * succeeding with nothing indexed.
+	 */
 	async connectOne(idOrUsername: string): Promise<LibManagedAccount> {
 		this.connecting.add(idOrUsername.toLowerCase());
 		try {
 			const account = await this.client.connect(idOrUsername);
-			this.indexAndWire(account);
+			if (!account.player?.id) {
+				throw new Error("Connected account has no player_id after connect");
+			}
 			return account;
 		} finally {
 			this.connecting.delete(idOrUsername.toLowerCase());
 		}
 	}
 
-	/** Register a brand-new account, then index and wire it like `connect()` does. */
+	/** Register a brand-new account. Indexing happens via the onAccountConnected listener registered in the constructor — see connectOne() for why this still checks player_id itself. */
 	async register(
 		params: RegisterParams,
 	): Promise<{ account: LibManagedAccount; result: RegisterResult }> {
 		this.connecting.add(params.username.toLowerCase());
 		try {
 			const { account, result } = await this.client.register(params);
-			this.indexAndWire(account);
+			if (!account.player?.id) {
+				throw new Error("Connected account has no player_id after connect");
+			}
 			return { account, result };
 		} finally {
 			this.connecting.delete(params.username.toLowerCase());
