@@ -212,7 +212,7 @@ export async function runLibLoop(
 		options.onIterationComplete?.(i + 1, result);
 		log.info(`Loop iteration ${i + 1} complete: ${result.ticksUsed} tick(s)`);
 
-		currentState = await ctx.refreshState();
+		currentState = await refreshBeforeRetry(ctx, currentState);
 		i++;
 	}
 
