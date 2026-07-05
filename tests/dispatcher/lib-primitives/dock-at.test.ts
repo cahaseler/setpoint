@@ -42,4 +42,41 @@ describe("LibDockAt", () => {
 		const result = await new LibDockAt("station-1").execute(makeLibGoalContext(account));
 		expect(result.alreadySatisfied).toBe(true);
 	});
+
+	test("mutation_timeout is treated as success if a live refresh shows the dock landed", async () => {
+		const account = new FakeLibGoalAccount(
+			{ location: { poi_id: "poi-1" } },
+			{
+				dock: () => {
+					// The outcome frame arrived late (after the caller gave up), but
+					// its delta still updated the push-fed cache.
+					account.setState({ location: { poi_id: "poi-1", docked_at: "station-1" } });
+					throw new SpacemoltError(
+						"mutation_timeout",
+						"No action_result for mutation r1 within 180000ms",
+					);
+				},
+			},
+		);
+		const result = await new LibDockAt("station-1").execute(makeLibGoalContext(account));
+		expect(result.success).toBe(true);
+		expect(account.refreshCalls).toBe(1);
+	});
+
+	test("mutation_timeout is a real failure if a live refresh shows the dock never landed", async () => {
+		const account = new FakeLibGoalAccount(
+			{ location: { poi_id: "poi-1" } },
+			{
+				dock: () => {
+					throw new SpacemoltError(
+						"mutation_timeout",
+						"No action_result for mutation r1 within 180000ms",
+					);
+				},
+			},
+		);
+		await expect(new LibDockAt("station-1").execute(makeLibGoalContext(account))).rejects.toThrow(
+			"No action_result",
+		);
+	});
 });
