@@ -3,6 +3,8 @@ import { createLogger } from "../../util/logger.js";
 import type { GoalResult } from "../goals.js";
 import { alreadySatisfied, failed, succeeded } from "../goals.js";
 import type { LibGoal, LibGoalContext } from "../lib-goal-context.js";
+import type { LocationWaitOptions } from "../wait-for-location.js";
+import { waitForLocation } from "../wait-for-location.js";
 
 const log = createLogger("goal:navigate-via-route");
 
@@ -26,15 +28,19 @@ export class LibNavigateViaRoute implements LibGoal {
 	readonly name = "navigate-via-route";
 	private readonly route: string[];
 	private readonly fuelReserve: number;
+	private readonly waitOpts: LocationWaitOptions;
 
 	/**
 	 * @param route Systems to jump through in order; the last entry is the destination.
 	 * @param fuelReserve Fuel units to keep beyond the route's estimated cost; the
 	 *   pre-flight check requires hops * fuel_per_jump + fuelReserve. Defaults to 0.
+	 * @param waitOpts Tuning for how long to wait out an unresolved position (mid-transit)
+	 *   before the first hop. Defaults are production-sane; overridable mainly for tests.
 	 */
-	constructor(route: string[], fuelReserve = 0) {
+	constructor(route: string[], fuelReserve = 0, waitOpts: LocationWaitOptions = {}) {
 		this.route = route;
 		this.fuelReserve = fuelReserve;
+		this.waitOpts = waitOpts;
 	}
 
 	async execute(ctx: LibGoalContext): Promise<GoalResult> {
@@ -44,15 +50,37 @@ export class LibNavigateViaRoute implements LibGoal {
 		}
 
 		// Refresh state before routing to avoid acting on a stale position.
-		const state = await ctx.refreshState();
-		const currentSystemId = state.location?.system_id;
+		let state = await ctx.refreshState();
+		let currentSystemId = state.location?.system_id;
 
 		if (currentSystemId === target) {
+			// Known limitation: doesn't check in_transit here, so a ship whose stale
+			// cached system_id still equals the target while it's actually mid-jump
+			// away from it would be misreported as already satisfied.
 			return alreadySatisfied(`Already in system ${target}`);
 		}
 
-		if (!currentSystemId) {
-			return failed("Cannot navigate: current system unknown", 0);
+		if (!currentSystemId || state.location?.in_transit) {
+			// Unknown position (or an explicit in_transit flag, even if system_id
+			// still reads as the stale pre-jump value) most commonly means
+			// mid-transit from a jump that hasn't settled yet — wait it out before
+			// attempting the first hop. This only guards the precondition check;
+			// it does not change the no-replan, fail-hard behavior on a rejected
+			// jump mid-route (see failAtHop).
+			log.info("Current system unknown or mid-transit — waiting for it to resolve");
+			state = await waitForLocation(
+				ctx,
+				(s) => s.location?.system_id !== undefined && !s.location.in_transit,
+				this.waitOpts,
+			);
+			currentSystemId = state.location?.system_id;
+
+			if (currentSystemId === target) {
+				return alreadySatisfied(`Already in system ${target}`);
+			}
+			if (!currentSystemId || state.location?.in_transit) {
+				return failed("Cannot navigate: still mid-transit or current system unknown", 0);
+			}
 		}
 
 		// Skip leading hops the ship is already at (callers may include the origin).

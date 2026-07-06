@@ -64,4 +64,50 @@ describe("makeLibGoalContext", () => {
 		const controller = new AbortController();
 		expect(makeLibGoalContext(account, controller.signal).signal).toBe(controller.signal);
 	});
+
+	describe("built from a resolver function", () => {
+		test("ctx.account re-resolves on every access instead of pinning the first instance", () => {
+			const first = new FakeLibGoalAccount({ ship: { fuel: 1 } });
+			const second = new FakeLibGoalAccount({ ship: { fuel: 2 } });
+			let current: FakeLibGoalAccount = first;
+			const ctx = makeLibGoalContext(() => current);
+
+			expect(ctx.account).toBe(first);
+			current = second;
+			expect(ctx.account).toBe(second);
+		});
+
+		test("ctx.state reads through to whatever account the resolver currently returns", () => {
+			const first = new FakeLibGoalAccount({ ship: { fuel: 1 } });
+			const second = new FakeLibGoalAccount({ ship: { fuel: 99 } });
+			let current: FakeLibGoalAccount = first;
+			const ctx = makeLibGoalContext(() => current);
+
+			expect(ctx.state.ship?.fuel).toBe(1);
+			current = second;
+			expect(ctx.state.ship?.fuel).toBe(99);
+		});
+
+		test("refreshState() calls refresh() on the account the resolver returns at call time", async () => {
+			const first = new FakeLibGoalAccount({ ship: { fuel: 1 } });
+			const second = new FakeLibGoalAccount({ ship: { fuel: 1 } });
+			second.refreshReturns = { ship: { fuel: 55 } };
+			let current: FakeLibGoalAccount = first;
+			const ctx = makeLibGoalContext(() => current);
+
+			current = second;
+			const result = await ctx.refreshState({ force: true });
+			expect(first.refreshCalls).toBe(0);
+			expect(second.refreshCalls).toBe(1);
+			expect(result.ship?.fuel).toBe(55);
+		});
+
+		test("a resolver that throws (account no longer connected) propagates the error", () => {
+			const ctx = makeLibGoalContext(() => {
+				throw new Error("Account p1 is no longer connected");
+			});
+			expect(() => ctx.account).toThrow("Account p1 is no longer connected");
+			expect(() => ctx.state).toThrow("Account p1 is no longer connected");
+		});
+	});
 });

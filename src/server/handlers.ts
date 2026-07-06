@@ -61,6 +61,25 @@ function resolveAccount(ctx: HandlerContext, idOrName: string): LibManagedAccoun
 	return ctx.manager.getByPlayerId(idOrName) ?? ctx.manager.getByUsername(idOrName);
 }
 
+/**
+ * Build a resolver that re-looks-up the account by player_id on every call,
+ * instead of pinning a single `Account` instance. A goal or loop can run long
+ * enough for the underlying WebSocket to drop and reconnect — the lib replaces
+ * the `Account` instance on reconnect, so anything holding the old instance
+ * would keep sending on a permanently dead socket. Throws if the account is no
+ * longer connected (e.g. a terminal disconnect), which surfaces as a clear
+ * failure instead of "cannot send on a closed socket".
+ */
+function resolveLiveAccount(ctx: HandlerContext, playerId: string): () => LibManagedAccount {
+	return () => {
+		const account = ctx.manager.getByPlayerId(playerId);
+		if (!account) {
+			throw new Error(`Account ${playerId} is no longer connected`);
+		}
+		return account;
+	};
+}
+
 // ── Health ──────────────────────────────────────────────────────────
 
 export function handleHealth(_req: Request, _params: RouteParams, ctx: HandlerContext): Response {
@@ -436,7 +455,8 @@ export async function handleExecuteGoal(
 		remainingSteps: [],
 	};
 
-	const goalCtx = makeLibGoalContext(account, goalController.signal);
+	const resolveLive = resolveLiveAccount(ctx, actualId);
+	const goalCtx = makeLibGoalContext(resolveLive, goalController.signal);
 	// Non-forced: escalates to a live refresh only if the cache is stale (idle
 	// account), so a one-off goal's precondition check doesn't silently no-op
 	// against externally-drifted state.
@@ -514,7 +534,7 @@ export async function handleExecuteGoal(
 			// Refresh state after completion: many mutation responses (deposit, sell, etc.)
 			// don't include V2GameState, leaving the state store stale.
 			try {
-				await account.refresh();
+				await resolveLive().refresh();
 			} catch {
 				// Non-critical — state may be slightly stale if this fails
 			}
@@ -627,7 +647,8 @@ export async function handleExecuteGoalAsync(
 			completedSteps: [],
 			remainingSteps: [],
 		};
-		const goalCtx = makeLibGoalContext(account, jobController.signal);
+		const resolveLive = resolveLiveAccount(ctx, actualId);
+		const goalCtx = makeLibGoalContext(resolveLive, jobController.signal);
 		// Non-forced: escalates to a live refresh only if the cache is stale (idle
 		// account), so a one-off goal's precondition check doesn't silently no-op
 		// against externally-drifted state.
@@ -638,7 +659,7 @@ export async function handleExecuteGoalAsync(
 				// Refresh state after completion: many mutation responses (deposit, sell, etc.)
 				// don't include V2GameState, leaving the state store stale.
 				try {
-					await account.refresh();
+					await resolveLive().refresh();
 				} catch {
 					// Non-critical — state may be slightly stale if this fails
 				}
@@ -1037,6 +1058,8 @@ export async function handleStartLoop(
 		});
 	}
 
+	const resolveLive = resolveLiveAccount(ctx, actualId);
+
 	try {
 		let status: LoopStatus;
 
@@ -1046,36 +1069,36 @@ export async function handleStartLoop(
 		// loop's option shape, mirroring the goal-registry pattern.
 		if (loopType === "mining") {
 			const apiOptions = resolveListPrices(loopSchemas.mining.parse(opts)) as MiningLoopApiOptions;
-			status = ctx.loopManager.startMiningLoop(actualId, apiOptions, account);
+			status = ctx.loopManager.startMiningLoop(actualId, apiOptions, resolveLive);
 		} else if (loopType === "enhanced-mining") {
 			const apiOptions = resolveListPrices(
 				loopSchemas["enhanced-mining"].parse(opts),
 			) as EnhancedMiningLoopApiOptions;
-			status = ctx.loopManager.startEnhancedMiningLoop(actualId, apiOptions, account);
+			status = ctx.loopManager.startEnhancedMiningLoop(actualId, apiOptions, resolveLive);
 		} else if (loopType === "trading") {
 			const apiOptions = loopSchemas.trading.parse(opts) as TradingLoopApiOptions;
-			status = ctx.loopManager.startTradingLoop(actualId, apiOptions, account);
+			status = ctx.loopManager.startTradingLoop(actualId, apiOptions, resolveLive);
 		} else if (loopType === "hauling") {
 			const apiOptions = loopSchemas.hauling.parse(opts) as HaulingLoopApiOptions;
-			status = ctx.loopManager.startHaulingLoop(actualId, apiOptions, account);
+			status = ctx.loopManager.startHaulingLoop(actualId, apiOptions, resolveLive);
 		} else if (loopType === "storage-transfer") {
 			const apiOptions = loopSchemas["storage-transfer"].parse(opts);
-			status = ctx.loopManager.startStorageTransferLoop(actualId, apiOptions, account);
+			status = ctx.loopManager.startStorageTransferLoop(actualId, apiOptions, resolveLive);
 		} else if (loopType === "salvage") {
 			const apiOptions = loopSchemas.salvage.parse(opts);
-			status = ctx.loopManager.startSalvageLoop(actualId, apiOptions, account);
+			status = ctx.loopManager.startSalvageLoop(actualId, apiOptions, resolveLive);
 		} else if (loopType === "roaming-salvage") {
 			const apiOptions = loopSchemas["roaming-salvage"].parse(opts);
-			status = ctx.loopManager.startRoamingSalvageLoop(actualId, apiOptions, account);
+			status = ctx.loopManager.startRoamingSalvageLoop(actualId, apiOptions, resolveLive);
 		} else if (loopType === "tow-salvage") {
 			const apiOptions = loopSchemas["tow-salvage"].parse(opts);
-			status = ctx.loopManager.startTowSalvageLoop(actualId, apiOptions, account);
+			status = ctx.loopManager.startTowSalvageLoop(actualId, apiOptions, resolveLive);
 		} else if (loopType === "exploration") {
 			const apiOptions = loopSchemas.exploration.parse(opts);
-			status = ctx.loopManager.startExplorationLoop(actualId, apiOptions, account);
+			status = ctx.loopManager.startExplorationLoop(actualId, apiOptions, resolveLive);
 		} else if (loopType === "guard") {
 			const apiOptions = loopSchemas.guard.parse(opts);
-			status = ctx.loopManager.startGuardLoop(actualId, apiOptions, account);
+			status = ctx.loopManager.startGuardLoop(actualId, apiOptions, resolveLive);
 		} else {
 			throw new HttpError(`Unsupported loop type: ${loopType}`, 400);
 		}

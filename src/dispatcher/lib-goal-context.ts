@@ -70,14 +70,37 @@ export interface LibGoal {
  * Build a `LibGoalContext` around a lib account. `state` is a live getter over
  * `account.state`; `refreshState` reads the cache for free unless `force` runs a
  * live `account.refresh()`.
+ *
+ * Pass a resolver function instead of a fixed account for anything long-running
+ * enough to outlive a single WebSocket connection (loops, resumed async jobs) —
+ * a reconnect replaces the underlying `Account` instance (see
+ * `AccountClientLike.onAccountConnected`), so a context built around a fixed,
+ * now-superseded instance would keep sending on a permanently dead socket.
+ * `ctx.account`/`ctx.state`/`refreshState` all re-resolve on every access, so
+ * work that spans a reconnect picks up the fresh instance automatically.
  */
-export function makeLibGoalContext(account: LibGoalAccount, signal?: AbortSignal): LibGoalContext {
+export function makeLibGoalContext(account: LibGoalAccount, signal?: AbortSignal): LibGoalContext;
+export function makeLibGoalContext(
+	resolveAccount: () => LibGoalAccount,
+	signal?: AbortSignal,
+): LibGoalContext;
+export function makeLibGoalContext(
+	accountOrResolver: LibGoalAccount | (() => LibGoalAccount),
+	signal?: AbortSignal,
+): LibGoalContext {
+	const resolveAccount =
+		typeof accountOrResolver === "function"
+			? accountOrResolver
+			: (): LibGoalAccount => accountOrResolver;
 	return {
-		account,
+		get account(): LibGoalAccount {
+			return resolveAccount();
+		},
 		get state(): Readonly<GameState> {
-			return account.state;
+			return resolveAccount().state;
 		},
 		refreshState(opts?: { force?: boolean }): Promise<Readonly<GameState>> {
+			const account = resolveAccount();
 			if (opts?.force || isStateStale(account)) {
 				return account.refresh();
 			}

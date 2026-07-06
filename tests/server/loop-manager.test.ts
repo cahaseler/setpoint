@@ -64,7 +64,7 @@ describe("LoopManager start*Loop methods", () => {
 			sellBaseId: "sol-base",
 			maxIterations: 0,
 		};
-		const status = manager.startMiningLoop("p1", options, account);
+		const status = manager.startMiningLoop("p1", options, () => account);
 		expect(status.type).toBe("mining");
 		expect(status.running).toBe(true);
 		expect(manager.isRunning("p1")).toBe(true);
@@ -78,8 +78,8 @@ describe("LoopManager start*Loop methods", () => {
 			sellStationPoiId: "sol-station",
 			sellBaseId: "sol-base",
 		};
-		manager.startMiningLoop("p1", options, account);
-		expect(() => manager.startMiningLoop("p1", options, account)).toThrow("already running");
+		manager.startMiningLoop("p1", options, () => account);
+		expect(() => manager.startMiningLoop("p1", options, () => account)).toThrow("already running");
 	});
 
 	// Enhanced mining
@@ -94,7 +94,7 @@ describe("LoopManager start*Loop methods", () => {
 			junkItemIds: ["rock", "debris"],
 			maxIterations: 0,
 		};
-		const status = manager.startEnhancedMiningLoop("p1", options, account);
+		const status = manager.startEnhancedMiningLoop("p1", options, () => account);
 		expect(status.type).toBe("enhanced-mining");
 		expect(status.running).toBe(true);
 		expect(manager.isRunning("p1")).toBe(true);
@@ -109,8 +109,8 @@ describe("LoopManager start*Loop methods", () => {
 			sellBaseId: "sol-base",
 			junkItemIds: [],
 		};
-		manager.startEnhancedMiningLoop("p1", options, account);
-		expect(() => manager.startEnhancedMiningLoop("p1", options, account)).toThrow(
+		manager.startEnhancedMiningLoop("p1", options, () => account);
+		expect(() => manager.startEnhancedMiningLoop("p1", options, () => account)).toThrow(
 			"already running",
 		);
 	});
@@ -126,7 +126,7 @@ describe("LoopManager start*Loop methods", () => {
 			sellBaseId: "sol-base",
 			maxIterations: 0,
 		};
-		const status = manager.startSalvageLoop("p1", options, account);
+		const status = manager.startSalvageLoop("p1", options, () => account);
 		expect(status.type).toBe("salvage");
 		expect(status.running).toBe(true);
 		expect(manager.isRunning("p1")).toBe(true);
@@ -140,8 +140,8 @@ describe("LoopManager start*Loop methods", () => {
 			sellStationPoiId: "sol-station",
 			sellBaseId: "sol-base",
 		};
-		manager.startSalvageLoop("p1", options, account);
-		expect(() => manager.startSalvageLoop("p1", options, account)).toThrow("already running");
+		manager.startSalvageLoop("p1", options, () => account);
+		expect(() => manager.startSalvageLoop("p1", options, () => account)).toThrow("already running");
 	});
 
 	// Trading
@@ -153,7 +153,7 @@ describe("LoopManager start*Loop methods", () => {
 			items: [{ itemId: "iron_ore", maxBuyPrice: 10, minSellPrice: 20 }],
 			maxIterations: 0,
 		};
-		const status = manager.startTradingLoop("p1", options, account);
+		const status = manager.startTradingLoop("p1", options, () => account);
 		expect(status.type).toBe("trading");
 		expect(status.running).toBe(true);
 		expect(manager.isRunning("p1")).toBe(true);
@@ -165,8 +165,8 @@ describe("LoopManager start*Loop methods", () => {
 			sellStation: { systemId: "sol", stationPoiId: "sell-station", baseId: "sell-base" },
 			items: [{ itemId: "iron_ore", maxBuyPrice: 10, minSellPrice: 20 }],
 		};
-		manager.startTradingLoop("p1", options, account);
-		expect(() => manager.startTradingLoop("p1", options, account)).toThrow("already running");
+		manager.startTradingLoop("p1", options, () => account);
+		expect(() => manager.startTradingLoop("p1", options, () => account)).toThrow("already running");
 	});
 
 	// Hauling
@@ -188,7 +188,7 @@ describe("LoopManager start*Loop methods", () => {
 			},
 			maxIterations: 0,
 		};
-		const status = manager.startHaulingLoop("p1", options, account);
+		const status = manager.startHaulingLoop("p1", options, () => account);
 		expect(status.type).toBe("hauling");
 		expect(status.running).toBe(true);
 		expect(manager.isRunning("p1")).toBe(true);
@@ -210,8 +210,8 @@ describe("LoopManager start*Loop methods", () => {
 				type: "personal-storage",
 			},
 		};
-		manager.startHaulingLoop("p1", options, account);
-		expect(() => manager.startHaulingLoop("p1", options, account)).toThrow("already running");
+		manager.startHaulingLoop("p1", options, () => account);
+		expect(() => manager.startHaulingLoop("p1", options, () => account)).toThrow("already running");
 	});
 
 	// Storage transfer
@@ -223,7 +223,7 @@ describe("LoopManager start*Loop methods", () => {
 			baseId: "sol-base",
 			maxIterations: 0,
 		};
-		const status = manager.startStorageTransferLoop("p1", options, account);
+		const status = manager.startStorageTransferLoop("p1", options, () => account);
 		expect(status.type).toBe("storage-transfer");
 		expect(status.running).toBe(true);
 		expect(manager.isRunning("p1")).toBe(true);
@@ -235,8 +235,8 @@ describe("LoopManager start*Loop methods", () => {
 			stationPoiId: "sol-station",
 			baseId: "sol-base",
 		};
-		manager.startStorageTransferLoop("p1", options, account);
-		expect(() => manager.startStorageTransferLoop("p1", options, account)).toThrow(
+		manager.startStorageTransferLoop("p1", options, () => account);
+		expect(() => manager.startStorageTransferLoop("p1", options, () => account)).toThrow(
 			"already running",
 		);
 	});
@@ -250,7 +250,7 @@ describe("LoopManager start*Loop methods", () => {
 			baseId: "sol-base",
 			maxIterations: 0,
 		};
-		const status = manager.startExplorationLoop("p1", options, account);
+		const status = manager.startExplorationLoop("p1", options, () => account);
 		expect(status.type).toBe("exploration");
 		expect(status.running).toBe(true);
 		expect(manager.isRunning("p1")).toBe(true);
@@ -262,8 +262,10 @@ describe("LoopManager start*Loop methods", () => {
 			stationPoiId: "sol-station",
 			baseId: "sol-base",
 		};
-		manager.startExplorationLoop("p1", options, account);
-		expect(() => manager.startExplorationLoop("p1", options, account)).toThrow("already running");
+		manager.startExplorationLoop("p1", options, () => account);
+		expect(() => manager.startExplorationLoop("p1", options, () => account)).toThrow(
+			"already running",
+		);
 	});
 
 	// Guard
@@ -277,7 +279,7 @@ describe("LoopManager start*Loop methods", () => {
 			guardPoiId: "belt-1",
 			maxIterations: 0,
 		};
-		const status = manager.startGuardLoop("p1", options, account);
+		const status = manager.startGuardLoop("p1", options, () => account);
 		expect(status.type).toBe("guard");
 		expect(status.running).toBe(true);
 		expect(manager.isRunning("p1")).toBe(true);
@@ -291,8 +293,8 @@ describe("LoopManager start*Loop methods", () => {
 			guardSystemId: "frontier",
 			guardPoiId: "belt-1",
 		};
-		manager.startGuardLoop("p1", options, account);
-		expect(() => manager.startGuardLoop("p1", options, account)).toThrow("already running");
+		manager.startGuardLoop("p1", options, () => account);
+		expect(() => manager.startGuardLoop("p1", options, () => account)).toThrow("already running");
 	});
 
 	// getStatus while running
@@ -306,7 +308,7 @@ describe("LoopManager start*Loop methods", () => {
 			sellBaseId: "sol-base",
 			maxIterations: 0,
 		};
-		manager.startMiningLoop("p1", options, account);
+		manager.startMiningLoop("p1", options, () => account);
 		const status = manager.getStatus("p1");
 		expect(status).toBeDefined();
 		expect(status?.running).toBe(true);
@@ -328,7 +330,7 @@ describe("LoopManager start*Loop methods", () => {
 			items: [{ itemId: "iron_ore", maxBuyPrice: 10, minSellPrice: 20 }],
 			maxIterations: 0,
 		};
-		manager.startTradingLoop("p1", options, account);
+		manager.startTradingLoop("p1", options, () => account);
 		// Promise is still pending (resolves on next microtask) → abortLoop returns true
 		expect(manager.abortLoop("p1")).toBe(true);
 	});
@@ -341,7 +343,7 @@ describe("LoopManager start*Loop methods", () => {
 			items: [{ itemId: "iron_ore", maxBuyPrice: 10, minSellPrice: 20 }],
 			maxIterations: 0,
 		};
-		manager.startTradingLoop("p1", options, account);
+		manager.startTradingLoop("p1", options, () => account);
 		// Wait for the loop to complete (0 iterations resolves immediately as microtask)
 		await new Promise<void>((r) => setTimeout(r, 10));
 		expect(manager.isRunning("p1")).toBe(false);

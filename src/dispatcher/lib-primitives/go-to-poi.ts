@@ -28,40 +28,48 @@ export class LibGoToPoi implements LibGoal {
 		const currentPoiId = ctx.state.location?.poi_id;
 
 		if (currentPoiId === this.targetPoiId) {
+			// Known limitation: doesn't check in_transit here, so a ship whose stale
+			// cached poi_id still equals the target while it's actually mid-transit
+			// away from it would be misreported as already satisfied.
 			return alreadySatisfied(`Already at POI ${this.targetPoiId}`);
 		}
 
-		// If location is unknown, force a live read — the cache may lag (e.g. a
-		// prior iteration whose mutation delta carried no location).
+		// If location is unknown or mid-transit, force a live read — the cache may
+		// lag (e.g. a prior iteration whose mutation delta carried no location), or
+		// a jump/travel from a previous step may still be in flight.
 		let systemId = ctx.state.location?.system_id;
-		if (!systemId) {
-			log.info("Location unknown, refreshing state before travel");
+		let inTransit = ctx.state.location?.in_transit;
+		if (!systemId || inTransit) {
+			log.info("Location unknown or mid-transit, refreshing state before travel");
 			const fresh = await ctx.refreshState({ force: true });
 			if (fresh.location?.poi_id === this.targetPoiId) {
 				return alreadySatisfied(`Already at POI ${this.targetPoiId}`);
 			}
 			systemId = fresh.location?.system_id;
+			inTransit = fresh.location?.in_transit;
 		}
 
-		if (!systemId) {
-			// Still unknown after a live refresh most commonly means mid-transit
-			// (a jump that hasn't settled yet) — wait it out instead of failing,
-			// which would just make the caller resubmit and race this same
-			// still-settling transit.
-			log.info("Current system still unknown — waiting for it to resolve (likely mid-transit)");
+		if (!systemId || inTransit) {
+			// Still unknown/mid-transit after a live refresh most commonly means a
+			// jump hasn't settled yet — wait it out instead of failing, which would
+			// just make the caller resubmit and race this same still-settling
+			// transit. Checking in_transit explicitly (not just an unknown
+			// system_id) covers a ship that still reports its stale pre-jump system.
+			log.info("Current system still unknown or mid-transit — waiting for it to resolve");
 			const settled = await waitForLocation(
 				ctx,
-				(s) => s.location?.system_id !== undefined,
+				(s) => s.location?.system_id !== undefined && !s.location.in_transit,
 				this.waitOpts,
 			);
 			if (settled.location?.poi_id === this.targetPoiId) {
 				return alreadySatisfied(`Already at POI ${this.targetPoiId}`);
 			}
 			systemId = settled.location?.system_id;
+			inTransit = settled.location?.in_transit;
 		}
 
-		if (!systemId) {
-			return failed("Cannot travel: current location unknown", 0);
+		if (!systemId || inTransit) {
+			return failed("Cannot travel: current location unknown or still mid-transit", 0);
 		}
 
 		log.info(`Traveling to POI ${this.targetPoiId}`);

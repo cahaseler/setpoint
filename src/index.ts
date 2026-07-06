@@ -233,7 +233,15 @@ async function resumeJobsForAccount(
 		}
 
 		jobManager.requeue(job.jobId);
-		const goalCtx = makeLibGoalContext(account);
+		// Resolve fresh from the manager on every access rather than closing over
+		// `account` — a resumed job can outlive the connection it was resumed on.
+		const goalCtx = makeLibGoalContext(() => {
+			const live = manager.getByPlayerId(playerId);
+			if (!live) {
+				throw new Error(`Account ${playerId} is no longer connected`);
+			}
+			return live;
+		});
 
 		goal
 			.execute(goalCtx)
@@ -260,7 +268,11 @@ export async function resumeLoops(
 
 	log.info(`Found ${configs.length} persisted loop config(s), resuming...`);
 
-	type StartFn = (playerId: string, options: never, account: LibManagedAccount) => unknown;
+	type StartFn = (
+		playerId: string,
+		options: never,
+		resolveAccount: () => LibManagedAccount,
+	) => unknown;
 
 	const startMethodMap: Record<string, StartFn | undefined> = {
 		mining: loopManager.startMiningLoop.bind(loopManager) as StartFn,
@@ -289,11 +301,19 @@ export async function resumeLoops(
 		}
 
 		try {
-			(startFn as (pid: string, opts: Record<string, unknown>, acct: LibManagedAccount) => unknown)(
-				config.playerId,
-				config.options,
-				account,
-			);
+			(
+				startFn as (
+					pid: string,
+					opts: Record<string, unknown>,
+					resolveAccount: () => LibManagedAccount,
+				) => unknown
+			)(config.playerId, config.options, () => {
+				const live = manager.getByPlayerId(config.playerId);
+				if (!live) {
+					throw new Error(`Account ${config.playerId} is no longer connected`);
+				}
+				return live;
+			});
 			log.info(`[${config.playerId}] Resumed ${config.type} loop`);
 		} catch (err) {
 			log.warn(`[${config.playerId}] Failed to resume ${config.type} loop: ${errorMessage(err)}`);

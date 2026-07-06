@@ -88,6 +88,16 @@ export class LibAccountManager {
 			log.warn(
 				`[${id}] Account disconnected and will not be reconnected (code=${err.code ?? "?"}): ${err.message}`,
 			);
+			// Terminal — the lib will never reconnect this id (a store-key/username,
+			// not a player_id) on its own. Leaving the dead instance indexed would make
+			// every later lookup (goal execution, loop start) resolve to a permanently
+			// closed socket instead of a clean "account not found".
+			const usernameKey = id.toLowerCase();
+			const playerId = this.usernameToPlayerId.get(usernameKey);
+			if (playerId) {
+				this.byPlayerId.delete(playerId);
+				this.usernameToPlayerId.delete(usernameKey);
+			}
 		});
 	}
 
