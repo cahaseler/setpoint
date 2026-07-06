@@ -28,12 +28,31 @@ describe("LibGoToPoi", () => {
 		expect(result.success).toBe(true);
 	});
 
-	test("fails when location still unknown after refresh", async () => {
+	test("fails when location still unknown after waiting it out", async () => {
 		const account = new FakeLibGoalAccount({ location: {} });
 		account.refreshReturns = { location: {} };
-		const result = await new LibGoToPoi("belt-1").execute(makeLibGoalContext(account));
+		const result = await new LibGoToPoi("belt-1", { maxWaitMs: 20, pollIntervalMs: 5 }).execute(
+			makeLibGoalContext(account),
+		);
 		expect(result.success).toBe(false);
 		expect(result.message).toContain("current location unknown");
+	});
+
+	test("waits out an unresolved location, then travels once it resolves", async () => {
+		let calls = 0;
+		const account = new FakeLibGoalAccount({ location: {} });
+		account.refresh = () => {
+			calls++;
+			if (calls >= 2) {
+				account.setState({ location: { system_id: "sol", poi_id: "station-1" } });
+			}
+			return Promise.resolve(account.state);
+		};
+		const result = await new LibGoToPoi("belt-1", { maxWaitMs: 1000, pollIntervalMs: 5 }).execute(
+			makeLibGoalContext(account),
+		);
+		expect(result.success).toBe(true);
+		expect(calls).toBeGreaterThanOrEqual(2);
 	});
 
 	test("retries once on SpacemoltError then succeeds", async () => {

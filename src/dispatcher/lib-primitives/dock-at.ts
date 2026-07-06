@@ -3,6 +3,8 @@ import { createLogger } from "../../util/logger.js";
 import type { GoalResult } from "../goals.js";
 import { alreadySatisfied, failed, succeeded } from "../goals.js";
 import type { LibGoal, LibGoalContext } from "../lib-goal-context.js";
+import type { LocationWaitOptions } from "../wait-for-location.js";
+import { waitForLocation } from "../wait-for-location.js";
 
 const log = createLogger("goal:dock-at");
 
@@ -15,20 +17,36 @@ const log = createLogger("goal:dock-at");
 export class LibDockAt implements LibGoal {
 	readonly name = "dock-at";
 	private readonly targetBaseId: string;
+	private readonly waitOpts: LocationWaitOptions;
 
-	constructor(targetBaseId: string) {
+	constructor(targetBaseId: string, waitOpts: LocationWaitOptions = {}) {
 		this.targetBaseId = targetBaseId;
+		this.waitOpts = waitOpts;
 	}
 
 	async execute(ctx: LibGoalContext): Promise<GoalResult> {
 		// docked_at can go stale: the server undocks ships without a mutation
 		// response through us (e.g. a mobile base jumping away), so verify
 		// against live state before trusting the local snapshot — queries are free.
-		const state = await ctx.refreshState();
-		const dockedAt = state.location?.docked_at;
+		let state = await ctx.refreshState();
+		let dockedAt = state.location?.docked_at;
 
 		if (dockedAt === this.targetBaseId) {
 			return alreadySatisfied(`Already docked at ${this.targetBaseId}`);
+		}
+
+		if (!state.location?.poi_id) {
+			// Immediately after arriving (e.g. the go-to-poi step just before this
+			// one in a compound sequence) the cache can briefly lag reality, or
+			// this may be genuinely mid-transit — wait for it to resolve instead
+			// of failing outright, which would just make the caller resubmit and
+			// race the same still-settling arrival.
+			log.info("Not at a POI (or unknown) — waiting for location to resolve");
+			state = await waitForLocation(ctx, (s) => s.location?.poi_id !== undefined, this.waitOpts);
+			dockedAt = state.location?.docked_at;
+			if (dockedAt === this.targetBaseId) {
+				return alreadySatisfied(`Already docked at ${this.targetBaseId}`);
+			}
 		}
 
 		if (!state.location?.poi_id) {

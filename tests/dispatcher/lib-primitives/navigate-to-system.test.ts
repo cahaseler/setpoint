@@ -62,6 +62,86 @@ describe("LibNavigateToSystem", () => {
 		expect(result.message).toContain("Insufficient fuel");
 	});
 
+	test("waits out an unknown current system, then navigates once it resolves", async () => {
+		let refreshCalls = 0;
+		const account = new FakeLibGoalAccount(
+			{ location: {} },
+			{
+				find_route: () =>
+					route({
+						estimated_fuel: 10,
+						fuel_available: 100,
+						total_jumps: 1,
+						route: [{ system_id: "alpha", jumps: 1, name: "Alpha" }],
+					}),
+				jump: () => fakeMutationResult("jump"),
+			},
+		);
+		account.refresh = () => {
+			refreshCalls++;
+			if (refreshCalls >= 2) {
+				account.setState({ location: { system_id: "sol", poi_id: "p" } });
+			}
+			return Promise.resolve(account.state);
+		};
+		const result = await new LibNavigateToSystem("alpha", 0, {
+			maxWaitMs: 1000,
+			pollIntervalMs: 5,
+		}).execute(makeLibGoalContext(account));
+		expect(result.success).toBe(true);
+		expect(refreshCalls).toBeGreaterThanOrEqual(2);
+	});
+
+	test("fails when current system is still unknown after waiting it out", async () => {
+		const account = new FakeLibGoalAccount({ location: {} });
+		const result = await new LibNavigateToSystem("alpha", 0, {
+			maxWaitMs: 20,
+			pollIntervalMs: 5,
+		}).execute(makeLibGoalContext(account));
+		expect(result.success).toBe(false);
+		expect(result.message).toContain("current system unknown");
+	});
+
+	test("waits out an unknown position after a jump failure, then reroutes and completes", async () => {
+		let jumps = 0;
+		let refreshCalls = 0;
+		const account = new FakeLibGoalAccount(
+			{ location: { system_id: "sol", poi_id: "p" } },
+			{
+				find_route: () =>
+					route({
+						estimated_fuel: 10,
+						fuel_available: 100,
+						total_jumps: 1,
+						route: [{ system_id: "alpha", jumps: 1, name: "Alpha" }],
+					}),
+				jump: () => {
+					jumps++;
+					if (jumps === 1) throw new SpacemoltError("already_in_transit", "mid-jump, wait ~60s");
+					return fakeMutationResult("jump");
+				},
+			},
+		);
+		account.refresh = () => {
+			refreshCalls++;
+			if (refreshCalls === 1) {
+				// jumpRoute's own forced refresh right after the jump failure —
+				// position is momentarily ambiguous (mid-transit).
+				account.setState({ location: {} });
+			} else if (refreshCalls >= 3) {
+				// A later poll inside waitForLocation reveals arrival.
+				account.setState({ location: { system_id: "alpha", poi_id: "p" } });
+			}
+			return Promise.resolve(account.state);
+		};
+		const result = await new LibNavigateToSystem("alpha", 0, {
+			maxWaitMs: 1000,
+			pollIntervalMs: 5,
+		}).execute(makeLibGoalContext(account));
+		expect(result.success).toBe(true);
+		expect(refreshCalls).toBeGreaterThanOrEqual(2);
+	});
+
 	test("multi-hop jump succeeds and force-refreshes after navigation", async () => {
 		const account = new FakeLibGoalAccount(
 			{ location: { system_id: "sol", poi_id: "p" } },

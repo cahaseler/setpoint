@@ -3,6 +3,8 @@ import { createLogger } from "../../util/logger.js";
 import type { GoalResult } from "../goals.js";
 import { alreadySatisfied, failed, succeeded } from "../goals.js";
 import type { LibGoal, LibGoalContext } from "../lib-goal-context.js";
+import type { LocationWaitOptions } from "../wait-for-location.js";
+import { waitForLocation } from "../wait-for-location.js";
 
 const log = createLogger("goal:go-to-poi");
 
@@ -15,9 +17,11 @@ const log = createLogger("goal:go-to-poi");
 export class LibGoToPoi implements LibGoal {
 	readonly name = "go-to-poi";
 	private readonly targetPoiId: string;
+	private readonly waitOpts: LocationWaitOptions;
 
-	constructor(targetPoiId: string) {
+	constructor(targetPoiId: string, waitOpts: LocationWaitOptions = {}) {
 		this.targetPoiId = targetPoiId;
+		this.waitOpts = waitOpts;
 	}
 
 	async execute(ctx: LibGoalContext): Promise<GoalResult> {
@@ -37,6 +41,23 @@ export class LibGoToPoi implements LibGoal {
 				return alreadySatisfied(`Already at POI ${this.targetPoiId}`);
 			}
 			systemId = fresh.location?.system_id;
+		}
+
+		if (!systemId) {
+			// Still unknown after a live refresh most commonly means mid-transit
+			// (a jump that hasn't settled yet) — wait it out instead of failing,
+			// which would just make the caller resubmit and race this same
+			// still-settling transit.
+			log.info("Current system still unknown — waiting for it to resolve (likely mid-transit)");
+			const settled = await waitForLocation(
+				ctx,
+				(s) => s.location?.system_id !== undefined,
+				this.waitOpts,
+			);
+			if (settled.location?.poi_id === this.targetPoiId) {
+				return alreadySatisfied(`Already at POI ${this.targetPoiId}`);
+			}
+			systemId = settled.location?.system_id;
 		}
 
 		if (!systemId) {

@@ -479,9 +479,19 @@ export async function handleExecuteGoal(
 		clearInterval(keepaliveTimer);
 		const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
 		log.warn(
-			`[${actualId}] Client disconnected during ${goalType} after ${elapsed}s — cleaning up executingGoals lock`,
+			`[${actualId}] Client disconnected during ${goalType} after ${elapsed}s — signaling the goal to stop; executingGoals lock stays held until it actually does`,
 		);
-		ctx.executingGoals.delete(actualId);
+		// Signal the goal itself to stop (existing signal?.aborted checks in
+		// navigate-to-system, mine-with-jettison, etc. pick this up between
+		// steps/hops) — a client disconnect must not leave the goal running
+		// orphaned in the background. The executingGoals lock is deliberately
+		// NOT cleared here: it's released below once goalPromise actually
+		// settles, whether that's fast (the abort took effect) or not (an
+		// in-flight jump mutation can't be interrupted mid-transit). Clearing
+		// it eagerly here would let a fresh submission for the same account
+		// start immediately and race the still-running orphaned execution —
+		// which is exactly the bug this fixes.
+		goalController.abort();
 		writer.close().catch(() => {});
 	};
 	reqSignal.addEventListener("abort", onAbort);
@@ -491,6 +501,7 @@ export async function handleExecuteGoal(
 			clearInterval(keepaliveTimer);
 			reqSignal.removeEventListener("abort", onAbort);
 			const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+			ctx.executingGoals.delete(actualId);
 
 			if (clientAborted) {
 				log.warn(
@@ -500,11 +511,8 @@ export async function handleExecuteGoal(
 			}
 
 			log.info(`[${actualId}] Sync goal completed: ${goalType} in ${elapsed}s`);
-			ctx.executingGoals.delete(actualId);
 			// Refresh state after completion: many mutation responses (deposit, sell, etc.)
 			// don't include V2GameState, leaving the state store stale.
-			// Runs after clearing executingGoals so a slow/hung getState can't
-			// leave the flag stuck.
 			try {
 				await account.refresh();
 			} catch {
@@ -517,6 +525,7 @@ export async function handleExecuteGoal(
 			clearInterval(keepaliveTimer);
 			reqSignal.removeEventListener("abort", onAbort);
 			const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+			ctx.executingGoals.delete(actualId);
 
 			if (clientAborted) {
 				log.warn(
@@ -528,7 +537,6 @@ export async function handleExecuteGoal(
 			log.warn(
 				`[${actualId}] Sync goal failed: ${goalType} after ${elapsed}s — ${errorMessage(err)}`,
 			);
-			ctx.executingGoals.delete(actualId);
 			await writer
 				.write(encoder.encode(JSON.stringify({ error: errorMessage(err) })))
 				.catch(() => {});

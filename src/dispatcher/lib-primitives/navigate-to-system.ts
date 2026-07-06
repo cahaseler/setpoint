@@ -3,6 +3,8 @@ import { createLogger } from "../../util/logger.js";
 import type { GoalResult } from "../goals.js";
 import { alreadySatisfied, failed, succeeded } from "../goals.js";
 import type { LibGoal, LibGoalContext } from "../lib-goal-context.js";
+import type { LocationWaitOptions } from "../wait-for-location.js";
+import { waitForLocation } from "../wait-for-location.js";
 
 const log = createLogger("goal:navigate-to-system");
 
@@ -17,30 +19,46 @@ const log = createLogger("goal:navigate-to-system");
  * Already satisfied if already in the target system. Prerequisites: none.
  *
  * @param fuelReserve Fuel units to keep beyond the route's estimated cost.
+ * @param waitOpts Tuning for how long to wait out an unresolved position (mid-transit) before failing. Defaults are production-sane; overridable mainly for tests.
  */
 export class LibNavigateToSystem implements LibGoal {
 	readonly name = "navigate-to-system";
 	private readonly targetSystemId: string;
 	private readonly fuelReserve: number;
+	private readonly waitOpts: LocationWaitOptions;
 
-	constructor(targetSystemId: string, fuelReserve = 0) {
+	constructor(targetSystemId: string, fuelReserve = 0, waitOpts: LocationWaitOptions = {}) {
 		this.targetSystemId = targetSystemId;
 		this.fuelReserve = fuelReserve;
+		this.waitOpts = waitOpts;
 	}
 
 	async execute(ctx: LibGoalContext): Promise<GoalResult> {
 		// Refresh state before routing to avoid a stale location after a failed prior
 		// attempt. Non-forced: the push-fed cache is force-synced at the end of every
 		// navigation (below), so a free read here is accurate.
-		const state = await ctx.refreshState();
-		const currentSystemId = state.location?.system_id;
+		let state = await ctx.refreshState();
+		let currentSystemId = state.location?.system_id;
 
 		if (currentSystemId === this.targetSystemId) {
 			return alreadySatisfied(`Already in system ${this.targetSystemId}`);
 		}
 
 		if (!currentSystemId) {
-			return failed("Cannot navigate: current system unknown", 0);
+			// Unknown position most commonly means mid-transit from a jump that
+			// hasn't settled yet — the game itself says to wait it out and
+			// resubmit; waiting here does that without a fresh submission racing
+			// the still-in-flight one.
+			log.info("Current system unknown — waiting for it to resolve (likely mid-transit)");
+			state = await waitForLocation(ctx, (s) => s.location?.system_id !== undefined, this.waitOpts);
+			currentSystemId = state.location?.system_id;
+
+			if (currentSystemId === this.targetSystemId) {
+				return alreadySatisfied(`Already in system ${this.targetSystemId}`);
+			}
+			if (!currentSystemId) {
+				return failed("Cannot navigate: current system unknown", 0);
+			}
 		}
 
 		// Undock before jumping — the game API rejects jump while docked.
@@ -141,8 +159,24 @@ export class LibNavigateToSystem implements LibGoal {
 					);
 					// Force a live read: jumps carry no reliable position in the cache, so
 					// re-planning from the stale origin is exactly what this guards against.
-					const freshState = await ctx.refreshState({ force: true });
-					const actualSystemId = freshState.location?.system_id;
+					let freshState = await ctx.refreshState({ force: true });
+					let actualSystemId = freshState.location?.system_id;
+
+					if (!actualSystemId) {
+						// The jump error is very often the server itself saying "you're
+						// mid-transit, wait ~60s and resubmit" — wait that out here
+						// instead of failing the goal, which would just make the caller
+						// resubmit and race this same still-settling transit.
+						log.info(
+							"Position unknown after jump failure — waiting for it to resolve (likely mid-transit)",
+						);
+						freshState = await waitForLocation(
+							ctx,
+							(s) => s.location?.system_id !== undefined,
+							this.waitOpts,
+						);
+						actualSystemId = freshState.location?.system_id;
+					}
 
 					if (actualSystemId === this.targetSystemId) {
 						return succeeded(

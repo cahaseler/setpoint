@@ -1938,6 +1938,72 @@ describe("handleExecuteGoal", () => {
 		await res.text(); // drain to let goal finish and avoid dangling async
 	});
 
+	test("client disconnect signals the goal to abort but keeps the executingGoals lock until it actually settles", async () => {
+		let releaseFindRoute: (() => void) | undefined;
+		const gate = new Promise<void>((resolve) => {
+			releaseFindRoute = resolve;
+		});
+		const account = new FakeLibManagedAccount({
+			playerId: "p1",
+			username: "TestPlayer",
+			state: { location: { system_id: "sol", poi_id: "p" } },
+			handlers: {
+				find_route: async () => {
+					await gate;
+					return {
+						result: "",
+						structuredContent: {
+							cargo_used: 0,
+							estimated_fuel: 0,
+							found: true,
+							fuel_available: 1000,
+							fuel_per_jump: 0,
+							message: "",
+							route: [],
+							target_system: "alpha",
+							total_jumps: 0,
+						},
+					};
+				},
+			},
+		});
+		const ctx = makeContext({ accounts: [account] });
+
+		const abortController = new AbortController();
+		const req = new Request("http://localhost/accounts/p1/goal", {
+			method: "POST",
+			body: JSON.stringify({ type: "navigate-to-system", options: { targetSystemId: "alpha" } }),
+			headers: { "Content-Type": "application/json" },
+			signal: abortController.signal,
+		});
+
+		const res = await handleExecuteGoal(req, { playerId: "p1" }, ctx);
+		expect(res.status).toBe(200);
+
+		const executing = ctx.executingGoals.get("p1");
+		expect(executing).toBeDefined();
+		const goalPromise = executing?.promise;
+
+		// Simulate the client disconnecting while find_route is still pending.
+		abortController.abort();
+		await Promise.resolve();
+		await Promise.resolve();
+
+		// The goal's own controller must be signaled...
+		expect(executing?.controller.signal.aborted).toBe(true);
+		// ...but the lock must NOT be cleared just because the client left —
+		// a fresh submission racing this still-running goal is the bug this fixes.
+		expect(ctx.executingGoals.has("p1")).toBe(true);
+
+		// Let find_route resolve; navigate-to-system's own signal check then
+		// stops it at the top of the hop loop.
+		releaseFindRoute?.();
+		await goalPromise;
+		await Promise.resolve();
+
+		expect(ctx.executingGoals.has("p1")).toBe(false);
+	});
+
 	test("returns 409 when an async job is running for this account", async () => {
 		const account = makeAccount("p1");
 		const ctx = makeContext({ accounts: [account] });
