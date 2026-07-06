@@ -6,6 +6,7 @@ import { LibSellAtStation } from "../lib-compounds/sell-at-station.js";
 import type { SellAtStationOptions } from "../lib-compounds/sell-at-station.js";
 import type { LibGoal, LibGoalContext } from "../lib-goal-context.js";
 import { runLibSequence } from "../lib-sequence.js";
+import { LibFuelRouteGuard } from "./fuel-route-guard.js";
 
 const log = createLogger("loop:mining");
 
@@ -93,7 +94,20 @@ export class LibMiningIteration implements LibGoal {
 		}
 
 		const iterResult = await runLibSequence(
-			[this.options.runGoal, new LibSellAtStation(this.options.sellOptions)],
+			[
+				this.options.runGoal,
+				// Re-check fuel against the actual return route right before the
+				// deposit leg — the pre-flight check above estimated the whole round
+				// trip before departure, but combat, drift, or extra jumps during the
+				// run can leave less fuel than that estimate assumed. Failing here
+				// instead of departing prevents stranding mid-route with a full hold.
+				new LibFuelRouteGuard({
+					name: "fuel-route-guard",
+					destinationPoiId: this.options.sellOptions.stationPoiId,
+					minFuelReserve: this.options.minFuelReserve,
+				}),
+				new LibSellAtStation(this.options.sellOptions),
+			],
 			ctx,
 		);
 		return { ...iterResult, ticksUsed: extraTicks + iterResult.ticksUsed };
