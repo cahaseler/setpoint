@@ -112,6 +112,7 @@ export function startServer(options: ServerOptions): DispatcherServer {
 		configDir: options.configDir,
 		startedAt: new Date().toISOString(),
 		executingGoals: new Map(),
+		claimedAccounts: new Set(),
 		craftingEventsStore: options.craftingEventsStore,
 	};
 

@@ -104,6 +104,7 @@ describe("Server integration", () => {
 			configDir: "config",
 			startedAt: new Date().toISOString(),
 			executingGoals: new Map(),
+			claimedAccounts: new Set(),
 			craftingEventsStore: new CraftingEventsStore(),
 		};
 

@@ -178,6 +178,7 @@ function makeContext(
 		configDir: "config",
 		startedAt: "2026-01-01T00:00:00.000Z",
 		executingGoals: new Map(),
+		claimedAccounts: new Set(),
 		craftingEventsStore: new CraftingEventsStore(),
 	};
 }
@@ -1882,6 +1883,28 @@ describe("handleExecuteGoal", () => {
 		expect(res.status).toBe(400);
 	});
 
+	test("rejects one of two concurrent sync submissions for the same account", async () => {
+		// Regression: see the equivalent handleExecuteGoalAsync test — the same
+		// race existed here, since executingGoals.set() also happened only
+		// after several awaits past the initial "is anything running" checks.
+		const account = makeAccount("p1");
+		const ctx = makeContext({ accounts: [account] });
+		const makeReq = () =>
+			new Request("http://localhost/accounts/p1/goal", {
+				method: "POST",
+				body: JSON.stringify({ type: "ensure-undocked" }),
+				headers: { "Content-Type": "application/json" },
+			});
+
+		const [resA, resB] = await Promise.all([
+			handleExecuteGoal(makeReq(), { playerId: "p1" }, ctx),
+			handleExecuteGoal(makeReq(), { playerId: "p1" }, ctx),
+		]);
+
+		const statuses = [resA.status, resB.status].sort();
+		expect(statuses).toEqual([200, 409]);
+	});
+
 	test("returns 400 for invalid JSON body", async () => {
 		const account = makeAccount("p1");
 		const ctx = makeContext({ accounts: [account] });
@@ -2235,6 +2258,31 @@ describe("handleExecuteGoalAsync", () => {
 		// (the fake job's goal.execute()/.then() chain settles via microtasks before this
 		// await resolves, same as the sync handler).
 		expect(account.refreshCalls).toBe(2);
+	});
+
+	test("rejects one of two concurrent submissions for the same account", async () => {
+		// Regression: the "is anything running" checks used to happen well
+		// before the account was actually recorded as running (several awaits
+		// later), so two concurrent submissions for the same account could
+		// both pass every check and both end up executing against the same
+		// ship at once. Guarded now by a synchronous claim taken before the
+		// first await.
+		const account = makeAccount("p1");
+		const ctx = makeContext({ accounts: [account] });
+		const makeReq = () =>
+			new Request("http://localhost/accounts/p1/goal/async", {
+				method: "POST",
+				body: JSON.stringify({ type: "ensure-undocked" }),
+				headers: { "Content-Type": "application/json" },
+			});
+
+		const [resA, resB] = await Promise.all([
+			handleExecuteGoalAsync(makeReq(), { playerId: "p1" }, ctx),
+			handleExecuteGoalAsync(makeReq(), { playerId: "p1" }, ctx),
+		]);
+
+		const statuses = [resA.status, resB.status].sort();
+		expect(statuses).toEqual([202, 409]);
 	});
 
 	test("does not refresh state before executing when the cache is fresh", async () => {
