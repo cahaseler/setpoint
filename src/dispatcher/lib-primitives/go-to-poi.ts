@@ -115,10 +115,12 @@ export class LibGoToPoi implements LibGoal {
 			}
 		}
 
-		// Don't trust travel() resolving as proof of arrival — a delta can lag the
-		// actual position, the same reason navigate-to-system.ts force-refreshes
-		// after every jump. Verify before declaring success instead of assuming
-		// our own cached read is current.
+		// travel() resolving means the server acked the mutation — it doesn't by
+		// itself prove the ship has arrived (observed in production: mine(), a
+		// separate live call, was rejected as still mid-transit ~10s after
+		// travel() resolved clean). A forced refresh is a fresh get_status query,
+		// not a cached read, so confirm arrival against it before declaring
+		// success instead of trusting the mutation's ack alone.
 		let arrived = await ctx.refreshState({ force: true });
 		if (arrived.location?.poi_id !== this.targetPoiId || arrived.location?.in_transit) {
 			log.info("Travel call resolved but arrival not yet reflected — waiting for it to settle");
