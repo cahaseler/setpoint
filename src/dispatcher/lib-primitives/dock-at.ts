@@ -32,25 +32,33 @@ export class LibDockAt implements LibGoal {
 		let dockedAt = state.location?.docked_at;
 
 		if (dockedAt === this.targetBaseId) {
+			// Known limitation: doesn't check in_transit here — docked_at going
+			// stale mid-transit is a narrower window than system_id/poi_id (the
+			// server has to explicitly undock the ship first), but not impossible.
 			return alreadySatisfied(`Already docked at ${this.targetBaseId}`);
 		}
 
-		if (!state.location?.poi_id) {
+		if (!state.location?.poi_id || state.location?.in_transit) {
 			// Immediately after arriving (e.g. the go-to-poi step just before this
 			// one in a compound sequence) the cache can briefly lag reality, or
-			// this may be genuinely mid-transit — wait for it to resolve instead
-			// of failing outright, which would just make the caller resubmit and
-			// race the same still-settling arrival.
-			log.info("Not at a POI (or unknown) — waiting for location to resolve");
-			state = await waitForLocation(ctx, (s) => s.location?.poi_id !== undefined, this.waitOpts);
+			// this may be genuinely mid-transit (in_transit true, even if poi_id
+			// still reads as the stale pre-departure value) — wait for it to
+			// resolve instead of failing outright, which would just make the
+			// caller resubmit and race the same still-settling arrival.
+			log.info("Not at a POI, unknown, or mid-transit — waiting for location to resolve");
+			state = await waitForLocation(
+				ctx,
+				(s) => s.location?.poi_id !== undefined && !s.location.in_transit,
+				this.waitOpts,
+			);
 			dockedAt = state.location?.docked_at;
 			if (dockedAt === this.targetBaseId) {
 				return alreadySatisfied(`Already docked at ${this.targetBaseId}`);
 			}
 		}
 
-		if (!state.location?.poi_id) {
-			return failed("Cannot dock: not at a POI", 0);
+		if (!state.location?.poi_id || state.location?.in_transit) {
+			return failed("Cannot dock: not at a POI or still mid-transit", 0);
 		}
 
 		log.info(`Docking at ${this.targetBaseId}`);

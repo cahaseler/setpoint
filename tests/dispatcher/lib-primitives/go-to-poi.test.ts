@@ -88,6 +88,38 @@ describe("LibGoToPoi", () => {
 		expect(result.message).toContain("failed");
 	});
 
+	test("waits out in_transit even when system_id/poi_id still read as stale values", async () => {
+		let calls = 0;
+		const account = new FakeLibGoalAccount({
+			location: { system_id: "sol", poi_id: "station-1", in_transit: true },
+		});
+		account.refresh = () => {
+			calls++;
+			if (calls >= 2) {
+				account.setState({
+					location: { system_id: "sol", poi_id: "belt-1", in_transit: false },
+				});
+			}
+			return Promise.resolve(account.state);
+		};
+		const result = await new LibGoToPoi("belt-1", { maxWaitMs: 1000, pollIntervalMs: 5 }).execute(
+			makeLibGoalContext(account),
+		);
+		expect(result.alreadySatisfied).toBe(true);
+		expect(calls).toBeGreaterThanOrEqual(2);
+	});
+
+	test("fails when still in_transit after waiting it out, even with a defined location", async () => {
+		const account = new FakeLibGoalAccount({
+			location: { system_id: "sol", poi_id: "station-1", in_transit: true },
+		});
+		const result = await new LibGoToPoi("belt-1", { maxWaitMs: 20, pollIntervalMs: 5 }).execute(
+			makeLibGoalContext(account),
+		);
+		expect(result.success).toBe(false);
+		expect(result.message).toContain("mid-transit");
+	});
+
 	test("already satisfied if refresh after error shows we arrived", async () => {
 		const account = new FakeLibGoalAccount(
 			{ location: { system_id: "sol", poi_id: "station-1" } },

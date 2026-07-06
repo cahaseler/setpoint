@@ -102,6 +102,48 @@ describe("LibNavigateToSystem", () => {
 		expect(result.message).toContain("current system unknown");
 	});
 
+	test("waits out in_transit even when system_id still reads as the stale pre-jump value", async () => {
+		let refreshCalls = 0;
+		const account = new FakeLibGoalAccount(
+			{ location: { system_id: "sol", poi_id: "p", in_transit: true } },
+			{
+				find_route: () =>
+					route({
+						estimated_fuel: 10,
+						fuel_available: 100,
+						total_jumps: 1,
+						route: [{ system_id: "alpha", jumps: 1, name: "Alpha" }],
+					}),
+				jump: () => fakeMutationResult("jump"),
+			},
+		);
+		account.refresh = () => {
+			refreshCalls++;
+			if (refreshCalls >= 2) {
+				account.setState({ location: { system_id: "alpha", poi_id: "p", in_transit: false } });
+			}
+			return Promise.resolve(account.state);
+		};
+		const result = await new LibNavigateToSystem("alpha", 0, {
+			maxWaitMs: 1000,
+			pollIntervalMs: 5,
+		}).execute(makeLibGoalContext(account));
+		expect(result.alreadySatisfied).toBe(true);
+		expect(refreshCalls).toBeGreaterThanOrEqual(2);
+	});
+
+	test("fails when still in_transit after waiting it out, even with a defined system_id", async () => {
+		const account = new FakeLibGoalAccount({
+			location: { system_id: "sol", poi_id: "p", in_transit: true },
+		});
+		const result = await new LibNavigateToSystem("alpha", 0, {
+			maxWaitMs: 20,
+			pollIntervalMs: 5,
+		}).execute(makeLibGoalContext(account));
+		expect(result.success).toBe(false);
+		expect(result.message).toContain("mid-transit");
+	});
+
 	test("waits out an unknown position after a jump failure, then reroutes and completes", async () => {
 		let jumps = 0;
 		let refreshCalls = 0;

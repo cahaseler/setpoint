@@ -1,9 +1,18 @@
 import { describe, expect, test } from "bun:test";
 import { makeLibGoalContext } from "../../src/dispatcher/lib-goal-context.js";
-import { waitForLocation } from "../../src/dispatcher/wait-for-location.js";
+import { DEFAULT_MAX_WAIT_MS, waitForLocation } from "../../src/dispatcher/wait-for-location.js";
 import { FakeLibGoalAccount } from "./lib-fakes.js";
 
 describe("waitForLocation", () => {
+	test("default max wait is generous enough for a real multi-tick transit, not just the ~60s ETA quote", () => {
+		// The prior 90s default was tuned to the game's own "~60s until arrival"
+		// error message with little margin — real transits observed running
+		// longer than that caused goals to give up while still genuinely
+		// mid-transit. 600s matches the lib's own mutationTimeoutMs assumption
+		// for jump/travel mutations.
+		expect(DEFAULT_MAX_WAIT_MS).toBe(600_000);
+	});
+
 	test("returns immediately if the predicate is already satisfied on the first live check", async () => {
 		const account = new FakeLibGoalAccount({ location: { system_id: "sol" } });
 		const ctx = makeLibGoalContext(account);

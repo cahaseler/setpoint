@@ -41,23 +41,31 @@ export class LibNavigateToSystem implements LibGoal {
 		let currentSystemId = state.location?.system_id;
 
 		if (currentSystemId === this.targetSystemId) {
+			// Known limitation: doesn't check in_transit here, so a ship whose stale
+			// cached system_id still equals the target while it's actually mid-jump
+			// away from it would be misreported as already satisfied.
 			return alreadySatisfied(`Already in system ${this.targetSystemId}`);
 		}
 
-		if (!currentSystemId) {
-			// Unknown position most commonly means mid-transit from a jump that
-			// hasn't settled yet — the game itself says to wait it out and
-			// resubmit; waiting here does that without a fresh submission racing
-			// the still-in-flight one.
-			log.info("Current system unknown — waiting for it to resolve (likely mid-transit)");
-			state = await waitForLocation(ctx, (s) => s.location?.system_id !== undefined, this.waitOpts);
+		if (!currentSystemId || state.location?.in_transit) {
+			// Unknown position (or an explicit in_transit flag, even if system_id
+			// still reads as the stale pre-jump value) most commonly means
+			// mid-transit from a jump that hasn't settled yet — the game itself
+			// says to wait it out and resubmit; waiting here does that without a
+			// fresh submission racing the still-in-flight one.
+			log.info("Current system unknown or mid-transit — waiting for it to resolve");
+			state = await waitForLocation(
+				ctx,
+				(s) => s.location?.system_id !== undefined && !s.location.in_transit,
+				this.waitOpts,
+			);
 			currentSystemId = state.location?.system_id;
 
 			if (currentSystemId === this.targetSystemId) {
 				return alreadySatisfied(`Already in system ${this.targetSystemId}`);
 			}
-			if (!currentSystemId) {
-				return failed("Cannot navigate: current system unknown", 0);
+			if (!currentSystemId || state.location?.in_transit) {
+				return failed("Cannot navigate: still mid-transit or current system unknown", 0);
 			}
 		}
 
@@ -162,17 +170,20 @@ export class LibNavigateToSystem implements LibGoal {
 					let freshState = await ctx.refreshState({ force: true });
 					let actualSystemId = freshState.location?.system_id;
 
-					if (!actualSystemId) {
+					if (!actualSystemId || freshState.location?.in_transit) {
 						// The jump error is very often the server itself saying "you're
 						// mid-transit, wait ~60s and resubmit" — wait that out here
 						// instead of failing the goal, which would just make the caller
-						// resubmit and race this same still-settling transit.
+						// resubmit and race this same still-settling transit. Checking
+						// in_transit explicitly (not just an unknown system_id) covers a
+						// ship that still reports its stale pre-jump system while the
+						// transit is in progress.
 						log.info(
-							"Position unknown after jump failure — waiting for it to resolve (likely mid-transit)",
+							"Position unknown or mid-transit after jump failure — waiting for it to resolve",
 						);
 						freshState = await waitForLocation(
 							ctx,
-							(s) => s.location?.system_id !== undefined,
+							(s) => s.location?.system_id !== undefined && !s.location.in_transit,
 							this.waitOpts,
 						);
 						actualSystemId = freshState.location?.system_id;
@@ -185,7 +196,7 @@ export class LibNavigateToSystem implements LibGoal {
 						);
 					}
 
-					if (!actualSystemId) {
+					if (!actualSystemId || freshState.location?.in_transit) {
 						return failed(
 							`Jump failed and cannot determine current location: ${err instanceof Error ? err.message : String(err)}`,
 							ticksUsed,

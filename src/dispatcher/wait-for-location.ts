@@ -4,8 +4,14 @@ import type { LibGoalContext } from "./lib-goal-context.js";
 
 const log = createLogger("wait-for-location");
 
-/** How long to poll for a resolved location before giving up. The game's own mid-jump error message quotes ~60s until arrival. */
-const DEFAULT_MAX_WAIT_MS = 90_000;
+/**
+ * How long to poll for a resolved location before giving up. The game's own
+ * mid-jump error message quotes an ETA (e.g. "~60s until arrival"), but that's
+ * only a snapshot at the moment of the failed attempt — matches the lib's own
+ * `mutationTimeoutMs` budget for jump/travel mutations (600s), which is the
+ * system's existing assumption for the longest a single transit can take.
+ */
+export const DEFAULT_MAX_WAIT_MS = 600_000;
 
 /** Delay between polls. */
 const DEFAULT_POLL_INTERVAL_MS = 5_000;

@@ -75,6 +75,66 @@ describe("LibNavigateViaRoute", () => {
 		expect(account.calls.some((c) => c.action === "undock")).toBe(true);
 	});
 
+	test("waits out an unknown current system, then proceeds", async () => {
+		let refreshCalls = 0;
+		const account = new FakeLibGoalAccount(
+			{ location: {} },
+			{
+				find_route: () => route({ fuel_per_jump: 10, fuel_available: 100 }),
+				jump: () => fakeMutationResult("jump"),
+			},
+		);
+		account.refresh = () => {
+			refreshCalls++;
+			if (refreshCalls >= 2) {
+				account.setState({ location: { system_id: "sol" } });
+			}
+			return Promise.resolve(account.state);
+		};
+		const result = await new LibNavigateViaRoute(["sol", "alpha"], 0, {
+			maxWaitMs: 1000,
+			pollIntervalMs: 5,
+		}).execute(makeLibGoalContext(account));
+		expect(result.success).toBe(true);
+		expect(refreshCalls).toBeGreaterThanOrEqual(2);
+	});
+
+	test("waits out in_transit even when system_id still reads as the stale pre-jump value", async () => {
+		let refreshCalls = 0;
+		const account = new FakeLibGoalAccount(
+			{ location: { system_id: "sol", in_transit: true } },
+			{
+				find_route: () => route({ fuel_per_jump: 10, fuel_available: 100 }),
+				jump: () => fakeMutationResult("jump"),
+			},
+		);
+		account.refresh = () => {
+			refreshCalls++;
+			if (refreshCalls >= 2) {
+				account.setState({ location: { system_id: "sol", in_transit: false } });
+			}
+			return Promise.resolve(account.state);
+		};
+		const result = await new LibNavigateViaRoute(["sol", "alpha"], 0, {
+			maxWaitMs: 1000,
+			pollIntervalMs: 5,
+		}).execute(makeLibGoalContext(account));
+		expect(result.success).toBe(true);
+		expect(refreshCalls).toBeGreaterThanOrEqual(2);
+	});
+
+	test("fails when still mid-transit after waiting it out, even with a defined system_id", async () => {
+		const account = new FakeLibGoalAccount({
+			location: { system_id: "sol", in_transit: true },
+		});
+		const result = await new LibNavigateViaRoute(["sol", "alpha"], 0, {
+			maxWaitMs: 20,
+			pollIntervalMs: 5,
+		}).execute(makeLibGoalContext(account));
+		expect(result.success).toBe(false);
+		expect(result.message).toContain("mid-transit");
+	});
+
 	test("fails hard (no reroute) on SpacemoltError, reporting current position", async () => {
 		const account = new FakeLibGoalAccount(
 			{ location: { system_id: "sol" } },
