@@ -115,21 +115,21 @@ export class LibGoToPoi implements LibGoal {
 			}
 		}
 
-		// travel() resolving means the server acked the mutation — it doesn't by
-		// itself prove the ship has arrived (observed in production: mine(), a
-		// separate live call, was rejected as still mid-transit ~10s after
-		// travel() resolved clean). A forced refresh is a fresh get_status query,
-		// not a cached read, so confirm arrival against it before declaring
-		// success instead of trusting the mutation's ack alone.
-		let arrived = await ctx.refreshState({ force: true });
-		if (arrived.location?.poi_id !== this.targetPoiId || arrived.location?.in_transit) {
+		// travel()'s own delta is applied to the cache synchronously before this
+		// await resumes, so ctx.state is already current from this exact
+		// mutation — no extra round trip needed to check it. A ship can still
+		// read in_transit: true immediately after a travel settles (a brief
+		// post-arrival window); a caller that treats this resolution as arrival
+		// and immediately acts (e.g. mine()) can collide with that window and
+		// get rejected as still mid-transit. Wait it out here instead.
+		if (ctx.state.location?.poi_id !== this.targetPoiId || ctx.state.location?.in_transit) {
 			log.info("Travel call resolved but arrival not yet reflected — waiting for it to settle");
-			arrived = await waitForLocation(
+			const settled = await waitForLocation(
 				ctx,
 				(s) => s.location?.poi_id === this.targetPoiId && !s.location?.in_transit,
 				this.waitOpts,
 			);
-			if (arrived.location?.poi_id !== this.targetPoiId || arrived.location?.in_transit) {
+			if (settled.location?.poi_id !== this.targetPoiId || settled.location?.in_transit) {
 				return failed(`Traveled to POI ${this.targetPoiId} but arrival was never confirmed`, 1);
 			}
 		}

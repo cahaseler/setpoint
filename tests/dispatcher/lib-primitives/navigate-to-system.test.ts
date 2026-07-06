@@ -209,6 +209,56 @@ describe("LibNavigateToSystem", () => {
 		expect(account.refreshCalls).toBeGreaterThanOrEqual(1); // forced post-nav sync
 	});
 
+	test("waits between hops when a jump resolves but the ship still reads in_transit", async () => {
+		// Regression: a jump can settle with action_result but still read
+		// in_transit: true for a brief post-arrival window. Firing the next
+		// hop's jump into that window collides with it and gets rejected as
+		// "still mid-jump" — on a long route this burns through the reroute
+		// budget on repeated quick recoveries and eventually fails hard.
+		// ctx.state is current immediately after the jump await (no extra
+		// round trip needed) — must wait out in_transit using that read
+		// before firing the next hop.
+		let jumpCalls = 0;
+		let refreshCalls = 0;
+		const account = new FakeLibGoalAccount(
+			{ location: { system_id: "sol", poi_id: "p" } },
+			{
+				find_route: () =>
+					route({
+						estimated_fuel: 20,
+						fuel_available: 100,
+						total_jumps: 2,
+						route: [
+							{ system_id: "mid", jumps: 1, name: "Mid" },
+							{ system_id: "alpha", jumps: 1, name: "Alpha" },
+						],
+					}),
+				jump: (params) => {
+					jumpCalls++;
+					const id = (params as { id: string }).id;
+					if (id === "mid") {
+						account.setState({ location: { system_id: "mid", poi_id: "p", in_transit: true } });
+					} else {
+						account.setState({ location: { system_id: "alpha", poi_id: "p", in_transit: false } });
+					}
+					return fakeMutationResult("jump");
+				},
+			},
+		);
+		account.refresh = () => {
+			refreshCalls++;
+			account.setState({ location: { system_id: "mid", poi_id: "p", in_transit: false } });
+			return Promise.resolve(account.state);
+		};
+		const result = await new LibNavigateToSystem("alpha", 0, {
+			maxWaitMs: 1000,
+			pollIntervalMs: 5,
+		}).execute(makeLibGoalContext(account));
+		expect(result.success).toBe(true);
+		expect(jumpCalls).toBe(2);
+		expect(refreshCalls).toBeGreaterThanOrEqual(1);
+	});
+
 	test("undocks before jumping when docked", async () => {
 		const account = new FakeLibGoalAccount(
 			{ location: { system_id: "sol", poi_id: "p", docked_at: "station-1" } },

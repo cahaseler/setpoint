@@ -150,6 +150,19 @@ export class LibNavigateToSystem implements LibGoal {
 			try {
 				await ctx.account.commands.spacemolt.jump({ id: hopSystemId });
 				ticksUsed++;
+
+				// jump()'s own delta is applied to the cache synchronously before this
+				// await resumes, so ctx.state is already current from this exact
+				// mutation — no extra round trip needed to check it. A ship can still
+				// read in_transit: true immediately after a jump settles (a brief
+				// post-arrival window); firing the next hop's jump into that window is
+				// exactly what produces a "still mid-jump, resubmit" rejection on the
+				// following hop. Wait it out here instead of discovering it as a
+				// failure on the next iteration.
+				if (ctx.state.location?.in_transit) {
+					log.info(`Hop to ${hopSystemId} resolved but still in_transit — waiting before next hop`);
+					await waitForLocation(ctx, (s) => !s.location?.in_transit, this.waitOpts);
+				}
 			} catch (err) {
 				const isApiError = err instanceof SpacemoltError;
 				const isTransient = err instanceof ConnectionClosedError;

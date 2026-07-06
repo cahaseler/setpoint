@@ -41,7 +41,7 @@ describe("LibGoToPoi", () => {
 		);
 		account.refreshReturns = { location: { system_id: "sol", poi_id: "station-1" } };
 		const result = await new LibGoToPoi("belt-1").execute(makeLibGoalContext(account));
-		expect(account.refreshCalls).toBe(2);
+		expect(account.refreshCalls).toBe(1);
 		expect(result.success).toBe(true);
 	});
 
