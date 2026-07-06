@@ -48,7 +48,7 @@ export class FakeLibGoalAccount implements LibGoalAccount {
 	readonly calls: RecordedCall[] = [];
 	refreshCalls = 0;
 	/** State returned by the next `refresh()` (defaults to current state). */
-	refreshReturns?: GameState;
+	refreshReturns?: GameState | undefined;
 	readonly commands: Commands;
 	private readonly marketBooks = new Map<string, MarketBook>();
 	private _observation: ObservationView | null = null;

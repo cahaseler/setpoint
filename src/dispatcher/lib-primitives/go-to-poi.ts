@@ -115,6 +115,23 @@ export class LibGoToPoi implements LibGoal {
 			}
 		}
 
+		// Don't trust travel() resolving as proof of arrival — a delta can lag the
+		// actual position, the same reason navigate-to-system.ts force-refreshes
+		// after every jump. Verify before declaring success instead of assuming
+		// our own cached read is current.
+		let arrived = await ctx.refreshState({ force: true });
+		if (arrived.location?.poi_id !== this.targetPoiId || arrived.location?.in_transit) {
+			log.info("Travel call resolved but arrival not yet reflected — waiting for it to settle");
+			arrived = await waitForLocation(
+				ctx,
+				(s) => s.location?.poi_id === this.targetPoiId && !s.location?.in_transit,
+				this.waitOpts,
+			);
+			if (arrived.location?.poi_id !== this.targetPoiId || arrived.location?.in_transit) {
+				return failed(`Traveled to POI ${this.targetPoiId} but arrival was never confirmed`, 1);
+			}
+		}
+
 		return succeeded(`Traveled to POI ${this.targetPoiId}`, 1);
 	}
 }
