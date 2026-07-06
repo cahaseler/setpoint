@@ -373,6 +373,26 @@ describe("LibAccountManager", () => {
 		}).not.toThrow();
 	});
 
+	test("a terminal onAccountDisconnected purges the dead account from both indexes", async () => {
+		const { client } = setup([player("Alpha", "pid-a"), player("Beta", "pid-b")]);
+		const mgr = new LibAccountManager(client, { clerkApiKey: "k" });
+		await mgr.connect();
+
+		expect(mgr.getByPlayerId("pid-a")).toBeDefined();
+		expect(mgr.getByUsername("alpha")).toBeDefined();
+
+		client.simulateDisconnected("Alpha", new ConnectionClosedError("session replaced", 4001));
+
+		// The dead account must resolve as "not found", not as a stale, permanently
+		// closed-socket instance — otherwise every later lookup (goal execution,
+		// loop start) would keep sending on a socket that will never reconnect.
+		expect(mgr.getByPlayerId("pid-a")).toBeUndefined();
+		expect(mgr.getByUsername("alpha")).toBeUndefined();
+		// Beta, untouched by the disconnect, must still resolve normally.
+		expect(mgr.getByPlayerId("pid-b")).toBeDefined();
+		expect(mgr.getByUsername("beta")).toBeDefined();
+	});
+
 	test("connectOne() indexes the account and backfills the projector", async () => {
 		const { client } = setup([player("Alpha", "pid-a")]);
 		const events: Array<{ playerId: string; changed: string[] }> = [];

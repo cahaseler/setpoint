@@ -387,7 +387,7 @@ export class LoopManager {
 	startMiningLoop(
 		playerId: string,
 		options: MiningLoopApiOptions,
-		account: LibManagedAccount,
+		resolveAccount: () => LibManagedAccount,
 	): LoopStatus {
 		if (this.isRunning(playerId)) {
 			throw new Error("A loop is already running on this account. Stop it first.");
@@ -397,7 +397,7 @@ export class LoopManager {
 		this.loops.delete(playerId);
 
 		const controller = new AbortController();
-		const ctx = makeLibGoalContext(account);
+		const ctx = makeLibGoalContext(resolveAccount);
 
 		const stepRef: StepRef = { last: undefined, lastAt: undefined };
 		const loopOptions: MiningLoopOptions = {
@@ -457,7 +457,7 @@ export class LoopManager {
 	startEnhancedMiningLoop(
 		playerId: string,
 		options: EnhancedMiningLoopApiOptions,
-		account: LibManagedAccount,
+		resolveAccount: () => LibManagedAccount,
 	): LoopStatus {
 		if (this.isRunning(playerId)) {
 			throw new Error("A loop is already running on this account. Stop it first.");
@@ -466,7 +466,7 @@ export class LoopManager {
 		this.loops.delete(playerId);
 
 		const controller = new AbortController();
-		const ctx = makeLibGoalContext(account);
+		const ctx = makeLibGoalContext(resolveAccount);
 
 		const stepRef: StepRef = { last: undefined, lastAt: undefined };
 		const loopOptions: EnhancedMiningLoopOptions = {
@@ -530,7 +530,7 @@ export class LoopManager {
 	startSalvageLoop(
 		playerId: string,
 		options: SalvageLoopApiOptions,
-		account: LibManagedAccount,
+		resolveAccount: () => LibManagedAccount,
 	): LoopStatus {
 		if (this.isRunning(playerId)) {
 			throw new Error("A loop is already running on this account. Stop it first.");
@@ -539,7 +539,7 @@ export class LoopManager {
 		this.loops.delete(playerId);
 
 		const controller = new AbortController();
-		const ctx = makeLibGoalContext(account);
+		const ctx = makeLibGoalContext(resolveAccount);
 
 		const stepRef: StepRef = { last: undefined, lastAt: undefined };
 		const loopOptions: SalvageLoopOptions = {
@@ -594,7 +594,7 @@ export class LoopManager {
 	startTradingLoop(
 		playerId: string,
 		options: TradingLoopApiOptions,
-		account: LibManagedAccount,
+		resolveAccount: () => LibManagedAccount,
 	): LoopStatus {
 		if (this.isRunning(playerId)) {
 			throw new Error("A loop is already running on this account. Stop it first.");
@@ -603,7 +603,7 @@ export class LoopManager {
 		this.loops.delete(playerId);
 
 		const controller = new AbortController();
-		const ctx = makeLibGoalContext(account);
+		const ctx = makeLibGoalContext(resolveAccount);
 
 		const stepRef: StepRef = { last: undefined, lastAt: undefined };
 		const loopOptions: TradingLoopOptions = {
@@ -650,7 +650,7 @@ export class LoopManager {
 	startHaulingLoop(
 		playerId: string,
 		options: HaulingLoopApiOptions,
-		account: LibManagedAccount,
+		resolveAccount: () => LibManagedAccount,
 	): LoopStatus {
 		if (this.isRunning(playerId)) {
 			throw new Error("A loop is already running on this account. Stop it first.");
@@ -659,7 +659,7 @@ export class LoopManager {
 		this.loops.delete(playerId);
 
 		const controller = new AbortController();
-		const ctx = makeLibGoalContext(account);
+		const ctx = makeLibGoalContext(resolveAccount);
 
 		const stepRef: StepRef = { last: undefined, lastAt: undefined };
 		const loopOptions: HaulingLoopOptions = {
@@ -705,7 +705,7 @@ export class LoopManager {
 	startStorageTransferLoop(
 		playerId: string,
 		options: StorageTransferLoopApiOptions,
-		account: LibManagedAccount,
+		resolveAccount: () => LibManagedAccount,
 	): LoopStatus {
 		if (this.isRunning(playerId)) {
 			throw new Error("A loop is already running on this account. Stop it first.");
@@ -714,7 +714,7 @@ export class LoopManager {
 		this.loops.delete(playerId);
 
 		const controller = new AbortController();
-		const ctx = makeLibGoalContext(account);
+		const ctx = makeLibGoalContext(resolveAccount);
 
 		const stepRef: StepRef = { last: undefined, lastAt: undefined };
 		const loopOptions: StorageTransferLoopOptions = {
@@ -761,7 +761,7 @@ export class LoopManager {
 	startExplorationLoop(
 		playerId: string,
 		options: ExplorationLoopApiOptions,
-		account: LibManagedAccount,
+		resolveAccount: () => LibManagedAccount,
 	): LoopStatus {
 		if (this.isRunning(playerId)) {
 			throw new Error("A loop is already running on this account. Stop it first.");
@@ -770,7 +770,7 @@ export class LoopManager {
 		this.loops.delete(playerId);
 
 		const controller = new AbortController();
-		const ctx = makeLibGoalContext(account);
+		const ctx = makeLibGoalContext(resolveAccount);
 
 		const stepRef: StepRef = { last: undefined, lastAt: undefined };
 		const loopOptions: ExplorationLoopOptions = {
@@ -824,7 +824,7 @@ export class LoopManager {
 	startGuardLoop(
 		playerId: string,
 		options: GuardLoopApiOptions,
-		account: LibManagedAccount,
+		resolveAccount: () => LibManagedAccount,
 	): LoopStatus {
 		if (this.isRunning(playerId)) {
 			throw new Error("A loop is already running on this account. Stop it first.");
@@ -833,7 +833,7 @@ export class LoopManager {
 		this.loops.delete(playerId);
 
 		const controller = new AbortController();
-		const ctx = makeLibGoalContext(account);
+		const ctx = makeLibGoalContext(resolveAccount);
 
 		const stepRef: StepRef = { last: undefined, lastAt: undefined };
 		const loopOptions: GuardLoopOptions = {
@@ -886,7 +886,7 @@ export class LoopManager {
 	startRoamingSalvageLoop(
 		playerId: string,
 		options: RoamingSalvageLoopApiOptions,
-		account: LibManagedAccount,
+		resolveAccount: () => LibManagedAccount,
 	): LoopStatus {
 		if (this.isRunning(playerId)) {
 			throw new Error("A loop is already running on this account. Stop it first.");
@@ -895,7 +895,7 @@ export class LoopManager {
 		this.loops.delete(playerId);
 
 		const controller = new AbortController();
-		const ctx = makeLibGoalContext(account);
+		const ctx = makeLibGoalContext(resolveAccount);
 
 		const stepRef: StepRef = { last: undefined, lastAt: undefined };
 		const loopOptions: RoamingSalvageLoopOptions = {
@@ -949,7 +949,7 @@ export class LoopManager {
 	startTowSalvageLoop(
 		playerId: string,
 		options: TowSalvageLoopApiOptions,
-		account: LibManagedAccount,
+		resolveAccount: () => LibManagedAccount,
 	): LoopStatus {
 		if (this.isRunning(playerId)) {
 			throw new Error("A loop is already running on this account. Stop it first.");
@@ -957,7 +957,7 @@ export class LoopManager {
 		this.loops.delete(playerId);
 
 		const controller = new AbortController();
-		const ctx = makeLibGoalContext(account);
+		const ctx = makeLibGoalContext(resolveAccount);
 		const stepRef: StepRef = { last: undefined, lastAt: undefined };
 
 		const loopOptions: TowSalvageLoopOptions = {
