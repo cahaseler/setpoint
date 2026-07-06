@@ -3,6 +3,8 @@ import { createLogger } from "../../util/logger.js";
 import type { GoalResult } from "../goals.js";
 import { alreadySatisfied, failed, succeeded } from "../goals.js";
 import type { LibGoal, LibGoalContext } from "../lib-goal-context.js";
+import type { LocationWaitOptions } from "../wait-for-location.js";
+import { waitForLocation } from "../wait-for-location.js";
 
 const log = createLogger("goal:mine-until-full");
 
@@ -18,6 +20,8 @@ export interface MineUntilFullOptions {
 	 * infinite loops. Defaults to 200.
 	 */
 	maxAttempts?: number;
+	/** Tuning for how long to wait out a mid-travel rejection before failing. */
+	waitOpts?: LocationWaitOptions;
 }
 
 /**
@@ -71,20 +75,46 @@ export class LibMineUntilFull implements LibGoal {
 				await ctx.account.commands.spacemolt.mine();
 				ticksUsed++;
 			} catch (err) {
-				if (err instanceof SpacemoltError) {
-					// Game says cargo is full — trust the server regardless of local state.
-					// This handles the case where local cargo count (e.g. 149/150) doesn't
-					// hit our threshold but the game rejects the mine as full.
-					if (err.code === "cargo_full") {
-						log.info(`Mine rejected (cargo full): ${err.message}`);
-						return succeeded(`Cargo full after ${ticksUsed} attempt(s)`, ticksUsed);
-					}
-					// Other game errors (not at a mine, etc.) — return as failure so the
-					// loop engine can retry after re-navigating.
+				if (!(err instanceof SpacemoltError)) throw err;
+
+				// Game says cargo is full — trust the server regardless of local state.
+				// This handles the case where local cargo count (e.g. 149/150) doesn't
+				// hit our threshold but the game rejects the mine as full.
+				if (err.code === "cargo_full") {
+					log.info(`Mine rejected (cargo full): ${err.message}`);
+					return succeeded(`Cargo full after ${ticksUsed} attempt(s)`, ticksUsed);
+				}
+
+				// A prior travel() can resolve successfully before the ship has
+				// actually arrived, so mine() can still be rejected as mid-transit
+				// even after the travel step reported success. Wait it out and
+				// retry once instead of failing the whole run on what the server
+				// itself says is a transient, resolving condition.
+				const fresh = await ctx.refreshState({ force: true });
+				if (!fresh.location?.in_transit) {
 					log.warn(`Mine rejected: ${err.message}`);
 					return failed(`Mine rejected: ${err.message}`, ticksUsed);
 				}
-				throw err;
+
+				log.info("Mine rejected mid-transit — waiting for arrival before retrying");
+				const settled = await waitForLocation(
+					ctx,
+					(s) => !s.location?.in_transit,
+					this.options.waitOpts,
+				);
+				if (settled.location?.in_transit) {
+					log.warn(`Mine rejected: ${err.message}`);
+					return failed(`Mine rejected: ${err.message}`, ticksUsed);
+				}
+
+				try {
+					await ctx.account.commands.spacemolt.mine();
+					ticksUsed++;
+				} catch (retryErr) {
+					const msg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+					log.warn(`Mine rejected on retry: ${msg}`);
+					return failed(`Mine rejected: ${msg}`, ticksUsed);
+				}
 			}
 
 			// The mine delta has been applied to the push-fed cache, so the fresh

@@ -5,6 +5,8 @@ import type { GoalResult } from "../goals.js";
 import { failed, succeeded } from "../goals.js";
 import type { LibGoal, LibGoalContext } from "../lib-goal-context.js";
 import { LibJettisonCargo } from "../lib-primitives/jettison-cargo.js";
+import type { LocationWaitOptions } from "../wait-for-location.js";
+import { waitForLocation } from "../wait-for-location.js";
 
 const log = createLogger("goal:mine-with-jettison");
 
@@ -27,6 +29,8 @@ export interface MineWithJettisonOptions {
 	 * stop even if junk remains. Defaults to 3.
 	 */
 	maxJettisonRounds?: number;
+	/** Tuning for how long to wait out a mid-travel rejection before failing. */
+	waitOpts?: LocationWaitOptions;
 }
 
 /**
@@ -168,6 +172,7 @@ export class LibMineWithJettison implements LibGoal {
 
 			const cargoBeforeAttempt = currentState.ship?.cargo_used ?? 0;
 
+			let retriedMidTransit = false;
 			try {
 				await ctx.account.commands.spacemolt.mine();
 				ticksUsed++;
@@ -180,7 +185,38 @@ export class LibMineWithJettison implements LibGoal {
 					return succeeded(`Cargo full after ${ticksUsed} attempt(s)`, ticksUsed);
 				}
 
-				if (err.code === "mutation_timeout") {
+				if (err.code !== "mutation_timeout") {
+					// A prior travel() can resolve successfully before the ship has
+					// actually arrived, so mine() can still be rejected as mid-transit
+					// even after the travel step reported success. Wait it out and
+					// retry once instead of failing the whole run on what the server
+					// itself says is a transient, resolving condition.
+					const fresh = await ctx.refreshState({ force: true });
+					if (fresh.location?.in_transit) {
+						log.info("Mine rejected mid-transit — waiting for arrival before retrying");
+						const settled = await waitForLocation(
+							ctx,
+							(s) => !s.location?.in_transit,
+							this.options.waitOpts,
+						);
+						if (!settled.location?.in_transit) {
+							try {
+								await ctx.account.commands.spacemolt.mine();
+								ticksUsed++;
+								currentState = await ctx.refreshState();
+								retriedMidTransit = true;
+							} catch (retryErr) {
+								const msg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+								log.warn(`Mine rejected on retry: ${msg}`);
+								return failed(`Mine rejected: ${msg}`, ticksUsed);
+							}
+						}
+					}
+				}
+
+				if (retriedMidTransit) {
+					// Handled above — fall through to the shared full-cargo check below.
+				} else if (err.code === "mutation_timeout") {
 					// The ack means this mine WAS queued — only its outcome frame
 					// arrived too late (or not at all) to match the mutate() call
 					// still awaiting it. The push-fed cache updates from that
