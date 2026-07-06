@@ -54,6 +54,16 @@ export interface HandlerContext {
 			promise: Promise<unknown>;
 		}
 	>;
+	/**
+	 * Accounts synchronously claimed by a goal submission that hasn't yet
+	 * reached its durable "running" record (`executingGoals`/`jobManager`).
+	 * The claim must be added in the same tick as the "is anything already
+	 * running" checks — otherwise two concurrent submissions for the same
+	 * account can both pass those checks before either one registers,
+	 * because `req.json()` and goal construction both await before this
+	 * account previously got recorded as busy.
+	 */
+	claimedAccounts: Set<string>;
 }
 
 /** Resolve an account by player_id or username (case-insensitive). */
@@ -390,32 +400,37 @@ export async function handleExecuteGoal(
 		return errorResponse("An async goal job is already running on this account.", 409);
 	}
 
-	// Wait for any in-progress sync goal to finish before proceeding.
-	// This serializes concurrent callers per-account instead of rejecting with 409.
+	// Block if a sync goal is currently executing
 	if (ctx.executingGoals.has(actualId)) {
-		const MAX_WAIT_MS = 10 * 60 * 1000; // 10 minutes — goals can be long
-		const POLL_MS = 500;
-		const deadline = Date.now() + MAX_WAIT_MS;
-		const waiting = ctx.executingGoals.get(actualId);
-		log.info(
-			`Goal queued for ${playerId}: waiting for ${waiting?.goalType ?? "unknown"} to finish`,
-		);
-		while (ctx.executingGoals.has(actualId) && Date.now() < deadline) {
-			await new Promise<void>((resolve) => setTimeout(resolve, POLL_MS));
-		}
-		if (ctx.executingGoals.has(actualId)) {
-			return errorResponse("Timed out waiting for previous goal to complete on this account.", 409);
-		}
+		return errorResponse("A goal is already executing on this account. Try again shortly.", 409);
 	}
+
+	// Block if another submission for this account is mid-flight (claimed
+	// below, before this one has a durable executingGoals/jobManager record).
+	if (ctx.claimedAccounts.has(actualId)) {
+		return errorResponse(
+			"Another request for this account is already being processed. Try again shortly.",
+			409,
+		);
+	}
+
+	// Claim the account now, synchronously and before any `await` below — the
+	// checks above and this claim must run in the same uninterrupted tick, or
+	// two concurrent requests for the same account can both pass every check
+	// before either one is recorded as busy. Released on every early return
+	// below, and once executingGoals.set() makes it redundant.
+	ctx.claimedAccounts.add(actualId);
 
 	let body: unknown;
 	try {
 		body = await req.json();
 	} catch {
+		ctx.claimedAccounts.delete(actualId);
 		return errorResponse("Invalid JSON body", 400);
 	}
 
 	if (typeof body !== "object" || body === null || Array.isArray(body)) {
+		ctx.claimedAccounts.delete(actualId);
 		return errorResponse("Body must be a JSON object", 400);
 	}
 
@@ -423,11 +438,13 @@ export async function handleExecuteGoal(
 	const goalType = typed["type"];
 
 	if (typeof goalType !== "string") {
+		ctx.claimedAccounts.delete(actualId);
 		return errorResponse(`type is required (string). Supported: ${getGoalTypes().join(", ")}`, 400);
 	}
 
 	const deprecated = deprecatedTypeMessage(goalType);
 	if (deprecated) {
+		ctx.claimedAccounts.delete(actualId);
 		return errorResponse(deprecated, 410);
 	}
 
@@ -441,6 +458,7 @@ export async function handleExecuteGoal(
 	try {
 		goal = createGoal(goalType, opts);
 	} catch (err) {
+		ctx.claimedAccounts.delete(actualId);
 		return errorResponse(formatGoalError(err), 400);
 	}
 
@@ -471,6 +489,8 @@ export async function handleExecuteGoal(
 		progress,
 		promise: goalPromise,
 	});
+	// executingGoals is now the durable "busy" record for this account.
+	ctx.claimedAccounts.delete(actualId);
 
 	// Stream the response rather than blocking on goalPromise.
 	//
@@ -601,14 +621,32 @@ export async function handleExecuteGoalAsync(
 		return errorResponse("A goal is already executing on this account. Try again shortly.", 409);
 	}
 
+	// Block if another submission for this account is mid-flight (claimed
+	// below, before this one has a durable jobManager record).
+	if (ctx.claimedAccounts.has(actualId)) {
+		return errorResponse(
+			"Another request for this account is already being processed. Try again shortly.",
+			409,
+		);
+	}
+
+	// Claim the account now, synchronously and before any `await` below — the
+	// checks above and this claim must run in the same uninterrupted tick, or
+	// two concurrent requests for the same account can both pass every check
+	// before either one is recorded as busy. Released on every early return
+	// below, and once jobManager.create() makes it redundant.
+	ctx.claimedAccounts.add(actualId);
+
 	let body: unknown;
 	try {
 		body = await req.json();
 	} catch {
+		ctx.claimedAccounts.delete(actualId);
 		return errorResponse("Invalid JSON body", 400);
 	}
 
 	if (typeof body !== "object" || body === null || Array.isArray(body)) {
+		ctx.claimedAccounts.delete(actualId);
 		return errorResponse("Body must be a JSON object", 400);
 	}
 
@@ -616,11 +654,13 @@ export async function handleExecuteGoalAsync(
 	const goalType = typed["type"];
 
 	if (typeof goalType !== "string") {
+		ctx.claimedAccounts.delete(actualId);
 		return errorResponse(`type is required (string). Supported: ${getGoalTypes().join(", ")}`, 400);
 	}
 
 	const deprecated = deprecatedTypeMessage(goalType);
 	if (deprecated) {
+		ctx.claimedAccounts.delete(actualId);
 		return errorResponse(deprecated, 410);
 	}
 
@@ -634,10 +674,13 @@ export async function handleExecuteGoalAsync(
 	try {
 		goal = createGoal(goalType, opts);
 	} catch (err) {
+		ctx.claimedAccounts.delete(actualId);
 		return errorResponse(formatGoalError(err), 400);
 	}
 
 	const job = ctx.jobManager.create(actualId, goalType, opts);
+	// jobManager.isRunning() is now the durable "busy" record for this account.
+	ctx.claimedAccounts.delete(actualId);
 
 	try {
 		const jobController = new AbortController();
