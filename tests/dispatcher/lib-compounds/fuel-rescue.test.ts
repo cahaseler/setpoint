@@ -56,6 +56,49 @@ describe("LibFuelRescue", () => {
 		expect(result.message).toContain("Target player Stranded is not at this location");
 	});
 
+	test("retries once after a 'not at POI' rejection and succeeds", async () => {
+		// Regression: refuel()'s own reachability check has been observed to
+		// reject a target confirmed to be at the POI, with a manual retry
+		// moments later succeeding — the server's own check can lag the
+		// target's actual position. Must retry once before failing.
+		let refuelCalls = 0;
+		const account = new FakeLibGoalAccount(
+			{ location: { system_id: "sol", poi_id: "poi-1" } },
+			{
+				refuel: () => {
+					refuelCalls++;
+					if (refuelCalls === 1) {
+						throw new Error("Target player Stranded is not at POI poi-1");
+					}
+					return fakeMutationResult("refuel");
+				},
+			},
+		);
+		const result = await new LibFuelRescue(
+			{ systemId: "sol", poiId: "poi-1", targetUsername: "Stranded" },
+			5,
+		).execute(makeLibGoalContext(account));
+		expect(result.success).toBe(true);
+		expect(refuelCalls).toBe(2);
+	});
+
+	test("fails if the retry also rejects with 'not at POI'", async () => {
+		const account = new FakeLibGoalAccount(
+			{ location: { system_id: "sol", poi_id: "poi-1" } },
+			{
+				refuel: () => {
+					throw new Error("Target player Stranded is not at POI poi-1");
+				},
+			},
+		);
+		const result = await new LibFuelRescue(
+			{ systemId: "sol", poiId: "poi-1", targetUsername: "Stranded" },
+			5,
+		).execute(makeLibGoalContext(account));
+		expect(result.success).toBe(false);
+		expect(result.message).toContain("is not at POI");
+	});
+
 	test("fails when navigation cannot find a route", async () => {
 		const account = new FakeLibGoalAccount(
 			{ location: { system_id: "sol", poi_id: "poi-0" } },
