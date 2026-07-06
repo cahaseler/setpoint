@@ -66,6 +66,13 @@ export interface LoopStatus {
 	type: string;
 	startedAt: string;
 	running: boolean;
+	/**
+	 * True once a stop has been requested but the loop's current step hasn't
+	 * finished yet — `running` stays true until then. A caller that needs to
+	 * know it's safe to start a replacement loop should wait for `running` to
+	 * go false, not just for a `stop()` call to resolve.
+	 */
+	stopping?: boolean;
 	/** Message from the most recently completed iteration, updated while running. */
 	lastStep?: string;
 	/** When `lastStep` was recorded — a `running: true` loop with a stale `lastStepAt` is stalled, not dead. */
@@ -106,6 +113,8 @@ interface ActiveLoop {
 	liveOptions: Record<string, unknown>;
 	/** Progress tracker readable by abort handler. Set by trackLoop(). */
 	progress?: ProgressRef;
+	/** Set once abort has been requested — the promise may not have settled yet. */
+	stopping?: boolean;
 }
 
 /**
@@ -309,6 +318,7 @@ export class LoopManager {
 			type: loop.type,
 			startedAt: loop.startedAt,
 			running: loop.result === undefined,
+			...(loop.stopping ? { stopping: true } : {}),
 			...(loop.stepRef.last !== undefined ? { lastStep: loop.stepRef.last } : {}),
 			...(loop.stepRef.lastAt !== undefined ? { lastStepAt: loop.stepRef.lastAt } : {}),
 			...(loop.result !== undefined ? { result: loop.result } : {}),
@@ -1054,6 +1064,7 @@ export class LoopManager {
 		}
 
 		log.info(`[${playerId}] Stopping loop (non-blocking)...`);
+		loop.stopping = true;
 		loop.controller.abort();
 		loop.promise.finally(() => {
 			this.loops.delete(playerId);
