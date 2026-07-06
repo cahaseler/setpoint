@@ -17,6 +17,9 @@ export interface FuelRescueOptions {
 	targetUsername: string;
 }
 
+/** How long to wait before retrying a "target not at POI" refuel() rejection. */
+const NOT_AT_POI_RETRY_DELAY_MS = 5_000;
+
 /**
  * Travel to a POI, then refuel the target player directly.
  *
@@ -29,6 +32,13 @@ export interface FuelRescueOptions {
  * refuel() itself is the authoritative check for reachability; its own
  * failure (if the target truly isn't there) is reported as-is.
  *
+ * refuel()'s own "target not at POI" rejection has been observed as a
+ * false negative too — a manual retry moments later succeeds against the
+ * same stationary target, suggesting the server's own reachability check
+ * can lag the target's actual position. One retry after a short delay
+ * absorbs that instead of failing a rescue against a target confirmed to
+ * be there.
+ *
  * Steps:
  * 1. NavigateToSystem — jump to the target system (no-op if already there)
  * 2. GoToPoi — travel to the rescue POI (no-op if already there)
@@ -37,9 +47,11 @@ export interface FuelRescueOptions {
 export class LibFuelRescue implements LibGoal {
 	readonly name = "fuel-rescue";
 	private readonly options: FuelRescueOptions;
+	private readonly retryDelayMs: number;
 
-	constructor(options: FuelRescueOptions) {
+	constructor(options: FuelRescueOptions, retryDelayMs = NOT_AT_POI_RETRY_DELAY_MS) {
 		this.options = options;
+		this.retryDelayMs = retryDelayMs;
 	}
 
 	async execute(ctx: LibGoalContext): Promise<GoalResult> {
@@ -58,7 +70,18 @@ export class LibFuelRescue implements LibGoal {
 			await ctx.account.commands.spacemolt.refuel({ target: this.options.targetUsername });
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
-			return failed(`Refuel of ${this.options.targetUsername} failed: ${msg}`, ticksUsed);
+			if (!msg.includes("is not at POI")) {
+				return failed(`Refuel of ${this.options.targetUsername} failed: ${msg}`, ticksUsed);
+			}
+
+			log.warn(`Refuel rejected (${msg}), retrying once after ${this.retryDelayMs}ms`);
+			await new Promise<void>((resolve) => setTimeout(resolve, this.retryDelayMs));
+			try {
+				await ctx.account.commands.spacemolt.refuel({ target: this.options.targetUsername });
+			} catch (retryErr) {
+				const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+				return failed(`Refuel of ${this.options.targetUsername} failed: ${retryMsg}`, ticksUsed);
+			}
 		}
 		ticksUsed++;
 
