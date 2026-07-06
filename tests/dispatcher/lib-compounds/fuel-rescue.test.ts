@@ -4,16 +4,10 @@ import { makeLibGoalContext } from "../../../src/dispatcher/lib-goal-context.js"
 import { FakeLibGoalAccount, fakeMutationResult } from "../lib-fakes.js";
 
 describe("LibFuelRescue", () => {
-	test("refuels the target when present at the POI", async () => {
+	test("refuels the target directly, without a get_nearby precondition", async () => {
 		const account = new FakeLibGoalAccount(
 			{ location: { system_id: "sol", poi_id: "poi-1" } },
-			{
-				get_nearby: () => ({
-					result: "",
-					structuredContent: { nearby: [{ username: "Stranded" }] },
-				}),
-				refuel: () => fakeMutationResult("refuel"),
-			},
+			{ refuel: () => fakeMutationResult("refuel") },
 		);
 		const result = await new LibFuelRescue({
 			systemId: "sol",
@@ -23,13 +17,34 @@ describe("LibFuelRescue", () => {
 		expect(result.success).toBe(true);
 		expect(result.message).toContain("Refueled Stranded");
 		expect(account.calls.some((c) => c.action === "refuel")).toBe(true);
+		expect(account.calls.some((c) => c.action === "get_nearby")).toBe(false);
 	});
 
-	test("fails when the target player is not at the POI", async () => {
+	test("refuels a target that get_nearby would have collapsed as offline", async () => {
+		// Regression case: get_nearby folds offline players into offline_collapsed
+		// once a POI is crowded, dropping a genuinely-present (but offline,
+		// stranded-and-out-of-fuel) target out of the named nearby list. refuel()
+		// itself doesn't care about get_nearby's visibility rules, so it must not
+		// be gated on that check.
+		const account = new FakeLibGoalAccount(
+			{ location: { system_id: "sol", poi_id: "poi-1" } },
+			{ refuel: () => fakeMutationResult("refuel") },
+		);
+		const result = await new LibFuelRescue({
+			systemId: "sol",
+			poiId: "poi-1",
+			targetUsername: "Stranded",
+		}).execute(makeLibGoalContext(account));
+		expect(result.success).toBe(true);
+	});
+
+	test("fails with the game's own error when the target can't actually be refueled", async () => {
 		const account = new FakeLibGoalAccount(
 			{ location: { system_id: "sol", poi_id: "poi-1" } },
 			{
-				get_nearby: () => ({ result: "", structuredContent: { nearby: [] } }),
+				refuel: () => {
+					throw new Error("Target player Stranded is not at this location");
+				},
 			},
 		);
 		const result = await new LibFuelRescue({
@@ -38,8 +53,7 @@ describe("LibFuelRescue", () => {
 			targetUsername: "Stranded",
 		}).execute(makeLibGoalContext(account));
 		expect(result.success).toBe(false);
-		expect(result.message).toContain("is not at POI");
-		expect(account.calls.some((c) => c.action === "refuel")).toBe(false);
+		expect(result.message).toContain("Target player Stranded is not at this location");
 	});
 
 	test("fails when navigation cannot find a route", async () => {
