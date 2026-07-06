@@ -133,4 +133,55 @@ describe("LibGoToPoi", () => {
 		const result = await new LibGoToPoi("belt-1").execute(makeLibGoalContext(account));
 		expect(result.alreadySatisfied).toBe(true);
 	});
+
+	test("does not misreport already-satisfied when cached poi_id matches target but still in_transit", async () => {
+		// Regression: a ship departing the target POI can have a stale cached
+		// poi_id that still equals the target while in_transit is true — the
+		// fast path must not short-circuit on poi_id alone.
+		const account = new FakeLibGoalAccount({
+			location: { system_id: "sol", poi_id: "belt-1", in_transit: true },
+		});
+		const result = await new LibGoToPoi("belt-1", { maxWaitMs: 20, pollIntervalMs: 5 }).execute(
+			makeLibGoalContext(account),
+		);
+		expect(result.alreadySatisfied).toBe(false);
+		expect(result.success).toBe(false);
+		expect(result.message).toContain("mid-transit");
+	});
+
+	test("waits out an in-flight transit before retrying travel, instead of colliding with it", async () => {
+		// Regression: a transient travel() failure used to trigger an immediate
+		// second travel() call, which collides with the still-executing transit
+		// and fails again — repeating every loop retry indefinitely. It must wait
+		// for in_transit to clear before retrying.
+		let travelCalls = 0;
+		let refreshCalls = 0;
+		const account = new FakeLibGoalAccount(
+			{ location: { system_id: "sol", poi_id: "station-1" } },
+			{
+				travel: () => {
+					travelCalls++;
+					if (travelCalls === 1) throw new SpacemoltError("in_transit", "busy");
+					return fakeMutationResult("travel");
+				},
+			},
+		);
+		account.refresh = () => {
+			refreshCalls++;
+			if (refreshCalls === 1) {
+				account.setState({ location: { system_id: "sol", poi_id: "station-1", in_transit: true } });
+			} else {
+				account.setState({
+					location: { system_id: "sol", poi_id: "station-1", in_transit: false },
+				});
+			}
+			return Promise.resolve(account.state);
+		};
+		const result = await new LibGoToPoi("belt-1", { maxWaitMs: 1000, pollIntervalMs: 5 }).execute(
+			makeLibGoalContext(account),
+		);
+		expect(result.success).toBe(true);
+		expect(travelCalls).toBe(2);
+		expect(refreshCalls).toBeGreaterThanOrEqual(2);
+	});
 });
