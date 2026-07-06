@@ -27,10 +27,7 @@ export class LibGoToPoi implements LibGoal {
 	async execute(ctx: LibGoalContext): Promise<GoalResult> {
 		const currentPoiId = ctx.state.location?.poi_id;
 
-		if (currentPoiId === this.targetPoiId) {
-			// Known limitation: doesn't check in_transit here, so a ship whose stale
-			// cached poi_id still equals the target while it's actually mid-transit
-			// away from it would be misreported as already satisfied.
+		if (currentPoiId === this.targetPoiId && !ctx.state.location?.in_transit) {
 			return alreadySatisfied(`Already at POI ${this.targetPoiId}`);
 		}
 
@@ -42,7 +39,7 @@ export class LibGoToPoi implements LibGoal {
 		if (!systemId || inTransit) {
 			log.info("Location unknown or mid-transit, refreshing state before travel");
 			const fresh = await ctx.refreshState({ force: true });
-			if (fresh.location?.poi_id === this.targetPoiId) {
+			if (fresh.location?.poi_id === this.targetPoiId && !fresh.location?.in_transit) {
 				return alreadySatisfied(`Already at POI ${this.targetPoiId}`);
 			}
 			systemId = fresh.location?.system_id;
@@ -61,7 +58,7 @@ export class LibGoToPoi implements LibGoal {
 				(s) => s.location?.system_id !== undefined && !s.location.in_transit,
 				this.waitOpts,
 			);
-			if (settled.location?.poi_id === this.targetPoiId) {
+			if (settled.location?.poi_id === this.targetPoiId && !settled.location?.in_transit) {
 				return alreadySatisfied(`Already at POI ${this.targetPoiId}`);
 			}
 			systemId = settled.location?.system_id;
@@ -81,11 +78,26 @@ export class LibGoToPoi implements LibGoal {
 			const isRetriable = err instanceof SpacemoltError || err instanceof ConnectionClosedError;
 			if (isRetriable) {
 				log.warn(
-					`Travel to ${this.targetPoiId} failed (${err instanceof Error ? err.message : String(err)}), refreshing state and retrying once`,
+					`Travel to ${this.targetPoiId} failed (${err instanceof Error ? err.message : String(err)}), refreshing state before retrying once`,
 				);
-				const fresh = await ctx.refreshState({ force: true });
-				if (fresh.location?.poi_id === this.targetPoiId) {
+				let fresh = await ctx.refreshState({ force: true });
+				if (fresh.location?.poi_id === this.targetPoiId && !fresh.location?.in_transit) {
 					return alreadySatisfied(`Already at POI ${this.targetPoiId}`);
+				}
+				if (fresh.location?.in_transit) {
+					// The rejection is very often the server itself saying "you're
+					// mid-travel, wait ~Ns and resubmit" — an immediate retry just
+					// collides with that same still-executing transit again. Wait it
+					// out first instead of re-issuing the mutation right away.
+					log.info("Mid-transit after travel failure — waiting for it to resolve");
+					fresh = await waitForLocation(
+						ctx,
+						(s) => s.location?.poi_id !== undefined && !s.location.in_transit,
+						this.waitOpts,
+					);
+					if (fresh.location?.poi_id === this.targetPoiId && !fresh.location?.in_transit) {
+						return alreadySatisfied(`Already at POI ${this.targetPoiId}`);
+					}
 				}
 				// Wrap the retry to return failed() on second failure rather than throwing.
 				// GoToPoi must never throw — callers like checkHarvesterForPoi have no
