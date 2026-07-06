@@ -18,16 +18,21 @@ export interface FuelRescueOptions {
 }
 
 /**
- * Travel to a POI, confirm the target player is present via get_nearby,
- * then refuel them.
+ * Travel to a POI, then refuel the target player directly.
  *
- * Fails immediately if the target player is not found at the POI after arrival.
+ * Does NOT pre-check the target's presence via get_nearby: that query
+ * collapses offline players (exactly what a fuel-starved, stranded target
+ * usually is) into an `offline_collapsed` count once a POI is crowded,
+ * dropping them out of the named `nearby` list even though they're still
+ * genuinely there and refuelable — a get_nearby-based precondition produced
+ * false-negative failures for targets that a direct refuel() reached fine.
+ * refuel() itself is the authoritative check for reachability; its own
+ * failure (if the target truly isn't there) is reported as-is.
  *
  * Steps:
  * 1. NavigateToSystem — jump to the target system (no-op if already there)
  * 2. GoToPoi — travel to the rescue POI (no-op if already there)
- * 3. get_nearby — confirm the target player is present
- * 4. refuel(target) — deliver fuel to the stranded player (1 tick)
+ * 3. refuel(target) — deliver fuel to the stranded player (1 tick)
  */
 export class LibFuelRescue implements LibGoal {
 	readonly name = "fuel-rescue";
@@ -48,23 +53,13 @@ export class LibFuelRescue implements LibGoal {
 		ticksUsed += poiResult.ticksUsed;
 		if (!poiResult.success) return failed(poiResult.message, ticksUsed);
 
-		// Confirm the target player is present at this POI.
-		const nearbyResponse = await ctx.account.commands.spacemolt.get_nearby();
-		const nearby = nearbyResponse.structuredContent?.nearby ?? [];
-
-		const targetPresent = nearby.some(
-			(ship) => ship.username?.toLowerCase() === this.options.targetUsername.toLowerCase(),
-		);
-
-		if (!targetPresent) {
-			return failed(
-				`Target player ${this.options.targetUsername} is not at POI ${this.options.poiId}`,
-				ticksUsed,
-			);
-		}
-
 		log.info(`Refueling ${this.options.targetUsername} at POI ${this.options.poiId}`);
-		await ctx.account.commands.spacemolt.refuel({ target: this.options.targetUsername });
+		try {
+			await ctx.account.commands.spacemolt.refuel({ target: this.options.targetUsername });
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			return failed(`Refuel of ${this.options.targetUsername} failed: ${msg}`, ticksUsed);
+		}
 		ticksUsed++;
 
 		return succeeded(`Refueled ${this.options.targetUsername}`, ticksUsed);
