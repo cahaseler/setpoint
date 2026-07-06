@@ -23,11 +23,33 @@ describe("LibDockAt", () => {
 		expect(account.calls[0]).toEqual({ action: "dock" });
 	});
 
-	test("fails when not at a POI", async () => {
+	test("fails when not at a POI, after waiting it out", async () => {
 		const account = new FakeLibGoalAccount({ location: {} });
-		const result = await new LibDockAt("station-1").execute(makeLibGoalContext(account));
+		const result = await new LibDockAt("station-1", { maxWaitMs: 20, pollIntervalMs: 5 }).execute(
+			makeLibGoalContext(account),
+		);
 		expect(result.success).toBe(false);
 		expect(result.message).toContain("not at a POI");
+	});
+
+	test("waits out an unresolved POI, then docks once it resolves", async () => {
+		let refreshCalls = 0;
+		const account = new FakeLibGoalAccount(
+			{ location: {} },
+			{ dock: () => fakeMutationResult("dock") },
+		);
+		account.refresh = () => {
+			refreshCalls++;
+			if (refreshCalls >= 2) {
+				account.setState({ location: { poi_id: "poi-1" } });
+			}
+			return Promise.resolve(account.state);
+		};
+		const result = await new LibDockAt("station-1", { maxWaitMs: 1000, pollIntervalMs: 5 }).execute(
+			makeLibGoalContext(account),
+		);
+		expect(result.success).toBe(true);
+		expect(refreshCalls).toBeGreaterThanOrEqual(2);
 	});
 
 	test("already_docked error resolves as already satisfied", async () => {
