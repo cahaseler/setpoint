@@ -335,6 +335,24 @@ describe("LoopManager start*Loop methods", () => {
 		expect(manager.abortLoop("p1")).toBe(true);
 	});
 
+	test("getStatus reports stopping=true while an aborted loop's promise hasn't settled yet", () => {
+		// Regression: abortLoop() is non-blocking, so a caller polling getStatus()
+		// immediately after can still see running=true with no way to tell an
+		// abort was already requested apart from a fresh, untouched loop.
+		const options: TradingLoopApiOptions = {
+			buyStation: { systemId: "sol", poiId: "buy-station", baseId: "buy-base" },
+			sellStation: { systemId: "sol", stationPoiId: "sell-station", baseId: "sell-base" },
+			items: [{ itemId: "iron_ore", maxBuyPrice: 10, minSellPrice: 20 }],
+			maxIterations: 0,
+		};
+		manager.startTradingLoop("p1", options, () => account);
+		expect(manager.getStatus("p1")?.stopping).toBeUndefined();
+		manager.abortLoop("p1");
+		const status = manager.getStatus("p1");
+		expect(status?.running).toBe(true);
+		expect(status?.stopping).toBe(true);
+	});
+
 	test("abortLoop returns true and cleans up completed loop", async () => {
 		// Use trading (no getPoi precheck, no API calls before runLoop)
 		const options: TradingLoopApiOptions = {
