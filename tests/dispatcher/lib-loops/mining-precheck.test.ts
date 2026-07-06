@@ -56,6 +56,10 @@ describe("checkHarvesterForPoi", () => {
 						fuel_available: 100,
 					},
 				}),
+				travel: () => {
+					account.setState({ location: { system_id: "sol", poi_id: "sol_station" } });
+					return { command: "travel", tick: 0, delta: {} };
+				},
 			},
 		);
 

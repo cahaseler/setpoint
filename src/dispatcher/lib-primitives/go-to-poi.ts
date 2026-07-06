@@ -115,6 +115,25 @@ export class LibGoToPoi implements LibGoal {
 			}
 		}
 
+		// travel() resolving means the server acked the mutation — it doesn't by
+		// itself prove the ship has arrived (observed in production: mine(), a
+		// separate live call, was rejected as still mid-transit ~10s after
+		// travel() resolved clean). A forced refresh is a fresh get_status query,
+		// not a cached read, so confirm arrival against it before declaring
+		// success instead of trusting the mutation's ack alone.
+		let arrived = await ctx.refreshState({ force: true });
+		if (arrived.location?.poi_id !== this.targetPoiId || arrived.location?.in_transit) {
+			log.info("Travel call resolved but arrival not yet reflected — waiting for it to settle");
+			arrived = await waitForLocation(
+				ctx,
+				(s) => s.location?.poi_id === this.targetPoiId && !s.location?.in_transit,
+				this.waitOpts,
+			);
+			if (arrived.location?.poi_id !== this.targetPoiId || arrived.location?.in_transit) {
+				return failed(`Traveled to POI ${this.targetPoiId} but arrival was never confirmed`, 1);
+			}
+		}
+
 		return succeeded(`Traveled to POI ${this.targetPoiId}`, 1);
 	}
 }

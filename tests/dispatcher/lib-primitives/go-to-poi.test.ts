@@ -13,7 +13,15 @@ describe("LibGoToPoi", () => {
 	});
 
 	test("travels to POI and succeeds", async () => {
-		const account = new FakeLibGoalAccount({ location: { system_id: "sol", poi_id: "station-1" } });
+		const account = new FakeLibGoalAccount(
+			{ location: { system_id: "sol", poi_id: "station-1" } },
+			{
+				travel: () => {
+					account.setState({ location: { system_id: "sol", poi_id: "belt-1" } });
+					return fakeMutationResult("travel");
+				},
+			},
+		);
 		const result = await new LibGoToPoi("belt-1").execute(makeLibGoalContext(account));
 		expect(result.success).toBe(true);
 		expect(result.ticksUsed).toBe(1);
@@ -21,10 +29,19 @@ describe("LibGoToPoi", () => {
 	});
 
 	test("force-refreshes when location unknown, then travels", async () => {
-		const account = new FakeLibGoalAccount({ location: {} });
+		const account = new FakeLibGoalAccount(
+			{ location: {} },
+			{
+				travel: () => {
+					account.refreshReturns = undefined;
+					account.setState({ location: { system_id: "sol", poi_id: "belt-1" } });
+					return fakeMutationResult("travel");
+				},
+			},
+		);
 		account.refreshReturns = { location: { system_id: "sol", poi_id: "station-1" } };
 		const result = await new LibGoToPoi("belt-1").execute(makeLibGoalContext(account));
-		expect(account.refreshCalls).toBe(1);
+		expect(account.refreshCalls).toBe(2);
 		expect(result.success).toBe(true);
 	});
 
@@ -40,10 +57,20 @@ describe("LibGoToPoi", () => {
 
 	test("waits out an unresolved location, then travels once it resolves", async () => {
 		let calls = 0;
-		const account = new FakeLibGoalAccount({ location: {} });
+		let traveled = false;
+		const account = new FakeLibGoalAccount(
+			{ location: {} },
+			{
+				travel: () => {
+					traveled = true;
+					account.setState({ location: { system_id: "sol", poi_id: "belt-1" } });
+					return fakeMutationResult("travel");
+				},
+			},
+		);
 		account.refresh = () => {
 			calls++;
-			if (calls >= 2) {
+			if (!traveled && calls >= 2) {
 				account.setState({ location: { system_id: "sol", poi_id: "station-1" } });
 			}
 			return Promise.resolve(account.state);
@@ -63,6 +90,8 @@ describe("LibGoToPoi", () => {
 				travel: () => {
 					calls++;
 					if (calls === 1) throw new SpacemoltError("in_transit", "busy");
+					account.refreshReturns = undefined;
+					account.setState({ location: { system_id: "sol", poi_id: "belt-1" } });
 					return fakeMutationResult("travel");
 				},
 			},
@@ -156,24 +185,31 @@ describe("LibGoToPoi", () => {
 		// for in_transit to clear before retrying.
 		let travelCalls = 0;
 		let refreshCalls = 0;
+		let traveled = false;
 		const account = new FakeLibGoalAccount(
 			{ location: { system_id: "sol", poi_id: "station-1" } },
 			{
 				travel: () => {
 					travelCalls++;
 					if (travelCalls === 1) throw new SpacemoltError("in_transit", "busy");
+					traveled = true;
+					account.setState({ location: { system_id: "sol", poi_id: "belt-1", in_transit: false } });
 					return fakeMutationResult("travel");
 				},
 			},
 		);
 		account.refresh = () => {
 			refreshCalls++;
-			if (refreshCalls === 1) {
-				account.setState({ location: { system_id: "sol", poi_id: "station-1", in_transit: true } });
-			} else {
-				account.setState({
-					location: { system_id: "sol", poi_id: "station-1", in_transit: false },
-				});
+			if (!traveled) {
+				if (refreshCalls === 1) {
+					account.setState({
+						location: { system_id: "sol", poi_id: "station-1", in_transit: true },
+					});
+				} else {
+					account.setState({
+						location: { system_id: "sol", poi_id: "station-1", in_transit: false },
+					});
+				}
 			}
 			return Promise.resolve(account.state);
 		};
