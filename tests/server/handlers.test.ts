@@ -1934,10 +1934,13 @@ describe("handleExecuteGoal", () => {
 		expect(body["error"] as string).toBe("options.targetSystemId: Required");
 	});
 
-	test("waits for executing goal to finish then proceeds", async () => {
+	test("returns 409 immediately when a sync goal is already executing for this account", async () => {
+		// The dispatcher's original behavior was to reject outright when a goal
+		// or loop was already in progress, not queue behind it. A queuing
+		// window here is exactly what let two overlapping goal executions run
+		// concurrently against the same ship.
 		const account = makeAccount("p1");
 		const ctx = makeContext({ accounts: [account] });
-		// Simulate a goal already executing — clear it after 100ms
 		ctx.executingGoals.set("p1", {
 			goalType: "test-goal",
 			startedAt: new Date().toISOString(),
@@ -1945,7 +1948,6 @@ describe("handleExecuteGoal", () => {
 			progress: { goalType: "test-goal", completedSteps: [], remainingSteps: [] },
 			promise: Promise.resolve(),
 		});
-		setTimeout(() => ctx.executingGoals.delete("p1"), 100);
 
 		const req = new Request("http://localhost/accounts/p1/goal", {
 			method: "POST",
@@ -1953,12 +1955,8 @@ describe("handleExecuteGoal", () => {
 			headers: { "Content-Type": "application/json" },
 		});
 
-		// Should wait for the lock to clear, then execute (will fail because
-		// account.endpoints is empty, but it should get past the lock wait).
-		// Streaming response: handler returns 200 immediately; drain body to wait for goal.
 		const res = await handleExecuteGoal(req, { playerId: "p1" }, ctx);
-		expect(res.status).toBe(200); // not 409 — lock cleared and goal started
-		await res.text(); // drain to let goal finish and avoid dangling async
+		expect(res.status).toBe(409);
 	});
 
 	test("client disconnect signals the goal to abort but keeps the executingGoals lock until it actually settles", async () => {

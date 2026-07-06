@@ -400,6 +400,11 @@ export async function handleExecuteGoal(
 		return errorResponse("An async goal job is already running on this account.", 409);
 	}
 
+	// Block if a sync goal is currently executing
+	if (ctx.executingGoals.has(actualId)) {
+		return errorResponse("A goal is already executing on this account. Try again shortly.", 409);
+	}
+
 	// Block if another submission for this account is mid-flight (claimed
 	// below, before this one has a durable executingGoals/jobManager record).
 	if (ctx.claimedAccounts.has(actualId)) {
@@ -407,24 +412,6 @@ export async function handleExecuteGoal(
 			"Another request for this account is already being processed. Try again shortly.",
 			409,
 		);
-	}
-
-	// Wait for any in-progress sync goal to finish before proceeding.
-	// This serializes concurrent callers per-account instead of rejecting with 409.
-	if (ctx.executingGoals.has(actualId)) {
-		const MAX_WAIT_MS = 10 * 60 * 1000; // 10 minutes — goals can be long
-		const POLL_MS = 500;
-		const deadline = Date.now() + MAX_WAIT_MS;
-		const waiting = ctx.executingGoals.get(actualId);
-		log.info(
-			`Goal queued for ${playerId}: waiting for ${waiting?.goalType ?? "unknown"} to finish`,
-		);
-		while (ctx.executingGoals.has(actualId) && Date.now() < deadline) {
-			await new Promise<void>((resolve) => setTimeout(resolve, POLL_MS));
-		}
-		if (ctx.executingGoals.has(actualId)) {
-			return errorResponse("Timed out waiting for previous goal to complete on this account.", 409);
-		}
 	}
 
 	// Claim the account now, synchronously and before any `await` below — the
