@@ -10,6 +10,8 @@ import type {
 	RegisterParams,
 	RegisterResult,
 	StateSection,
+	SubscribeMarketResponse,
+	SubscribeObservationResponse,
 } from "@spacemolt/lib";
 import type { AccountClientLike, LibManagedAccount } from "../../src/accounts/lib-types.js";
 
@@ -101,12 +103,26 @@ export class FakeAccount implements LibManagedAccount {
 	setMarketBook(baseId: string, book: MarketBook): void {
 		this.marketBooks.set(baseId, book);
 	}
+	/** No response fidelity needed here — tests seed the cache directly via `setMarketBook`. */
+	subscribeMarket(): Promise<SubscribeMarketResponse> {
+		return Promise.resolve({} as SubscribeMarketResponse);
+	}
+	unsubscribeMarket(): Promise<void> {
+		return Promise.resolve();
+	}
 	observation(): ObservationView | null {
 		return this._observation;
 	}
 	/** Simulates having subscribed and received observation-watch data. */
 	setObservation(view: ObservationView | null): void {
 		this._observation = view;
+	}
+	/** No response fidelity needed here — tests seed the cache directly via `setObservation`. */
+	subscribeObservation(): Promise<SubscribeObservationResponse> {
+		return Promise.resolve({} as SubscribeObservationResponse);
+	}
+	unsubscribeObservation(): Promise<void> {
+		return Promise.resolve();
 	}
 	on(type: string, handler: (payload: Record<string, unknown>) => void): () => void {
 		let handlers = this.notificationHandlers.get(type);

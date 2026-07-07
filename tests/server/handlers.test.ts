@@ -2533,6 +2533,132 @@ describe("handleRawAction", () => {
 		expect(body["structuredContent"]).toEqual({ orders: [{ id: "o1" }] });
 		expect("notifications" in body).toBe(false);
 	});
+
+	// A bare account.send() has no state-cache side effects — subscribe_market/
+	// unsubscribe_market and subscribe_observation/unsubscribe_observation must
+	// route through the lib's typed wrapper methods instead, or GET
+	// /accounts/:playerId/market|observation keeps serving whatever it last
+	// held, forever, regardless of what raw (un)subscribe calls are made.
+
+	test("subscribe_market routes through the typed wrapper so the market cache is actually seeded", async () => {
+		const account = new FakeLibManagedAccount({
+			playerId: "p1",
+			username: "TestPlayer",
+			handlers: {
+				subscribe_market: () => ({
+					result: "ok",
+					structuredContent: {
+						base_id: "gold_run_extraction_hub",
+						items: [
+							{
+								item_id: "cargo_container",
+								sell_orders: [{ price_each: 32, quantity: 5 }],
+								buy_orders: [],
+							},
+						],
+					},
+				}),
+			},
+		});
+		const ctx = makeContext({ accounts: [account] });
+		const req = new Request("http://localhost/accounts/p1/raw", {
+			method: "POST",
+			body: JSON.stringify({ toolGroup: "spacemolt_market", action: "subscribe_market" }),
+			headers: { "Content-Type": "application/json" },
+		});
+
+		const res = await handleRawAction(req, { playerId: "p1" }, ctx);
+		expect(res.status).toBe(200);
+		const book = account.market("gold_run_extraction_hub");
+		expect(book?.items.get("cargo_container")?.sell_orders[0]?.price_each).toBe(32);
+	});
+
+	test("unsubscribe_market routes through the typed wrapper so the market cache is actually dropped", async () => {
+		const account = new FakeLibManagedAccount({
+			playerId: "p1",
+			username: "TestPlayer",
+			state: { location: { docked_at: "gold_run_extraction_hub" } },
+		});
+		account.setMarketBook("gold_run_extraction_hub", {
+			base_id: "gold_run_extraction_hub",
+			tick: 0,
+			items: new Map([
+				[
+					"cargo_container",
+					{
+						item_id: "cargo_container",
+						sell_orders: [{ price_each: 32, quantity: 5 }],
+						buy_orders: [],
+					},
+				],
+			]),
+		});
+		const ctx = makeContext({ accounts: [account] });
+		const req = new Request("http://localhost/accounts/p1/raw", {
+			method: "POST",
+			body: JSON.stringify({ toolGroup: "spacemolt_market", action: "unsubscribe_market" }),
+			headers: { "Content-Type": "application/json" },
+		});
+
+		const res = await handleRawAction(req, { playerId: "p1" }, ctx);
+		expect(res.status).toBe(200);
+		expect(account.market("gold_run_extraction_hub")).toBeUndefined();
+	});
+
+	test("subscribe_observation routes through the typed wrapper so the observation cache is actually seeded", async () => {
+		const account = new FakeLibManagedAccount({
+			playerId: "p1",
+			username: "TestPlayer",
+			handlers: {
+				subscribe_observation: () => ({
+					result: "ok",
+					structuredContent: {
+						action: "subscribe_observation",
+						poi_id: "sol_station",
+						system_id: "sol",
+						active_scan: false,
+						unknown_signature: false,
+						nearby: [{ player_id: "p2", username: "Nova", in_combat: false }],
+						system_agents: [],
+						cloaked_contacts: [],
+					},
+				}),
+			},
+		});
+		const ctx = makeContext({ accounts: [account] });
+		const req = new Request("http://localhost/accounts/p1/raw", {
+			method: "POST",
+			body: JSON.stringify({ toolGroup: "spacemolt", action: "subscribe_observation" }),
+			headers: { "Content-Type": "application/json" },
+		});
+
+		const res = await handleRawAction(req, { playerId: "p1" }, ctx);
+		expect(res.status).toBe(200);
+		expect(account.observation()?.nearby.get("p2")?.username).toBe("Nova");
+	});
+
+	test("unsubscribe_observation routes through the typed wrapper so the observation cache is actually cleared", async () => {
+		const account = makeAccount("p1");
+		account.setObservation({
+			poi_id: "sol_station",
+			tick: 0,
+			nearby: new Map(),
+			system: new Map(),
+			cloaked: new Map(),
+			unknownSignature: false,
+			activeScan: false,
+		});
+		const ctx = makeContext({ accounts: [account] });
+		const req = new Request("http://localhost/accounts/p1/raw", {
+			method: "POST",
+			body: JSON.stringify({ toolGroup: "spacemolt", action: "unsubscribe_observation" }),
+			headers: { "Content-Type": "application/json" },
+		});
+
+		const res = await handleRawAction(req, { playerId: "p1" }, ctx);
+		expect(res.status).toBe(200);
+		expect(account.observation()).toBeNull();
+	});
 });
 
 // ── Dashboard ────────────────────────────────────────────────────────

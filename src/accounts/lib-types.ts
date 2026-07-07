@@ -11,6 +11,8 @@ import type {
 	RegisterParams,
 	RegisterResult,
 	StateSection,
+	SubscribeMarketResponse,
+	SubscribeObservationResponse,
 	TypedNotificationType,
 } from "@spacemolt/lib";
 
@@ -55,21 +57,33 @@ export interface LibManagedAccount {
 	onStateChange(listener: (changed: StateSection[]) => void): void;
 	close(): void;
 	/**
-	 * The cached order book for a base, if subscribed. Subscribing itself is not
-	 * part of this boundary — issue `spacemolt_market.subscribe_market` via
-	 * `query`/`commands` (or the HTTP raw passthrough) first; the lib's internal
-	 * `market_update` listener keeps this cache current afterward regardless of
-	 * how the subscribe call was made.
+	 * The cached order book for a base, if subscribed. The initial baseline is
+	 * only captured by `subscribeMarket()` itself (it seeds the cache from the
+	 * response) — issuing `spacemolt_market.subscribe_market` via bare
+	 * `query`/`commands`/`send` does NOT populate this cache, since seeding is a
+	 * side effect of the typed wrapper, not of the generic dispatch path. Once
+	 * subscribed, the lib's internal `market_update` listener keeps this cache
+	 * current with incremental deltas regardless of how the subscription itself
+	 * was established.
 	 */
 	market(baseId: string): MarketBook | undefined;
+	/** Subscribe to the order book of the station you're docked at; seeds the market cache read via `market()`. */
+	subscribeMarket(): Promise<SubscribeMarketResponse>;
+	/** Unsubscribe from the current station's market and drop its cached book. */
+	unsubscribeMarket(): Promise<void>;
 	/**
-	 * The current observation-watch view, if subscribed. Subscribing itself is
-	 * not part of this boundary — issue `spacemolt.subscribe_observation` via
-	 * `query`/`commands` (or the HTTP raw passthrough) first; the lib's internal
-	 * `observation_update` listener keeps this cache current afterward
-	 * regardless of how the subscribe call was made.
+	 * The current observation-watch view, if subscribed. As with `market()`,
+	 * only `subscribeObservation()` itself seeds this cache — a bare
+	 * `spacemolt.subscribe_observation` via `query`/`commands`/`send` does not.
+	 * Once subscribed, the lib's internal `observation_update` listener keeps
+	 * this cache current with incremental deltas regardless of how the
+	 * subscription itself was established.
 	 */
 	observation(): ObservationView | null;
+	/** Subscribe to a presence change-feed at your current POI/system; seeds the observation cache read via `observation()`. */
+	subscribeObservation(activeScan?: boolean): Promise<SubscribeObservationResponse>;
+	/** Unsubscribe from the observation watch and clear its cache. */
+	unsubscribeObservation(): Promise<void>;
 	/**
 	 * Listen for a typed server push by notification type (e.g. `crafting_update`).
 	 * Returns an unsubscribe function. Unlike market/observation, most
