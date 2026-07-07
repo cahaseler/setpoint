@@ -3,12 +3,28 @@ import type {
 	Commands,
 	GameState,
 	MarketBook,
+	MarketItem,
 	MutationResult,
 	ObservationView,
 	QueryResult,
 	RegisterResult,
 	StateSection,
+	SubscribeMarketResponse,
+	SubscribeObservationResponse,
 } from "@spacemolt/lib";
+
+/** Indexes a list by a key extractor, dropping entries with no key — mirrors the lib's internal `indexBy`. */
+function indexBy<T, K extends string | undefined>(
+	list: T[] | undefined,
+	key: (item: T) => K,
+): Map<string, T> {
+	const map = new Map<string, T>();
+	for (const item of list ?? []) {
+		const k = key(item);
+		if (k !== undefined) map.set(k, item);
+	}
+	return map;
+}
 import type { LibManagedAccount } from "../../src/accounts/lib-types.js";
 import type { LibGoalAccount } from "../../src/dispatcher/lib-goal-context.js";
 
@@ -109,6 +125,16 @@ export class FakeLibGoalAccount implements LibGoalAccount {
 		this.marketBooks.set(baseId, book);
 	}
 
+	/** Drops a cached market book (simulates unsubscribing, or the server silently dropping the subscription). */
+	dropMarketBook(baseId: string): void {
+		this.marketBooks.delete(baseId);
+	}
+
+	/** All base_ids with a cached book, for `unsubscribeMarket`'s fallback base inference. */
+	marketBaseIds(): string[] {
+		return [...this.marketBooks.keys()];
+	}
+
 	observation(): ObservationView | null {
 		return this._observation;
 	}
@@ -194,6 +220,62 @@ export class FakeLibManagedAccount extends FakeLibGoalAccount implements LibMana
 	}
 
 	close(): void {}
+
+	/** Mirrors the real lib's `subscribeMarket()` — seeds the market cache from the dispatched response. */
+	async subscribeMarket(): Promise<SubscribeMarketResponse> {
+		const res = (await this.dispatch("subscribe_market")) as
+			| { structuredContent?: SubscribeMarketResponse }
+			| undefined;
+		const snapshot = res?.structuredContent;
+		if (snapshot?.base_id) {
+			const items = new Map<string, MarketItem>();
+			for (const item of snapshot.items ?? []) {
+				if (item.item_id) items.set(item.item_id, item as MarketItem);
+			}
+			this.setMarketBook(snapshot.base_id, {
+				base_id: snapshot.base_id,
+				...(snapshot.base_name !== undefined ? { base_name: snapshot.base_name } : {}),
+				tick: 0,
+				items,
+			});
+		}
+		return snapshot ?? ({} as SubscribeMarketResponse);
+	}
+
+	/** Mirrors the real lib's `unsubscribeMarket()` — drops the cached book for the currently-docked (or last-known) base. */
+	async unsubscribeMarket(): Promise<void> {
+		const baseId = this.state.location?.docked_at ?? this.marketBaseIds()[0];
+		await this.dispatch("unsubscribe_market");
+		if (baseId) this.dropMarketBook(baseId);
+	}
+
+	/** Mirrors the real lib's `subscribeObservation()` — seeds the observation cache from the dispatched response. */
+	async subscribeObservation(activeScan = false): Promise<SubscribeObservationResponse> {
+		const res = (await this.dispatch(
+			"subscribe_observation",
+			activeScan ? { active_scan: true } : undefined,
+		)) as { structuredContent?: SubscribeObservationResponse } | undefined;
+		const snapshot = res?.structuredContent;
+		if (snapshot) {
+			this.setObservation({
+				...(snapshot.poi_id !== undefined ? { poi_id: snapshot.poi_id } : {}),
+				...(snapshot.system_id !== undefined ? { system_id: snapshot.system_id } : {}),
+				tick: 0,
+				nearby: indexBy(snapshot.nearby, (p) => p.player_id),
+				system: indexBy(snapshot.system_agents, (p) => p.player_id),
+				cloaked: indexBy(snapshot.cloaked_contacts, (c) => c.target_id),
+				unknownSignature: snapshot.unknown_signature ?? false,
+				activeScan: snapshot.active_scan ?? false,
+			});
+		}
+		return snapshot ?? ({} as SubscribeObservationResponse);
+	}
+
+	/** Mirrors the real lib's `unsubscribeObservation()` — clears the observation cache. */
+	async unsubscribeObservation(): Promise<void> {
+		await this.dispatch("unsubscribe_observation");
+		this.setObservation(null);
+	}
 
 	/** Fire the registered onStateChange listeners (for projector wiring tests). */
 	emitStateChange(changed: StateSection[]): void {

@@ -805,6 +805,33 @@ export async function handleRawAction(
 		: `spacemolt_${toolGroup}`;
 
 	try {
+		// subscribe_market/unsubscribe_market and subscribe_observation/unsubscribe_observation
+		// must go through the lib's typed wrapper methods rather than the generic
+		// account.send() dispatch below — seeding/dropping the market/observation
+		// caches read by GET /accounts/:playerId/market|observation is a side effect
+		// of those wrapper methods specifically, not of the bare query/mutate call.
+		// Routing raw (un)subscribe calls through send() leaves those caches
+		// untouched: a raw resubscribe looks like it worked (server state is
+		// correct) while the local mirror silently keeps serving whatever it held
+		// before, indefinitely, for any item/station with no fresh market_update
+		// push after the fact.
+		if (resolvedToolGroup === "spacemolt_market" && action === "subscribe_market") {
+			const snapshot = await account.subscribeMarket();
+			return jsonResponse({ result: snapshot, structuredContent: snapshot });
+		}
+		if (resolvedToolGroup === "spacemolt_market" && action === "unsubscribe_market") {
+			await account.unsubscribeMarket();
+			return jsonResponse({ result: null, structuredContent: undefined });
+		}
+		if (resolvedToolGroup === "spacemolt" && action === "subscribe_observation") {
+			const snapshot = await account.subscribeObservation(actionParams["active_scan"] === true);
+			return jsonResponse({ result: snapshot, structuredContent: snapshot });
+		}
+		if (resolvedToolGroup === "spacemolt" && action === "unsubscribe_observation") {
+			await account.unsubscribeObservation();
+			return jsonResponse({ result: null, structuredContent: undefined });
+		}
+
 		// account.send() dispatches to query/mutate by the spec's mutation flag.
 		// Mutations resolve with { command, tick, delta, autoDocked?, autoUndocked? };
 		// queries resolve with { result, structuredContent? }. Normalize both to a
