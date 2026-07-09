@@ -1,8 +1,11 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, mock, test } from "bun:test";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { resumeLoops } from "../../src/index.js";
+import { connectAccounts, resumeLoopConfig } from "../../src/index.js";
+import { JobManager } from "../../src/server/job-manager.js";
 import { LoopManager } from "../../src/server/loop-manager.js";
+import { createMemoryDatabase } from "../../src/state/database.js";
+import type { StateStore } from "../../src/state/store.js";
 import { FakeLibManagedAccount, makeFakeLibManager } from "../dispatcher/lib-fakes.js";
 
 const tempDir = join(import.meta.dir, "..", "..", "test-config-temp");
@@ -123,7 +126,7 @@ describe("loop-persistence", () => {
 		expect(configs[0]?.type).toBe("hauling");
 	});
 
-	test("resumeLoops resumes a persisted roaming-salvage config on restart", async () => {
+	test("resumeLoopConfig resumes a persisted roaming-salvage config on restart", async () => {
 		const options = {
 			homeSystemId: "sol",
 			homeStationPoiId: "sol_station",
@@ -141,10 +144,88 @@ describe("loop-persistence", () => {
 			return { running: true } as ReturnType<LoopManager["startRoamingSalvageLoop"]>;
 		}) as LoopManager["startRoamingSalvageLoop"];
 
-		await resumeLoops(loopManager, libManager, tempDir);
+		const [config] = await LoopManager.loadLoopConfigs(tempDir);
+		if (!config) throw new Error("expected a loaded config");
+		resumeLoopConfig(loopManager, libManager, config);
 
 		expect(calls.length).toBe(1);
 		expect(calls[0]?.playerId).toBe("player-roamer");
 		expect(calls[0]?.options).toEqual(options);
+	});
+
+	test("resumeLoopConfig logs and skips when the loop type is unknown", async () => {
+		const loopManager = new LoopManager();
+		const libManager = makeFakeLibManager([
+			new FakeLibManagedAccount({ playerId: "player-x", username: "X" }),
+		]);
+
+		expect(() =>
+			resumeLoopConfig(loopManager, libManager, {
+				playerId: "player-x",
+				type: "not-a-real-loop-type",
+				options: {},
+			}),
+		).not.toThrow();
+	});
+
+	test("resumeLoopConfig logs and does not throw when the account is no longer connected", async () => {
+		const loopManager = new LoopManager();
+		const libManager = makeFakeLibManager([]);
+
+		expect(() =>
+			resumeLoopConfig(loopManager, libManager, {
+				playerId: "player-gone",
+				type: "roaming-salvage",
+				options: {},
+			}),
+		).not.toThrow();
+	});
+
+	describe("connectAccounts", () => {
+		test("resumes a persisted loop for its account as soon as it connects, without waiting for the rest of the fleet", async () => {
+			const options = {
+				homeSystemId: "sol",
+				homeStationPoiId: "sol_station",
+				homeBaseId: "sol_base",
+			};
+			const loopManager = new LoopManager();
+			loopManager.setConfigDir(tempDir);
+			await loopManager.saveLoopConfig("player-roamer", "roaming-salvage", options, tempDir);
+			const calls: Array<{ playerId: string; options: unknown }> = [];
+			loopManager.startRoamingSalvageLoop = ((playerId: string, opts: unknown) => {
+				calls.push({ playerId, options: opts });
+				return { running: true } as ReturnType<LoopManager["startRoamingSalvageLoop"]>;
+			}) as LoopManager["startRoamingSalvageLoop"];
+
+			const account = new FakeLibManagedAccount({ playerId: "player-roamer", username: "Roamer" });
+			const manager = makeFakeLibManager([account]);
+			const store = { getState: mock(() => null) } as unknown as StateStore;
+
+			await connectAccounts(
+				manager,
+				store,
+				{ loopManager, jobManager: new JobManager(createMemoryDatabase()) },
+				tempDir,
+			);
+
+			expect(calls.length).toBe(1);
+			expect(calls[0]?.playerId).toBe("player-roamer");
+		});
+
+		test("does not throw when a connected account has no player_id yet", async () => {
+			const loopManager = new LoopManager();
+			const ghost = new FakeLibManagedAccount({ username: "Ghost" }); // no playerId
+			const manager = makeFakeLibManager([ghost]);
+			const store = { getState: mock(() => null) } as unknown as StateStore;
+
+			await expect(
+				connectAccounts(
+					manager,
+					store,
+					{ loopManager, jobManager: new JobManager(createMemoryDatabase()) },
+					tempDir,
+				),
+			).resolves.toBeUndefined();
+		});
 	});
 });

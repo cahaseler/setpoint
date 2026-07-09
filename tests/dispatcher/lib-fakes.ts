@@ -341,7 +341,10 @@ export function makeFakeLibManager(
 		getAll: () => accounts,
 		getByPlayerId: (id: string) => byPlayerId.get(id),
 		getByUsername: (username: string) => byUsername.get(username.toLowerCase()),
-		connect: () => Promise.resolve(),
+		connect: (onAccountReady?: (account: LibManagedAccount) => void) => {
+			for (const account of accounts) onAccountReady?.(account);
+			return Promise.resolve();
+		},
 		connectOne:
 			overrides.connectOne ??
 			((idOrUsername: string) => {

@@ -108,6 +108,21 @@ describe("LibAccountManager", () => {
 		expect(mgr.getByPlayerId("pid-b")).toBeDefined();
 	});
 
+	test("connect(onAccountReady) fires once per account, after that account is already indexed", async () => {
+		const { client } = setup([player("Alpha", "pid-a"), player("Beta", "pid-b")]);
+		const mgr = new LibAccountManager(client, { clerkApiKey: "k" });
+		const seenAlreadyIndexed: boolean[] = [];
+		const readyIds: string[] = [];
+
+		await mgr.connect((account) => {
+			readyIds.push(account.player?.id ?? "?");
+			seenAlreadyIndexed.push(mgr.getByPlayerId(account.player?.id ?? "") === account);
+		});
+
+		expect(readyIds.sort()).toEqual(["pid-a", "pid-b"]);
+		expect(seenAlreadyIndexed).toEqual([true, true]);
+	});
+
 	test("wires onStateChange per account, passing playerId and the account", async () => {
 		const { client, accounts } = setup([player("Alpha", "pid-a"), player("Beta", "pid-b")]);
 		const events: Array<{ playerId: string; changed: string[]; accountId: string | undefined }> =
