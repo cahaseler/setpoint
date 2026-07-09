@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { SpacemoltError } from "@spacemolt/lib";
 import { makeLibGoalContext } from "../../../src/dispatcher/lib-goal-context.js";
 import { runEnhancedMiningLoop } from "../../../src/dispatcher/lib-loops/enhanced-mining-loop.js";
 import { FakeLibGoalAccount, fakeMutationResult } from "../lib-fakes.js";
@@ -51,6 +52,61 @@ describe("runEnhancedMiningLoop", () => {
 
 		expect(result.success).toBe(true);
 		expect(result.iterationCount).toBe(1);
+		expect(account.calls.some((c) => c.action === "mine")).toBe(true);
+		expect(account.calls.some((c) => c.action === "deposit")).toBe(true);
+	});
+
+	test("treats a deposit_too_sparse mine() rejection as depletion — moves to sell instead of counting as a failure", async () => {
+		// Regression: gameserver v0.463.0 added deposit_too_sparse (a high-power
+		// mining array can't get a lock on a sparse deposit) as a distinct error
+		// from the original "Resources depleted" — both must trigger the same
+		// depleted-so-go-sell behavior, not count toward consecutiveFailures.
+		const account = new FakeLibGoalAccount(
+			{
+				location: { system_id: "sol", poi_id: "belt_1" },
+				ship: {
+					fuel: 100,
+					max_fuel: 100,
+					hull: 50,
+					max_hull: 50,
+					cargo_capacity: 100,
+					cargo_used: 10,
+				},
+				cargo: [{ item_id: "iron_ore", item_name: "Iron Ore", quantity: 10, size: 1 }],
+			},
+			{
+				mine: () => {
+					throw new SpacemoltError(
+						"deposit_too_sparse",
+						"Deposits here are too sparse for your mining array",
+					);
+				},
+				travel: (params) => {
+					const id = (params as { id: string }).id;
+					account.setState({ location: { ...account.state.location, poi_id: id } });
+					return fakeMutationResult("travel");
+				},
+				dock: () => {
+					account.setState({ location: { ...account.state.location, docked_at: "sol_base" } });
+					return fakeMutationResult("dock");
+				},
+			},
+		);
+
+		const result = await runEnhancedMiningLoop(
+			{
+				miningSystemId: "sol",
+				beltPoiId: "belt_1",
+				sellSystemId: "sol",
+				sellStationPoiId: "sol_station",
+				sellBaseId: "sol_base",
+				junkItemIds: ["rock_dust"],
+				loopOptions: { maxIterations: 1, maxConsecutiveFailures: 1, retryDelayMs: 1 },
+			},
+			makeLibGoalContext(account),
+		);
+
+		expect(result.success).toBe(true);
 		expect(account.calls.some((c) => c.action === "mine")).toBe(true);
 		expect(account.calls.some((c) => c.action === "deposit")).toBe(true);
 	});

@@ -2,6 +2,7 @@ import type { GameState } from "@spacemolt/lib";
 import type { StoredGameState } from "../../state/store.js";
 import { createLogger } from "../../util/logger.js";
 import type { GoalResult, LoopOptions, LoopResult } from "../goals.js";
+import { isDepletionMessage } from "../lib-compounds/mining-error-codes.js";
 import { LibMiningRun } from "../lib-compounds/mining-run.js";
 import type { LibGoal, LibGoalContext } from "../lib-goal-context.js";
 import { type LibGoalFactory, runLibLoop } from "../lib-loops.js";
@@ -45,9 +46,10 @@ export interface MiningLoopOptions {
 	/** Per-item sell prices keyed by item_id. Takes precedence over listPrice. */
 	listPrices?: Record<string, number>;
 	/**
-	 * When true, "Resources depleted" mining failures are retried indefinitely
-	 * without counting toward the consecutive failure limit. The loop waits
-	 * retryDelayMs (default 30s) between attempts, allowing resources to regenerate.
+	 * When true, depletion-family mining failures (see isDepletionMessage) are
+	 * retried indefinitely without counting toward the consecutive failure
+	 * limit. The loop waits retryDelayMs (default 30s) between attempts,
+	 * allowing resources to regenerate.
 	 */
 	retryOnDepleted?: boolean;
 	/**
@@ -135,7 +137,7 @@ export async function runMiningLoop(
 
 	const baseIgnoreFailure = options.loopOptions?.ignoreFailure;
 	const ignoreFailure = (r: GoalResult): boolean => {
-		if (r.message.includes("Resources depleted")) {
+		if (isDepletionMessage(r.message)) {
 			if (!options.retryOnDepleted) {
 				depletedPhase = "selling";
 			}
