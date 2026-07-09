@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { SpacemoltError } from "@spacemolt/lib";
 import { LibMineUntilFull } from "../../../src/dispatcher/lib-compounds/mine-until-full.js";
+import { isDepletionMessage } from "../../../src/dispatcher/lib-compounds/mining-error-codes.js";
 import { makeLibGoalContext } from "../../../src/dispatcher/lib-goal-context.js";
 import { FakeLibGoalAccount, fakeMutationResult } from "../lib-fakes.js";
 
@@ -53,7 +54,32 @@ describe("LibMineUntilFull", () => {
 		expect(result.message).toContain("Cargo full");
 	});
 
-	test("fails on other game errors", async () => {
+	const DEPLETION_CASES: Array<[code: string, message: string]> = [
+		["depleted", "Resources depleted"],
+		[
+			"deposit_too_sparse",
+			"Deposits here are too sparse for your mining array — the beam disperses what little remains.",
+		],
+		["no_common_ores", "No common ore deposits available here."],
+		["no_resources", "Nothing to mine here"],
+	];
+	for (const [code, message] of DEPLETION_CASES) {
+		test(`marks the result as depletion (not a plain failure) for ${code}`, async () => {
+			const account = new FakeLibGoalAccount(
+				{ ship: { cargo_used: 0, cargo_capacity: 100 } },
+				{
+					mine: () => {
+						throw new SpacemoltError(code, message);
+					},
+				},
+			);
+			const result = await new LibMineUntilFull().execute(makeLibGoalContext(account));
+			expect(result.success).toBe(false);
+			expect(isDepletionMessage(result.message)).toBe(true);
+		});
+	}
+
+	test("fails on other game errors, and does not mark them as depletion", async () => {
 		const account = new FakeLibGoalAccount(
 			{ ship: { cargo_used: 0, cargo_capacity: 100 } },
 			{
@@ -65,6 +91,7 @@ describe("LibMineUntilFull", () => {
 		const result = await new LibMineUntilFull().execute(makeLibGoalContext(account));
 		expect(result.success).toBe(false);
 		expect(result.message).toContain("Mine rejected");
+		expect(isDepletionMessage(result.message)).toBe(false);
 	});
 
 	test("waits out a mid-transit mine rejection then retries successfully", async () => {
@@ -100,6 +127,41 @@ describe("LibMineUntilFull", () => {
 		}).execute(makeLibGoalContext(account));
 		expect(result.success).toBe(true);
 		expect(mineCalls).toBe(2);
+	});
+
+	test("marks the mid-transit retry's mine() as depletion too, not a generic rejection", async () => {
+		// Regression: the depletion-code check on the first mine() attempt must
+		// also apply to the retry after waiting out an in_transit rejection —
+		// otherwise a belt that's depleted right as the ship arrives falls back
+		// to the old generic "Mine rejected" path and isn't recognized.
+		let mineCalls = 0;
+		let refreshCalls = 0;
+		const account = new FakeLibGoalAccount(
+			{
+				ship: { cargo_used: 0, cargo_capacity: 100 },
+				location: { poi_id: "belt-1", in_transit: true },
+			},
+			{
+				mine: () => {
+					mineCalls++;
+					if (mineCalls === 1) throw new SpacemoltError("in_transit", "mid-travel, wait ~30s");
+					throw new SpacemoltError("deposit_too_sparse", "Deposits here are too sparse");
+				},
+			},
+		);
+		account.refresh = () => {
+			refreshCalls++;
+			if (refreshCalls >= 2) {
+				account.setState({ location: { poi_id: "belt-1", in_transit: false } });
+			}
+			return Promise.resolve(account.state);
+		};
+		const result = await new LibMineUntilFull({
+			waitOpts: { maxWaitMs: 1000, pollIntervalMs: 5 },
+		}).execute(makeLibGoalContext(account));
+		expect(result.success).toBe(false);
+		expect(mineCalls).toBe(2);
+		expect(isDepletionMessage(result.message)).toBe(true);
 	});
 
 	test("fails if still in_transit after waiting out a mid-transit mine rejection", async () => {

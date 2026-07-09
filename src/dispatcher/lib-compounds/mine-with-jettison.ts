@@ -7,6 +7,7 @@ import type { LibGoal, LibGoalContext } from "../lib-goal-context.js";
 import { LibJettisonCargo } from "../lib-primitives/jettison-cargo.js";
 import type { LocationWaitOptions } from "../wait-for-location.js";
 import { waitForLocation } from "../wait-for-location.js";
+import { MINING_DEPLETION_CODES, formatDepletionMessage } from "./mining-error-codes.js";
 
 const log = createLogger("goal:mine-with-jettison");
 
@@ -185,6 +186,14 @@ export class LibMineWithJettison implements LibGoal {
 					return succeeded(`Cargo full after ${ticksUsed} attempt(s)`, ticksUsed);
 				}
 
+				// This belt/POI can't be mined productively anymore (fully depleted,
+				// too sparse for the equipped array, no common ore, or no resources
+				// at all) — the loop should move to sell, not keep retrying here.
+				if (MINING_DEPLETION_CODES.has(err.code)) {
+					log.info(`Mine rejected (${err.code}): ${err.message}`);
+					return failed(formatDepletionMessage(err.code, err.message), ticksUsed);
+				}
+
 				if (err.code !== "mutation_timeout") {
 					// A prior travel() can resolve successfully before the ship has
 					// actually arrived, so mine() can still be rejected as mid-transit
@@ -206,6 +215,13 @@ export class LibMineWithJettison implements LibGoal {
 								currentState = await ctx.refreshState();
 								retriedMidTransit = true;
 							} catch (retryErr) {
+								if (
+									retryErr instanceof SpacemoltError &&
+									MINING_DEPLETION_CODES.has(retryErr.code)
+								) {
+									log.info(`Mine rejected on retry (${retryErr.code}): ${retryErr.message}`);
+									return failed(formatDepletionMessage(retryErr.code, retryErr.message), ticksUsed);
+								}
 								const msg = retryErr instanceof Error ? retryErr.message : String(retryErr);
 								log.warn(`Mine rejected on retry: ${msg}`);
 								return failed(`Mine rejected: ${msg}`, ticksUsed);
