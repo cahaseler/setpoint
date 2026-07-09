@@ -91,6 +91,76 @@ export interface DispatcherServer {
 	stop(): Promise<void>;
 }
 
+export const SHUTDOWN_GRACE_MS = 10_000;
+
+/**
+ * Wait for `work` up to `ms`, then stop waiting regardless. Returns whether
+ * the deadline was hit before `work` settled. `work` itself is never
+ * cancelled — this only bounds how long the caller waits for it.
+ */
+async function waitUpTo(ms: number, work: Promise<unknown>): Promise<boolean> {
+	let timedOut = false;
+	const timeout = new Promise<void>((resolve) => {
+		setTimeout(() => {
+			timedOut = true;
+			resolve();
+		}, ms);
+	});
+	await Promise.race([work, timeout]);
+	return timedOut;
+}
+
+/**
+ * Give in-flight requests a grace period to finish normally before giving up
+ * on waiting. `server.stop()`'s default graceful drain waits for every open
+ * connection to close on its own — but a long-lived SSE stream
+ * (`GET /accounts/:playerId/crafting/events`) never finishes by itself, so an
+ * unbounded graceful drain would hang shutdown indefinitely as long as any
+ * client keeps one open.
+ *
+ * Does NOT fall back to `server.stop(true)` on timeout — verified live that
+ * calling it while an earlier unresolved `server.stop()` call is still
+ * pending never resolves either (a Bun quirk, not documented). Instead this
+ * just stops waiting and returns; the caller (`index.ts`'s shutdown handler)
+ * calls `process.exit()` shortly after, which tears down any still-open
+ * sockets at the OS level regardless of Bun's internal state.
+ */
+export async function stopServerWithGracePeriod(
+	server: { stop(closeActiveConnections?: boolean): Promise<void> },
+	graceMs: number,
+): Promise<void> {
+	const timedOut = await waitUpTo(graceMs, server.stop());
+	if (timedOut) {
+		log.warn(
+			`Shutdown grace period (${graceMs}ms) elapsed with connections still open — proceeding without waiting further`,
+		);
+	}
+}
+
+/**
+ * Stop loops, then drain HTTP — each phase bounded independently by
+ * `graceMs` (worst case `~2 * graceMs`, not unbounded). `abortLoop()` only
+ * flips the abort signal; a loop mid-mutation (e.g. mid-transit — per
+ * CLAUDE.md, an awaited travel/jump doesn't resolve until arrival, which can
+ * be minutes) only notices it once that mutation settles, so
+ * `loopManager.stopAll()` needs the same bound as the HTTP drain — otherwise
+ * one slow-to-abort loop stalls shutdown indefinitely and the HTTP grace
+ * period never even gets a chance to run.
+ */
+export async function stopGracefully(
+	loopManager: { stopAll(): Promise<void> },
+	server: { stop(closeActiveConnections?: boolean): Promise<void> },
+	graceMs: number,
+): Promise<void> {
+	const loopsTimedOut = await waitUpTo(graceMs, loopManager.stopAll());
+	if (loopsTimedOut) {
+		log.warn(
+			`Shutdown grace period (${graceMs}ms) elapsed with loop(s) still running — proceeding without waiting further`,
+		);
+	}
+	await stopServerWithGracePeriod(server, graceMs);
+}
+
 /**
  * Start the dispatcher HTTP API server.
  *
@@ -209,8 +279,7 @@ export function startServer(options: ServerOptions): DispatcherServer {
 		loopManager,
 		jobManager,
 		stop: async () => {
-			await loopManager.stopAll();
-			server.stop();
+			await stopGracefully(loopManager, server, SHUTDOWN_GRACE_MS);
 			log.info("Server stopped");
 		},
 	};

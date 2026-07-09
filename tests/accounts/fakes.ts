@@ -164,8 +164,12 @@ export class FakeClient implements AccountClientLike {
 			const acct = this.accountsByUsername.get(player.username);
 			if (acct) {
 				this.connected.set(player.username, acct);
-				opts.onConnect?.(acct);
+				// Matches the real lib's ordering (persistent onAccountConnected
+				// listeners fire inside connect(), before connectIds's per-call
+				// onConnect wrapper runs) — callers rely on indexing having already
+				// happened by the time their onConnect callback fires.
 				this.notifyConnected(acct);
+				opts.onConnect?.(acct);
 			}
 		}
 		return Promise.resolve([...this.connected.values()]);

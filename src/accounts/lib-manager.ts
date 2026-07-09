@@ -176,12 +176,30 @@ export class LibAccountManager {
 		return playerId;
 	}
 
-	async connect(): Promise<void> {
+	/**
+	 * Connect every owned account. Indexing itself happens via the
+	 * onAccountConnected listener registered in the constructor, not the
+	 * `onAccountReady` param here — that listener also covers every later
+	 * reconnect, so there's one indexing path, not two.
+	 *
+	 * `onAccountReady`, if given, fires once per account as *this* call's
+	 * batch connects — scoped to this one `connectOwned`, unlike the
+	 * constructor's listener, which lives for the process lifetime. By the
+	 * time it fires, `indexAndWire` has already run for that account (the
+	 * lib fires its own persistent connected-listeners before invoking this
+	 * per-call callback), so `getByPlayerId`/`getByUsername` resolve
+	 * correctly inside it. A large fleet's connect can legitimately take
+	 * minutes (server-side per-IP WS-connect rate limiting) — callers with
+	 * per-account startup work (resuming a persisted loop or job) should use
+	 * this instead of waiting for the whole batch to resolve, so an
+	 * already-connected account isn't left idle for the rest of the batch.
+	 */
+	async connect(onAccountReady?: (account: LibManagedAccount) => void): Promise<void> {
 		const filter = buildOwnedFilter(this.config.filter);
-		// Indexing happens via the onAccountConnected listener registered in
-		// the constructor, not an onConnect param here — the same listener
-		// also covers every later reconnect, so there's one path, not two.
-		await this.client.connectOwned({ filter });
+		await this.client.connectOwned({
+			filter,
+			...(onAccountReady ? { onConnect: onAccountReady } : {}),
+		});
 		log.info(`Connected ${this.byPlayerId.size} account(s)`);
 	}
 

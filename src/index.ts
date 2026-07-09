@@ -121,10 +121,10 @@ async function main(): Promise<void> {
 	log.info(`Dispatcher running on port ${server.port}. Press Ctrl+C to stop.`);
 
 	// Connect all owned accounts in the background (the lib staggers connections
-	// internally). The server is already serving; accounts come online as they
-	// connect, and loops/jobs resume once the bulk connect finishes.
+	// internally). The server is already serving; each account's loops/jobs
+	// resume as soon as it connects, not after the whole fleet does.
 	log.info("Connecting accounts in the background...");
-	connectAccounts(manager, store, server)
+	connectAccounts(manager, store, server, CONFIG_DIR)
 		.then(() => {
 			// Run one drift sweep pass as soon as the fleet is connected, instead of
 			// waiting up to a full intervalMs for the first scheduled pass —
@@ -135,73 +135,113 @@ async function main(): Promise<void> {
 			log.error(`Background account connection failed: ${errorMessage(err)}`);
 		});
 
-	// Graceful shutdown
-	const shutdown = (): void => {
+	// Graceful shutdown: stop loops and let in-flight HTTP requests drain
+	// (bounded — see stopServerWithGracePeriod) BEFORE disconnecting accounts,
+	// so a sync goal mid-request doesn't have its account's socket pulled out
+	// from under it while still trying to finish normally.
+	let shuttingDown = false;
+	const shutdown = async (): Promise<void> => {
+		// A second SIGINT/SIGTERM while the first shutdown is still draining must
+		// not call server.stop() again — verified live that calling it while an
+		// earlier unresolved call is pending never resolves (see
+		// stopServerWithGracePeriod's doc comment), which would hang this second
+		// call forever even though the first is still on track to exit.
+		if (shuttingDown) return;
+		shuttingDown = true;
 		log.info("Shutting down...");
 		driftSweep.stop();
 		bandwidthTracker.stop();
-		server.stop().catch(() => {});
+		try {
+			await server.stop();
+		} catch (err) {
+			log.error(`Error while stopping the server: ${errorMessage(err)}`);
+		}
 		manager.disconnectAll();
 		db.close();
 		log.info("Goodbye.");
 		process.exit(0);
 	};
 
-	process.on("SIGINT", shutdown);
-	process.on("SIGTERM", shutdown);
+	process.on("SIGINT", () => void shutdown());
+	process.on("SIGTERM", () => void shutdown());
 }
 
+type LoopConfigEntry = Awaited<ReturnType<typeof LoopManager.loadLoopConfigs>>[number];
+
 /**
- * Connect all owned accounts, log their initial state, then resume persisted
- * loops and interrupted async jobs. Runs in the background so the HTTP server
- * can serve health/queries while accounts come online.
+ * Connect all owned accounts, resuming each one's persisted loop and any
+ * interrupted async jobs as soon as THAT account finishes connecting — not
+ * after the whole fleet does. A large fleet's connect is rate-limited by the
+ * server's per-IP WS-connection cap and can take minutes; gating resume on
+ * the entire batch left an already-connected account idle for the rest of
+ * that window for no reason. Runs in the background so the HTTP server can
+ * serve health/queries while accounts come online.
  */
-async function connectAccounts(
+export async function connectAccounts(
 	manager: LibAccountManager,
 	store: StateStore,
 	server: { loopManager: LoopManager; jobManager: JobManager },
+	configDir: string,
 ): Promise<void> {
-	await manager.connect();
-	const connected = manager.getAll();
+	const loopConfigs = await LoopManager.loadLoopConfigs(configDir);
+	const pendingLoopConfigs = new Map(loopConfigs.map((config) => [config.playerId, config]));
+	if (pendingLoopConfigs.size > 0) {
+		log.info(
+			`Found ${pendingLoopConfigs.size} persisted loop config(s), resuming as accounts connect...`,
+		);
+	}
 
-	if (connected.length === 0) {
+	let connectedCount = 0;
+	await manager.connect((account) => {
+		connectedCount++;
+		if (!account.player?.id) {
+			// The client's own onAccountConnected listener already warns and
+			// skips indexing for this case (see LibAccountManager's constructor)
+			// — nothing to resume for an account that was never indexed.
+			return;
+		}
+		const playerId = playerIdOf(account);
+		logAccountState(account, store);
+		void resumeJobsForAccount(server.jobManager, manager, playerId);
+
+		const loopConfig = pendingLoopConfigs.get(playerId);
+		if (loopConfig) {
+			pendingLoopConfigs.delete(playerId);
+			resumeLoopConfig(server.loopManager, manager, loopConfig);
+		}
+	});
+
+	if (connectedCount === 0) {
 		log.warn("No accounts connected at startup. The server is up; add accounts via the API.");
 		return;
 	}
 
-	// Log initial state for each connected account
-	for (const account of connected) {
-		const state = store.getState(playerIdOf(account));
-		if (state) {
-			const player = state.player;
-			const ship = state.ship;
-			const location = state.location;
-			log.info(
-				`[${account.id ?? "?"}] ` +
-					`Credits: ${player?.credits ?? "?"} | ` +
-					`Ship: ${ship?.class_name ?? ship?.class_id ?? "?"} ` +
-					`(Hull: ${ship?.hull ?? "?"}/${ship?.max_hull ?? "?"}, ` +
-					`Fuel: ${ship?.fuel ?? "?"}/${ship?.max_fuel ?? "?"}) | ` +
-					`Location: ${location?.system_name ?? "?"} - ${location?.poi_name ?? "space"} ` +
-					`${location?.docked_at ? "(docked)" : "(undocked)"}`,
-			);
-		} else {
-			log.warn(`[${account.id ?? "?"}] No state available`);
-		}
+	// Any remaining config's account never connected this run, so it was never
+	// reached by the per-account resume above.
+	for (const config of pendingLoopConfigs.values()) {
+		log.warn(`[${config.playerId}] Account not connected, skipping loop resume`);
 	}
-
-	// Auto-resume persisted loops and interrupted async jobs for all connected accounts
-	await resumeLoops(server.loopManager, manager, CONFIG_DIR);
-	await resumeJobs(server.jobManager, manager);
 }
 
-/**
- * Resume all pending jobs (interrupted by a daemon restart) for all connected accounts.
- */
-async function resumeJobs(jobManager: JobManager, manager: LibAccountManager): Promise<void> {
-	for (const account of manager.getAll()) {
-		await resumeJobsForAccount(jobManager, manager, playerIdOf(account));
+/** Log a one-line summary of an account's state as soon as it connects. */
+function logAccountState(account: LibManagedAccount, store: StateStore): void {
+	const state = store.getState(playerIdOf(account));
+	if (!state) {
+		log.warn(`[${account.id ?? "?"}] No state available`);
+		return;
 	}
+	const player = state.player;
+	const ship = state.ship;
+	const location = state.location;
+	log.info(
+		`[${account.id ?? "?"}] ` +
+			`Credits: ${player?.credits ?? "?"} | ` +
+			`Ship: ${ship?.class_name ?? ship?.class_id ?? "?"} ` +
+			`(Hull: ${ship?.hull ?? "?"}/${ship?.max_hull ?? "?"}, ` +
+			`Fuel: ${ship?.fuel ?? "?"}/${ship?.max_fuel ?? "?"}) | ` +
+			`Location: ${location?.system_name ?? "?"} - ${location?.poi_name ?? "space"} ` +
+			`${location?.docked_at ? "(docked)" : "(undocked)"}`,
+	);
 }
 
 /**
@@ -253,21 +293,14 @@ async function resumeJobsForAccount(
 }
 
 /**
- * Resume any persisted loops from a previous daemon run.
- * Reads loop configs from disk and restarts them on the appropriate accounts.
+ * Start one persisted loop config on its (already-connected) account.
+ * Shared by `connectAccounts`'s per-account resume and, directly, by tests.
  */
-export async function resumeLoops(
+export function resumeLoopConfig(
 	loopManager: LoopManager,
 	manager: LibAccountManager,
-	configDir: string,
-): Promise<void> {
-	const configs = await LoopManager.loadLoopConfigs(configDir);
-	if (configs.length === 0) {
-		return;
-	}
-
-	log.info(`Found ${configs.length} persisted loop config(s), resuming...`);
-
+	config: LoopConfigEntry,
+): void {
 	type StartFn = (
 		playerId: string,
 		options: never,
@@ -287,37 +320,29 @@ export async function resumeLoops(
 		"roaming-salvage": loopManager.startRoamingSalvageLoop.bind(loopManager) as StartFn,
 	};
 
-	for (const config of configs) {
-		const account = manager.getByPlayerId(config.playerId);
-		if (!account) {
-			log.warn(`[${config.playerId}] Account not connected, skipping loop resume`);
-			continue;
-		}
+	const startFn = startMethodMap[config.type];
+	if (!startFn) {
+		log.warn(`[${config.playerId}] Unknown loop type '${config.type}', skipping`);
+		return;
+	}
 
-		const startFn = startMethodMap[config.type];
-		if (!startFn) {
-			log.warn(`[${config.playerId}] Unknown loop type '${config.type}', skipping`);
-			continue;
-		}
-
-		try {
-			(
-				startFn as (
-					pid: string,
-					opts: Record<string, unknown>,
-					resolveAccount: () => LibManagedAccount,
-				) => unknown
-			)(config.playerId, config.options, () => {
-				const live = manager.getByPlayerId(config.playerId);
-				if (!live) {
-					throw new Error(`Account ${config.playerId} is no longer connected`);
-				}
-				return live;
-			});
-			log.info(`[${config.playerId}] Resumed ${config.type} loop`);
-		} catch (err) {
-			log.warn(`[${config.playerId}] Failed to resume ${config.type} loop: ${errorMessage(err)}`);
-		}
+	try {
+		(
+			startFn as (
+				pid: string,
+				opts: Record<string, unknown>,
+				resolveAccount: () => LibManagedAccount,
+			) => unknown
+		)(config.playerId, config.options, () => {
+			const live = manager.getByPlayerId(config.playerId);
+			if (!live) {
+				throw new Error(`Account ${config.playerId} is no longer connected`);
+			}
+			return live;
+		});
+		log.info(`[${config.playerId}] Resumed ${config.type} loop`);
+	} catch (err) {
+		log.warn(`[${config.playerId}] Failed to resume ${config.type} loop: ${errorMessage(err)}`);
 	}
 }
 
