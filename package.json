@@ -1,6 +1,6 @@
 {
 	"name": "setpoint",
-	"version": "0.0.272",
+	"version": "0.0.273",
 	"description": "SpaceMolt game client service — declarative multi-account automation via the v2 REST API",
 	"license": "MIT",
 	"type": "module",
@@ -30,7 +30,7 @@
 		"typescript": "^5.7.0"
 	},
 	"dependencies": {
-		"@spacemolt/lib": "file:../spacemolt-development/spacemolt-lib",
+		"@spacemolt/lib": "^4.6.0",
 		"@setpoint/protocol": "workspace:*"
 	}
 }

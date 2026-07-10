@@ -3052,6 +3052,7 @@ describe("handleCraftingEvents", () => {
 					job_id: "job-1",
 					completed: runsDone === 5,
 					deposited: [],
+					escrowed_credits: 0,
 					mode: "craft",
 					recipe: "widget",
 					runs_done: runsDone,
