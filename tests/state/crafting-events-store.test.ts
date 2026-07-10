@@ -10,6 +10,7 @@ function makeEvent(jobId: string, runsDone: number): CraftingUpdateEvent {
 				job_id: jobId,
 				completed: false,
 				deposited: [],
+				escrowed_credits: 0,
 				mode: "craft",
 				recipe: "widget",
 				runs_done: runsDone,

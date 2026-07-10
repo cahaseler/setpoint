@@ -30,6 +30,7 @@ describe("AccountApi.crafting", () => {
 					job_id: "job-1",
 					completed: false,
 					deposited: [],
+					escrowed_credits: 0,
 					mode: "craft",
 					recipe: "widget",
 					runs_done: runsDone,
