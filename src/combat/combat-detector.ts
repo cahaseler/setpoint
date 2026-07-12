@@ -51,6 +51,19 @@ export type CombatTransition =
 export interface CombatReducerResult {
 	state: CombatDetectorState;
 	transition?: CombatTransition;
+	/**
+	 * Whether this event was positively attributed to the account — true for
+	 * every case that refreshes or changes combat state (even when no phase
+	 * transition fires, e.g. a second `battle_damage` while already in
+	 * combat), false for bystander events that were ignored. Callers use
+	 * this to decide what's worth publishing on the account's own combat
+	 * event stream — see `CombatReactor`.
+	 */
+	selfRelevant: boolean;
+}
+
+function ignored(state: CombatDetectorState): CombatReducerResult {
+	return { state, selfRelevant: false };
 }
 
 function enter(
@@ -65,11 +78,12 @@ function enter(
 		lastActivityAt: now,
 	};
 	if (!wasIdle) {
-		return { state: nextState };
+		return { state: nextState, selfRelevant: true };
 	}
 	return {
 		state: nextState,
 		transition: { kind: "entered", battleId: nextState.activeBattleId ?? UNKNOWN_BATTLE_ID },
+		selfRelevant: true,
 	};
 }
 
@@ -80,6 +94,7 @@ function exit(
 	return {
 		state: { ...INITIAL_COMBAT_STATE },
 		transition: { kind: "exited", battleId: battleId ?? UNKNOWN_BATTLE_ID, reason },
+		selfRelevant: true,
 	};
 }
 
@@ -98,7 +113,7 @@ export function reduceCombatEvent(
 		case "battle_alert":
 		case "battle_started": {
 			const isSelf = event.payload.participants.some((p) => p.player_id === selfId);
-			if (!isSelf) return { state };
+			if (!isSelf) return ignored(state);
 			return enter(state, event.payload.battle_id, now);
 		}
 		case "battle_update": {
@@ -107,40 +122,42 @@ export function reduceCombatEvent(
 			return enter(state, event.payload.battle_id, now);
 		}
 		case "battle_joined": {
-			if (event.payload.player_id !== selfId) return { state };
+			if (event.payload.player_id !== selfId) return ignored(state);
 			// No battle_id on this payload — carry forward whatever we already know,
 			// which a following battle_update will typically fill in/correct.
 			return enter(state, state.activeBattleId, now);
 		}
 		case "battle_damage": {
 			const isSelf = event.payload.attacker_id === selfId || event.payload.target_id === selfId;
-			if (!isSelf) return { state };
+			if (!isSelf) return ignored(state);
 			return enter(state, state.activeBattleId, now);
 		}
 		case "battle_ended": {
 			// Scoped to the battle we're actually tracking — an unrelated nearby
 			// battle ending must not clear this account's in-combat state.
 			if (state.phase !== "in-combat" || event.payload.battle_id !== state.activeBattleId) {
-				return { state };
+				return ignored(state);
 			}
 			return exit(event.payload.battle_id, "battle_ended");
 		}
 		case "battle_left": {
-			if (event.payload.player_id !== selfId) return { state };
+			if (event.payload.player_id !== selfId) return ignored(state);
 			return exit(state.activeBattleId, "battle_left");
 		}
 		case "player_died": {
 			return {
 				state: { ...INITIAL_COMBAT_STATE },
 				transition: { kind: "died" },
+				selfRelevant: true,
 			};
 		}
 		case "player_kill": {
-			// Informational push to the killer, not a combat-state signal for this account.
-			return { state };
+			// Pushed only to the killer — never a bystander event — but not a
+			// combat-state signal for this account (it didn't just fight).
+			return { state, selfRelevant: true };
 		}
 		default:
-			return { state };
+			return ignored(state);
 	}
 }
 
@@ -156,7 +173,7 @@ export function reduceTimeout(
 	now: number,
 	timeoutMs: number,
 ): CombatReducerResult {
-	if (state.phase !== "in-combat") return { state };
-	if (now - state.lastActivityAt < timeoutMs) return { state };
+	if (state.phase !== "in-combat") return ignored(state);
+	if (now - state.lastActivityAt < timeoutMs) return ignored(state);
 	return exit(state.activeBattleId, "timeout");
 }

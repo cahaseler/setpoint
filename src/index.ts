@@ -1,16 +1,24 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { CraftingUpdateEvent } from "@setpoint/protocol";
-import { type GameState, SpacemoltClient, type StateSection } from "@spacemolt/lib";
+import type { CombatNotificationType, CraftingUpdateEvent } from "@setpoint/protocol";
+import {
+	type GameState,
+	type NotificationPayloads,
+	SpacemoltClient,
+	type StateSection,
+} from "@spacemolt/lib";
 import { parseLibConfig } from "./accounts/lib-config.js";
 import { LibAccountManager } from "./accounts/lib-manager.js";
 import { type LibManagedAccount, playerId as playerIdOf } from "./accounts/lib-types.js";
+import { CombatReactor } from "./combat/combat-reactor.js";
 import { makeLibGoalContext } from "./dispatcher/lib-goal-context.js";
+import type { ExecutingGoalEntry } from "./server/account-release.js";
 import { createGoal } from "./server/goal-registry.js";
 import { startServer } from "./server/index.js";
 import type { JobManager } from "./server/job-manager.js";
 import { LoopManager } from "./server/loop-manager.js";
 import { makeProjectingOnStateChange } from "./state/attach-projector.js";
+import { CombatEventsStore } from "./state/combat-events-store.js";
 import { CraftingEventsStore } from "./state/crafting-events-store.js";
 import { createDatabase } from "./state/database.js";
 import { logDrift } from "./state/drift-logger.js";
@@ -89,12 +97,39 @@ async function main(): Promise<void> {
 		craftingEventsStore.record(playerId, event);
 	};
 
+	// Combat detection (src/combat/) needs executingGoals/claimedAccounts —
+	// otherwise built privately inside startServer() — and loopManager/
+	// jobManager, which don't exist until startServer() returns. Constructed
+	// here, up front, and shared into both startServer() and the CombatReactor
+	// built just below it, rather than each building its own copy.
+	const executingGoals: Map<string, ExecutingGoalEntry> = new Map();
+	const claimedAccounts = new Set<string>();
+	const combatEventsStore = new CombatEventsStore();
+
+	// Late-bound: CombatReactor can't be constructed until after startServer()
+	// returns (it needs loopManager/jobManager), but LibAccountManager's
+	// onCombatUpdate callback must be registered before that — same ordering
+	// already established for onStateChange/onCraftingUpdate above. Safe
+	// because onCombatUpdate only ever *fires* during manager.connect(), which
+	// runs after both startServer() and the reactorRef assignment below
+	// complete. A mutable ref object (rather than a reassigned `let`) so
+	// `onCombatUpdate`'s captured binding stays a plain `const`.
+	const reactorRef: { current: CombatReactor | undefined } = { current: undefined };
+	const onCombatUpdate = (
+		playerId: string,
+		type: CombatNotificationType,
+		payload: NotificationPayloads[CombatNotificationType],
+	): void => {
+		reactorRef.current?.handle(playerId, type, payload);
+	};
+
 	// Create the lib client and account manager
 	const client = new SpacemoltClient({ clerkApiKey: libConfig.clerkApiKey });
 	const manager = new LibAccountManager(client, libConfig, {
 		onStateChange,
 		onDrift,
 		onCraftingUpdate,
+		onCombatUpdate,
 	});
 
 	// Start bandwidth rollup logging (5-minute windows)
@@ -117,8 +152,20 @@ async function main(): Promise<void> {
 		client,
 		configDir: CONFIG_DIR,
 		craftingEventsStore,
+		combatEventsStore,
+		executingGoals,
+		claimedAccounts,
 	});
 	log.info(`Dispatcher running on port ${server.port}. Press Ctrl+C to stop.`);
+
+	reactorRef.current = new CombatReactor({
+		manager,
+		loopManager: server.loopManager,
+		jobManager: server.jobManager,
+		executingGoals,
+		configDir: CONFIG_DIR,
+		combatEventsStore,
+	});
 
 	// Connect all owned accounts in the background (the lib staggers connections
 	// internally). The server is already serving; each account's loops/jobs
@@ -151,6 +198,7 @@ async function main(): Promise<void> {
 		log.info("Shutting down...");
 		driftSweep.stop();
 		bandwidthTracker.stop();
+		reactorRef.current?.stop();
 		try {
 			await server.stop();
 		} catch (err) {

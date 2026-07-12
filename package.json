@@ -1,6 +1,6 @@
 {
 	"name": "setpoint",
-	"version": "0.0.273",
+	"version": "0.0.275",
 	"description": "SpaceMolt game client service — declarative multi-account automation via the v2 REST API",
 	"license": "MIT",
 	"type": "module",

@@ -18,6 +18,7 @@ import {
 import { JobManager } from "../../src/server/job-manager.js";
 import { LoopManager } from "../../src/server/loop-manager.js";
 import { Router } from "../../src/server/router.js";
+import { CombatEventsStore } from "../../src/state/combat-events-store.js";
 import { CraftingEventsStore } from "../../src/state/crafting-events-store.js";
 import { createMemoryDatabase } from "../../src/state/database.js";
 import type { StateStore } from "../../src/state/store.js";
@@ -106,6 +107,7 @@ describe("Server integration", () => {
 			executingGoals: new Map(),
 			claimedAccounts: new Set(),
 			craftingEventsStore: new CraftingEventsStore(),
+			combatEventsStore: new CombatEventsStore(),
 		};
 
 		const router = new Router<HandlerContext>();

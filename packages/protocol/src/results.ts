@@ -174,8 +174,8 @@ export interface CombatRecoveryTarget {
 
 export interface CombatInterruptedPayload {
 	battleId: string;
-	previousLoopType?: string;
-	previousGoalType?: string;
+	previousLoopType?: string | undefined;
+	previousGoalType?: string | undefined;
 }
 
 export interface CombatRecoveryPayload {

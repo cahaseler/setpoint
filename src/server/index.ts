@@ -1,13 +1,16 @@
 import type { Database } from "bun:sqlite";
 import type { SpacemoltClient } from "@spacemolt/lib";
 import type { LibAccountManager } from "../accounts/lib-manager.js";
+import type { CombatEventsStore } from "../state/combat-events-store.js";
 import type { CraftingEventsStore } from "../state/crafting-events-store.js";
 import type { StateStore } from "../state/store.js";
 import { createLogger } from "../util/logger.js";
+import type { ExecutingGoalEntry } from "./account-release.js";
 import {
 	type HandlerContext,
 	handleAbortAccount,
 	handleAddAccount,
+	handleCombatEvents,
 	handleCraftingEvents,
 	handleDashboardData,
 	handleDeleteAccount,
@@ -63,7 +66,7 @@ export function resolveBindHost(env: Record<string, string | undefined> = proces
 export function isUnboundedRequest(req: Request): boolean {
 	const { pathname } = new URL(req.url);
 	if (req.method === "GET") {
-		return /\/crafting\/events$/.test(pathname);
+		return /\/(crafting|combat)\/events$/.test(pathname);
 	}
 	if (req.method === "POST") {
 		return /\/goal$/.test(pathname) || /\/raw$/.test(pathname) || pathname === "/accounts/register";
@@ -82,6 +85,16 @@ export interface ServerOptions {
 	client: SpacemoltClient;
 	configDir: string;
 	craftingEventsStore: CraftingEventsStore;
+	combatEventsStore: CombatEventsStore;
+	/**
+	 * Shared with the caller (rather than constructed privately here) so
+	 * combat detection — wired into `LibAccountManager` before `startServer()`
+	 * runs — can force-release an account's in-progress work through the same
+	 * bookkeeping this server's own force-abort route uses. Defaults to a
+	 * fresh `Map`/`Set` for callers (tests) that don't need to share them.
+	 */
+	executingGoals?: Map<string, ExecutingGoalEntry>;
+	claimedAccounts?: Set<string>;
 }
 
 export interface DispatcherServer {
@@ -181,9 +194,10 @@ export function startServer(options: ServerOptions): DispatcherServer {
 		client: options.client,
 		configDir: options.configDir,
 		startedAt: new Date().toISOString(),
-		executingGoals: new Map(),
-		claimedAccounts: new Set(),
+		executingGoals: options.executingGoals ?? new Map(),
+		claimedAccounts: options.claimedAccounts ?? new Set(),
 		craftingEventsStore: options.craftingEventsStore,
+		combatEventsStore: options.combatEventsStore,
 	};
 
 	const router = new Router<HandlerContext>();
@@ -244,6 +258,10 @@ export function startServer(options: ServerOptions): DispatcherServer {
 	// Crafting progress (SSE) — no subscribe-first step; the server pushes
 	// crafting_update automatically whenever the account has jobs in progress.
 	router.get("/accounts/:playerId/crafting/events", handleCraftingEvents);
+
+	// Combat events (SSE) — no subscribe-first step; battle_*/player_died/
+	// player_kill notifications push automatically. See CombatEventsStore.
+	router.get("/accounts/:playerId/combat/events", handleCombatEvents);
 
 	const server = Bun.serve({
 		hostname: host,

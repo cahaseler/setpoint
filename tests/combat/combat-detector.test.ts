@@ -246,10 +246,43 @@ describe("reduceCombatEvent", () => {
 	});
 
 	describe("player_kill", () => {
-		test("never causes a transition", () => {
+		test("never causes a transition, but is always self-relevant", () => {
 			const result = reduceCombatEvent(inCombat(), playerKill(), SELF, NOW);
 			expect(result.transition).toBeUndefined();
 			expect(result.state.phase).toBe("in-combat");
+			expect(result.selfRelevant).toBe(true);
+		});
+	});
+
+	describe("selfRelevant", () => {
+		test("is false for bystander events with no phase change", () => {
+			expect(
+				reduceCombatEvent(INITIAL_COMBAT_STATE, battleAlert([OTHER]), SELF, NOW).selfRelevant,
+			).toBe(false);
+			expect(reduceCombatEvent(inCombat(), battleDamage(OTHER, "p3"), SELF, NOW).selfRelevant).toBe(
+				false,
+			);
+			expect(reduceCombatEvent(inCombat("b1"), battleEnded("b2"), SELF, NOW).selfRelevant).toBe(
+				false,
+			);
+		});
+
+		test("is true for a self-relevant refresh even without a phase transition", () => {
+			const result = reduceCombatEvent(inCombat(), battleAlert([SELF]), SELF, NOW + 5000);
+			expect(result.transition).toBeUndefined();
+			expect(result.selfRelevant).toBe(true);
+		});
+
+		test("is true whenever entered/exited/died fires", () => {
+			expect(
+				reduceCombatEvent(INITIAL_COMBAT_STATE, battleStarted([SELF]), SELF, NOW).selfRelevant,
+			).toBe(true);
+			expect(reduceCombatEvent(inCombat("b1"), battleEnded("b1"), SELF, NOW).selfRelevant).toBe(
+				true,
+			);
+			expect(reduceCombatEvent(INITIAL_COMBAT_STATE, playerDied(), SELF, NOW).selfRelevant).toBe(
+				true,
+			);
 		});
 	});
 });
@@ -264,6 +297,11 @@ describe("reduceTimeout", () => {
 		const result = reduceTimeout(inCombat(), NOW + 59_000, 60_000);
 		expect(result.transition).toBeUndefined();
 		expect(result.state.phase).toBe("in-combat");
+	});
+
+	test("selfRelevant is false when nothing fires", () => {
+		expect(reduceTimeout(INITIAL_COMBAT_STATE, NOW + 1_000_000, 60_000).selfRelevant).toBe(false);
+		expect(reduceTimeout(inCombat(), NOW + 59_000, 60_000).selfRelevant).toBe(false);
 	});
 
 	test("fires a timeout exit once the threshold is exceeded", () => {
