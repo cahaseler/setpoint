@@ -129,20 +129,27 @@ export interface AccountClientLike {
 	remove(id: string): Promise<void>;
 	closeAll(): void;
 	/**
-	 * Fires whenever an account becomes connected+authenticated — both the
-	 * initial connect and every later reconnect after an unexpected
-	 * disconnect (the lib now drives reconnection itself, through the same
-	 * rate-limited connect path used for the initial connect, rather than
-	 * each account reconnecting independently — see the lib's
-	 * `SpacemoltClient.handleAccountDisconnected`). A reconnect replaces the
-	 * `LibManagedAccount` instance for that id, so this is how a caller
-	 * knows to re-index/re-wire it. Returns an unsubscribe function.
+	 * Fires the first time an id becomes a connected+authenticated account —
+	 * the initial connect only. Does NOT fire again on a later reconnect
+	 * after an unexpected disconnect — the lib reconnects in place (the same
+	 * `LibManagedAccount` instance survives), so nothing needs re-indexing;
+	 * see `onAccountReconnected` for that event instead. Returns an
+	 * unsubscribe function.
 	 */
 	onAccountConnected(listener: (account: LibManagedAccount) => void): () => void;
 	/**
+	 * Fires after an already-connected account's connection is restored
+	 * following an unexpected disconnect — the same instance throughout,
+	 * reconnected in place. Purely informational (e.g. logging); nothing
+	 * needs re-indexing since the instance never changed.
+	 */
+	onAccountReconnected(listener: (account: LibManagedAccount) => void): () => void;
+	/**
 	 * Fires when an account is dropped for good: a terminal close (session
 	 * replaced by another connection, or an auth timeout) that is never
-	 * reconnected, or a reconnect attempt that exhausted its retries.
+	 * reconnected, or a reconnect attempt that exhausted its retries (see
+	 * `SpacemoltClientOptions.connectRetry`, configured generously in
+	 * `src/index.ts` so a routine outage doesn't exhaust it prematurely).
 	 */
 	onAccountDisconnected(listener: (id: string, err: ConnectionClosedError) => void): () => void;
 }

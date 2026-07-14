@@ -69,20 +69,26 @@ export class LibAccountManager {
 		private readonly config: LibConfig,
 		private readonly opts: LibAccountManagerOptions = {},
 	) {
-		// The single place indexAndWire ever runs — covers the initial connect
-		// AND every later reconnect (the lib now drives reconnection itself
-		// through the same rate-limited connect path used for the initial
-		// connect, replacing the LibManagedAccount instance for that id; see
-		// AccountClientLike.onAccountConnected). Registered once here, up
-		// front, rather than per connect()/connectOne()/register() call, so a
-		// reconnect firing long after any of those calls returned still gets
-		// re-indexed the same way.
+		// Only fires on an id's very first connect — a later reconnect after an
+		// unexpected disconnect happens in place (the same LibManagedAccount
+		// instance survives; see AccountClientLike.onAccountReconnected below),
+		// so indexAndWire only needs to run here, not again per reconnect.
+		// Registered once here, up front, rather than per connect()/connectOne()/
+		// register() call, so this still applies no matter which of those a
+		// given account came in through.
 		this.client.onAccountConnected((account) => {
 			if (!account.player?.id) {
 				log.warn("Connected account has no player_id after connect; skipping index");
 				return;
 			}
 			this.indexAndWire(account);
+		});
+		// Purely informational — the same instance survives a reconnect in
+		// place, so nothing needs re-indexing; this just makes a recovered
+		// account visible in the log instead of an outage silently ending with
+		// no record of it.
+		this.client.onAccountReconnected((account) => {
+			log.info(`[${account.id ?? "?"}] Account reconnected`);
 		});
 		this.client.onAccountDisconnected((id, err) => {
 			log.warn(
