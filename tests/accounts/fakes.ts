@@ -147,6 +147,7 @@ export class FakeClient implements AccountClientLike {
 	listOwnedPlayersCallCount = 0;
 	private connected = new Map<string, FakeAccount>();
 	private readonly connectedListeners = new Set<(account: LibManagedAccount) => void>();
+	private readonly reconnectedListeners = new Set<(account: LibManagedAccount) => void>();
 	private readonly disconnectedListeners = new Set<
 		(id: string, err: ConnectionClosedError) => void
 	>();
@@ -224,6 +225,10 @@ export class FakeClient implements AccountClientLike {
 		this.connectedListeners.add(listener);
 		return () => this.connectedListeners.delete(listener);
 	}
+	onAccountReconnected(listener: (account: LibManagedAccount) => void): () => void {
+		this.reconnectedListeners.add(listener);
+		return () => this.reconnectedListeners.delete(listener);
+	}
 	onAccountDisconnected(listener: (id: string, err: ConnectionClosedError) => void): () => void {
 		this.disconnectedListeners.add(listener);
 		return () => this.disconnectedListeners.delete(listener);
@@ -231,10 +236,16 @@ export class FakeClient implements AccountClientLike {
 	private notifyConnected(account: LibManagedAccount): void {
 		for (const listener of this.connectedListeners) listener(account);
 	}
-	/** Test helper: simulates a reconnect replacing the account instance for `id`, firing onAccountConnected with the new one. */
-	simulateReconnect(id: string, newAccount: FakeAccount): void {
-		this.connected.set(id, newAccount);
-		this.notifyConnected(newAccount);
+	/**
+	 * Test helper: simulates a successful reconnect-in-place for `id` — the
+	 * real lib reuses the same `Account` instance across a reconnect, so
+	 * unlike the initial connect, this fires `onAccountReconnected` (purely
+	 * informational), never `onAccountConnected` again.
+	 */
+	simulateReconnected(id: string): void {
+		const acct = this.connected.get(id);
+		if (!acct) return;
+		for (const listener of this.reconnectedListeners) listener(acct);
 	}
 	/** Test helper: simulates a terminal disconnect (no reconnect) for `id`. */
 	simulateDisconnected(id: string, err: ConnectionClosedError): void {

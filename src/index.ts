@@ -89,8 +89,25 @@ async function main(): Promise<void> {
 		craftingEventsStore.record(playerId, event);
 	};
 
-	// Create the lib client and account manager
-	const client = new SpacemoltClient({ clerkApiKey: libConfig.clerkApiKey });
+	// Create the lib client and account manager.
+	//
+	// connectRetry: a routine, recurring game-server restart or transient
+	// network blip must not permanently strand an account after the library's
+	// conservative default (8 retries, ~8 minutes worst case) is exhausted —
+	// confirmed live on 2026-07-14, when 5 accounts all dropped with an
+	// abnormal-closure (code 1006) within the same ~30-minute window and were
+	// abandoned, requiring a manual reconnect. Raised to a large-but-bounded
+	// budget (~3+ hours worst case at the 60s backoff cap) rather than
+	// Number.POSITIVE_INFINITY (the bare-Account default) — SpacemoltClient's
+	// remove() doesn't cancel an in-flight reconnect retry for that id, so an
+	// account removed in the narrow window it's actively retrying would keep
+	// retrying in the background; a large bound self-resolves that instead of
+	// running forever. Terminal closes (session_replaced, auth_timeout) are
+	// unaffected — the client never retries those regardless of this budget.
+	const client = new SpacemoltClient({
+		clerkApiKey: libConfig.clerkApiKey,
+		connectRetry: { maxRetries: 200, baseDelayMs: 2000, maxDelayMs: 60_000 },
+	});
 	const manager = new LibAccountManager(client, libConfig, {
 		onStateChange,
 		onDrift,
