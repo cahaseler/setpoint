@@ -1,4 +1,4 @@
-import type { GameState, GetMapResponse } from "@spacemolt/lib";
+import type { GameState } from "@spacemolt/lib";
 import { errorMessage } from "../../util/errors.js";
 import { createLogger } from "../../util/logger.js";
 import type { GoalResult, LoopOptions, LoopResult } from "../goals.js";
@@ -11,10 +11,7 @@ import { LibEnsureEmptyCargo } from "../lib-primitives/ensure-empty-cargo.js";
 import { LibEnsureUndocked } from "../lib-primitives/ensure-undocked.js";
 import { LibGoToPoi } from "../lib-primitives/go-to-poi.js";
 import { LibNavigateToSystem } from "../lib-primitives/navigate-to-system.js";
-
-// get_map without a system filter returns the full-map variant of the union,
-// whose systems entries carry connections, empire, and position data.
-type MapSystem = Extract<GetMapResponse, { systems: unknown }>["systems"][number];
+import { type MapSystem, bfsDistances, buildAdjacency } from "../route-graph.js";
 
 const log = createLogger("loop:roaming-salvage");
 
@@ -84,32 +81,6 @@ interface BfsTarget {
 }
 
 /**
- * BFS from startId through the system adjacency graph.
- * Returns a Map of systemId → hop distance from startId.
- */
-function bfsDistances(adjacency: Map<string, string[]>, startId: string): Map<string, number> {
-	const dist = new Map<string, number>();
-	const queue: string[] = [startId];
-	dist.set(startId, 0);
-
-	let i = 0;
-	while (i < queue.length) {
-		const current = queue[i++];
-		if (!current) continue;
-		const currentDist = dist.get(current) ?? 0;
-
-		for (const neighbor of adjacency.get(current) ?? []) {
-			if (!dist.has(neighbor)) {
-				dist.set(neighbor, currentDist + 1);
-				queue.push(neighbor);
-			}
-		}
-	}
-
-	return dist;
-}
-
-/**
  * Find the nearest unvisited system in the static map that passes the empire filter.
  *
  * visitedIds contains systems already visited this sweep. Returns null when all
@@ -123,11 +94,9 @@ function bfsNearest(
 	homeEmpire: string,
 	allowLawless: boolean,
 ): BfsTarget | null {
-	const adjacency = new Map<string, string[]>();
+	const adjacency = buildAdjacency(systems);
 	const systemMap = new Map<string, MapSystem>();
-
 	for (const system of systems) {
-		adjacency.set(system.system_id, system.connections ?? []);
 		systemMap.set(system.system_id, system);
 	}
 

@@ -1,4 +1,10 @@
-import type { CloakedContact, CraftingUpdateEvent, MarketItem, ObservedPlayer } from "./game.js";
+import type {
+	CloakedContact,
+	CraftingUpdateEvent,
+	MarketItem,
+	NotificationPayloads,
+	ObservedPlayer,
+} from "./game.js";
 
 /** The outcome of executing a goal. */
 export interface GoalResult {
@@ -141,3 +147,47 @@ export interface CraftingUpdateEnvelope {
 	receivedAt: string;
 	event: CraftingUpdateEvent;
 }
+
+/**
+ * A single combat-relevant push, timestamped on receipt and delivered over
+ * `GET /accounts/:playerId/combat/events` (SSE) — both as backlog on connect
+ * and live as new pushes arrive. Only self-relevant events are recorded (the
+ * account is a confirmed participant) — see `src/combat/combat-detector.ts`.
+ */
+export type CombatRawEnvelope =
+	| { receivedAt: string; type: "battle_alert"; payload: NotificationPayloads["battle_alert"] }
+	| { receivedAt: string; type: "battle_started"; payload: NotificationPayloads["battle_started"] }
+	| { receivedAt: string; type: "battle_joined"; payload: NotificationPayloads["battle_joined"] }
+	| { receivedAt: string; type: "battle_update"; payload: NotificationPayloads["battle_update"] }
+	| { receivedAt: string; type: "battle_damage"; payload: NotificationPayloads["battle_damage"] }
+	| { receivedAt: string; type: "battle_ended"; payload: NotificationPayloads["battle_ended"] }
+	| { receivedAt: string; type: "battle_left"; payload: NotificationPayloads["battle_left"] }
+	| { receivedAt: string; type: "player_died"; payload: NotificationPayloads["player_died"] }
+	| { receivedAt: string; type: "player_kill"; payload: NotificationPayloads["player_kill"] };
+
+/** Recovery target setpoint decided to send the ship to after combat resolved, if any. */
+export interface CombatRecoveryTarget {
+	systemId: string;
+	poiId: string;
+	baseId: string;
+}
+
+export interface CombatInterruptedPayload {
+	battleId: string;
+	previousLoopType?: string | undefined;
+	previousGoalType?: string | undefined;
+}
+
+export interface CombatRecoveryPayload {
+	target?: CombatRecoveryTarget;
+	message?: string;
+}
+
+/** Synthetic events setpoint itself emits around a combat interruption, alongside the raw game pushes. */
+export type CombatSyntheticEnvelope =
+	| { receivedAt: string; type: "combat_interrupted"; payload: CombatInterruptedPayload }
+	| { receivedAt: string; type: "combat_recovery_started"; payload: CombatRecoveryPayload }
+	| { receivedAt: string; type: "combat_recovery_completed"; payload: CombatRecoveryPayload }
+	| { receivedAt: string; type: "combat_recovery_failed"; payload: CombatRecoveryPayload };
+
+export type CombatEnvelope = CombatRawEnvelope | CombatSyntheticEnvelope;

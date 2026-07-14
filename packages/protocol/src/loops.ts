@@ -14,6 +14,15 @@ const maxIterations = z.number().optional();
 const depositTarget = z.enum(["personal", "faction"]).optional();
 const cashSource = z.literal("faction").optional();
 const minCredits = z.number().optional();
+/**
+ * What to do once combat resolves and the loop's in-progress work has been
+ * interrupted: "auto" runs a built-in recovery (dock at the loop's own safe
+ * station — mining/hauling only, the only types with a defined target),
+ * "external" leaves the account idle for the operator's own automation to
+ * decide, "none" does nothing further. Defaults to "auto" for the loop types
+ * that support it. See `src/combat/combat-recovery.ts`.
+ */
+const combatRecovery = z.enum(["auto", "external", "none"]).optional();
 /** Accepts an object of item_id -> price, or a JSON string of the same (parsed by the handler). */
 const listPrices = z.union([z.record(z.string(), z.number()), z.string()]).optional();
 
@@ -35,6 +44,7 @@ export const loopSchemas = {
 		listPrices,
 		retryOnDepleted: z.boolean().optional(),
 		maxIterations,
+		combatRecovery,
 	}),
 
 	"enhanced-mining": z.object({
@@ -56,6 +66,7 @@ export const loopSchemas = {
 		listPrices,
 		retryOnDepleted: z.boolean().optional(),
 		maxIterations,
+		combatRecovery,
 	}),
 
 	salvage: z.object({
@@ -164,6 +175,7 @@ export const loopSchemas = {
 			}),
 		refuel: z.boolean().optional(),
 		maxIterations,
+		combatRecovery,
 	}),
 
 	"storage-transfer": z.object({

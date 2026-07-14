@@ -1,11 +1,16 @@
 import { describe, expect, mock, test } from "bun:test";
-import type { CraftingUpdateEnvelope, CraftingUpdateEvent } from "@setpoint/protocol";
+import type {
+	CombatEnvelope,
+	CraftingUpdateEnvelope,
+	CraftingUpdateEvent,
+} from "@setpoint/protocol";
 import type { ClerkPlayer, GameState } from "@spacemolt/lib";
 import { markStateFresh } from "../../src/dispatcher/state-freshness.js";
 import {
 	type HandlerContext,
 	handleAbortAccount,
 	handleAddAccount,
+	handleCombatEvents,
 	handleCraftingEvents,
 	handleDashboardData,
 	handleDeleteAccount,
@@ -32,6 +37,7 @@ import {
 } from "../../src/server/handlers.js";
 import { JobManager } from "../../src/server/job-manager.js";
 import type { LoopManager, LoopStatus } from "../../src/server/loop-manager.js";
+import { CombatEventsStore } from "../../src/state/combat-events-store.js";
 import { CraftingEventsStore } from "../../src/state/crafting-events-store.js";
 import { createMemoryDatabase } from "../../src/state/database.js";
 import type { StateStore } from "../../src/state/store.js";
@@ -180,6 +186,7 @@ function makeContext(
 		executingGoals: new Map(),
 		claimedAccounts: new Set(),
 		craftingEventsStore: new CraftingEventsStore(),
+		combatEventsStore: new CombatEventsStore(),
 	};
 }
 
@@ -3184,5 +3191,122 @@ describe("handleCraftingEvents", () => {
 		const events = await readSseEvents(res, 1);
 		expect(events).toHaveLength(1);
 		expect(events[0]?.event.jobs[0]?.runs_done).toBe(9);
+	});
+});
+
+describe("handleCombatEvents", () => {
+	function combatEvent(battleId: string): CombatEnvelope {
+		return {
+			receivedAt: new Date().toISOString(),
+			type: "combat_interrupted",
+			payload: { battleId, previousLoopType: "mining" },
+		};
+	}
+
+	async function readSseEvents(res: Response, count: number): Promise<CombatEnvelope[]> {
+		const reader = res.body?.getReader();
+		if (!reader) throw new Error("Response has no body");
+		const decoder = new TextDecoder();
+		let buffered = "";
+		const events: CombatEnvelope[] = [];
+		while (events.length < count) {
+			const { value, done } = await reader.read();
+			if (done) break;
+			buffered += decoder.decode(value, { stream: true });
+			let boundary = buffered.indexOf("\n\n");
+			while (boundary !== -1) {
+				const frame = buffered.slice(0, boundary);
+				buffered = buffered.slice(boundary + 2);
+				if (frame.startsWith("data: ")) {
+					events.push(JSON.parse(frame.slice("data: ".length)));
+				}
+				boundary = buffered.indexOf("\n\n");
+			}
+		}
+		reader.cancel();
+		return events;
+	}
+
+	test("returns 400 for missing playerId", () => {
+		const ctx = makeContext();
+		const res = handleCombatEvents(
+			new Request("http://localhost/accounts//combat/events"),
+			{},
+			ctx,
+		);
+		expect(res.status).toBe(400);
+	});
+
+	test("returns 404 for unknown account", () => {
+		const ctx = makeContext();
+		const res = handleCombatEvents(
+			new Request("http://localhost/accounts/unknown/combat/events"),
+			{ playerId: "unknown" },
+			ctx,
+		);
+		expect(res.status).toBe(404);
+	});
+
+	test("sets SSE headers", () => {
+		const account = makeAccount("p1");
+		const ctx = makeContext({ accounts: [account] });
+		const res = handleCombatEvents(
+			new Request("http://localhost/accounts/p1/combat/events"),
+			{ playerId: "p1" },
+			ctx,
+		);
+		expect(res.headers.get("Content-Type")).toBe("text/event-stream");
+		expect(res.headers.get("Cache-Control")).toBe("no-cache");
+		expect(res.headers.get("Connection")).toBe("keep-alive");
+	});
+
+	test("streams the buffered backlog immediately on connect", async () => {
+		const account = makeAccount("p1");
+		const ctx = makeContext({ accounts: [account] });
+		ctx.combatEventsStore.record("p1", combatEvent("b1"));
+		ctx.combatEventsStore.record("p1", combatEvent("b2"));
+
+		const res = handleCombatEvents(
+			new Request("http://localhost/accounts/p1/combat/events"),
+			{ playerId: "p1" },
+			ctx,
+		);
+
+		const events = await readSseEvents(res, 2);
+		expect(events).toHaveLength(2);
+		expect((events[0]?.payload as { battleId: string }).battleId).toBe("b1");
+		expect((events[1]?.payload as { battleId: string }).battleId).toBe("b2");
+	});
+
+	test("streams live events recorded after connecting", async () => {
+		const account = makeAccount("p1");
+		const ctx = makeContext({ accounts: [account] });
+
+		const res = handleCombatEvents(
+			new Request("http://localhost/accounts/p1/combat/events"),
+			{ playerId: "p1" },
+			ctx,
+		);
+
+		ctx.combatEventsStore.record("p1", combatEvent("b3"));
+		const events = await readSseEvents(res, 1);
+		expect((events[0]?.payload as { battleId: string }).battleId).toBe("b3");
+	});
+
+	test("does not deliver another account's events", async () => {
+		const account = makeAccount("p1");
+		const ctx = makeContext({ accounts: [account] });
+
+		const res = handleCombatEvents(
+			new Request("http://localhost/accounts/p1/combat/events"),
+			{ playerId: "p1" },
+			ctx,
+		);
+		ctx.combatEventsStore.record("p2", combatEvent("other"));
+		ctx.combatEventsStore.record("p1", combatEvent("mine"));
+
+		const events = await readSseEvents(res, 1);
+		expect(events).toHaveLength(1);
+		expect((events[0]?.payload as { battleId: string }).battleId).toBe("mine");
 	});
 });

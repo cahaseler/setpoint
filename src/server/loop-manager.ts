@@ -145,6 +145,8 @@ export interface MiningLoopApiOptions {
 	listPrices?: Record<string, number>;
 	retryOnDepleted?: boolean;
 	maxIterations?: number;
+	/** What to do once combat resolves — see `combatRecovery` in `@setpoint/protocol`'s `loops.ts`. Defaults to "auto". */
+	combatRecovery?: "auto" | "external" | "none";
 }
 
 /**
@@ -172,6 +174,8 @@ export interface EnhancedMiningLoopApiOptions {
 	listPrices?: Record<string, number>;
 	retryOnDepleted?: boolean;
 	maxIterations?: number;
+	/** What to do once combat resolves — see `combatRecovery` in `@setpoint/protocol`'s `loops.ts`. Defaults to "auto". */
+	combatRecovery?: "auto" | "external" | "none";
 }
 
 /**
@@ -241,6 +245,8 @@ export interface HaulingLoopApiOptions {
 	};
 	refuel?: boolean;
 	maxIterations?: number;
+	/** What to do once combat resolves — see `combatRecovery` in `@setpoint/protocol`'s `loops.ts`. Defaults to "auto". */
+	combatRecovery?: "auto" | "external" | "none";
 }
 
 /**

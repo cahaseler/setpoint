@@ -1,7 +1,12 @@
-import type { CraftingUpdateEvent } from "@setpoint/protocol";
+import {
+	COMBAT_NOTIFICATION_TYPES,
+	type CombatNotificationType,
+	type CraftingUpdateEvent,
+} from "@setpoint/protocol";
 import {
 	type ClerkPlayer,
 	type GameState,
+	type NotificationPayloads,
 	type RegisterParams,
 	type RegisterResult,
 	STATE_SECTIONS,
@@ -47,6 +52,18 @@ export interface LibAccountManagerOptions {
 	onCraftingUpdate?: (
 		playerId: string,
 		event: CraftingUpdateEvent,
+		account: LibManagedAccount,
+	) => void;
+	/**
+	 * Called on every combat-relevant push for an account (see
+	 * `COMBAT_NOTIFICATION_TYPES` in `@setpoint/protocol`) — `battle_*`,
+	 * `player_died`, `player_kill`. Like crafting, these require no explicit
+	 * subscribe call. Wired once per account in `indexAndWire`.
+	 */
+	onCombatUpdate?: (
+		playerId: string,
+		type: CombatNotificationType,
+		payload: NotificationPayloads[CombatNotificationType],
 		account: LibManagedAccount,
 	) => void;
 }
@@ -174,6 +191,20 @@ export class LibAccountManager {
 					log.error(`[${playerId}] onCraftingUpdate handler threw: ${errorMessage(err)}`);
 				}
 			});
+		}
+		const onCombatUpdate = this.opts.onCombatUpdate;
+		if (onCombatUpdate) {
+			// Same isolation rationale as onCraftingUpdate above — a throwing
+			// handler must never escape back into the lib's frame routing.
+			for (const type of COMBAT_NOTIFICATION_TYPES) {
+				account.on(type, (payload) => {
+					try {
+						onCombatUpdate(playerId, type, payload, account);
+					} catch (err) {
+						log.error(`[${playerId}] onCombatUpdate handler threw: ${errorMessage(err)}`);
+					}
+				});
+			}
 		}
 		// The lib seeds state during connect() without firing onStateChange (no
 		// replay), so mark freshness explicitly here — otherwise a freshly-connected

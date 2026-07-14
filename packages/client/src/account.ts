@@ -1,6 +1,7 @@
 /** Account-scoped goal/loop/state API, plus the top-level accounts collection API, for `@setpoint/client`. */
 
 import type {
+	CombatEnvelope,
 	CraftingUpdateEnvelope,
 	Empire,
 	GoalOptionsMap,
@@ -272,6 +273,64 @@ export class AccountCraftingApi {
 	}
 }
 
+/**
+ * Live combat-event API scoped to a single account. Mirrors the daemon's
+ * `GET /accounts/:id/combat/events` route (`handleCombatEvents` in
+ * `src/server/handlers.ts`) — a Server-Sent Events stream of self-relevant
+ * `battle_*`/`player_died`/`player_kill` pushes plus synthetic
+ * `combat_interrupted`/`combat_recovery_*` events, same shape/rationale as
+ * {@link AccountCraftingApi}.
+ */
+export class AccountCombatApi {
+	constructor(
+		private readonly client: SetpointClient,
+		private readonly id: string,
+	) {}
+
+	/**
+	 * Streams combat events for this account: the daemon's buffered backlog
+	 * (last ~50 events) immediately, then each new push live as it arrives.
+	 * The generator runs until the connection closes or `signal` aborts —
+	 * consume with `for await (const envelope of account.combat.events())`.
+	 */
+	async *events(opts?: { signal?: AbortSignal }): AsyncGenerator<CombatEnvelope, void, void> {
+		const url = `${this.client.baseUrl}/accounts/${encodeURIComponent(this.id)}/combat/events`;
+		const response = await fetch(url, opts?.signal ? { signal: opts.signal } : {});
+
+		if (!response.ok || !response.body) {
+			let body: { error?: string } = {};
+			try {
+				body = (await response.json()) as { error?: string };
+			} catch {
+				/* non-JSON error body */
+			}
+			throw new SetpointHttpError(response.status, body);
+		}
+
+		const reader = response.body.getReader();
+		const decoder = new TextDecoder();
+		let buffered = "";
+		try {
+			while (true) {
+				const { value, done } = await reader.read();
+				if (done) return;
+				buffered += decoder.decode(value, { stream: true });
+				let boundary = buffered.indexOf("\n\n");
+				while (boundary !== -1) {
+					const frame = buffered.slice(0, boundary);
+					buffered = buffered.slice(boundary + 2);
+					if (frame.startsWith("data: ")) {
+						yield JSON.parse(frame.slice("data: ".length)) as CombatEnvelope;
+					}
+					boundary = buffered.indexOf("\n\n");
+				}
+			}
+		} finally {
+			await reader.cancel().catch(() => {});
+		}
+	}
+}
+
 /** Goal API scoped to a single account, identified by player_id or username. */
 export class AccountApi {
 	/** Loop sub-API for this account (`sp.account(id).loop`). */
@@ -292,6 +351,9 @@ export class AccountApi {
 	/** Live crafting-progress sub-API for this account (`sp.account(id).crafting`). */
 	readonly crafting: AccountCraftingApi;
 
+	/** Live combat-event sub-API for this account (`sp.account(id).combat`). */
+	readonly combat: AccountCombatApi;
+
 	constructor(
 		private readonly client: SetpointClient,
 		private readonly id: string,
@@ -302,6 +364,7 @@ export class AccountApi {
 		this.market = new AccountMarketApi(client, id);
 		this.observation = new AccountObservationApi(client, id);
 		this.crafting = new AccountCraftingApi(client, id);
+		this.combat = new AccountCombatApi(client, id);
 	}
 
 	/**

@@ -6,11 +6,14 @@ import type { LibAccountManager } from "../accounts/lib-manager.js";
 import { type LibManagedAccount, playerId as playerIdOf } from "../accounts/lib-types.js";
 import type { ProgressRef } from "../dispatcher/goals.js";
 import { makeLibGoalContext } from "../dispatcher/lib-goal-context.js";
+import type { CombatEventsStore } from "../state/combat-events-store.js";
 import type { CraftingEventsStore } from "../state/crafting-events-store.js";
 import { STATE_SECTION_KEYS, type StateSectionKey, type StateStore } from "../state/store.js";
 import { ApiError, HttpError, errorMessage } from "../util/errors.js";
 import { createLogger } from "../util/logger.js";
 import { type LogLevel, getLogLevel, setLogLevel } from "../util/logger.js";
+import type { ExecutingGoalEntry } from "./account-release.js";
+import { forceReleaseAccount } from "./account-release.js";
 import {
 	createGoal,
 	deprecatedTypeMessage,
@@ -42,18 +45,9 @@ export interface HandlerContext {
 	configDir: string;
 	startedAt: string;
 	craftingEventsStore: CraftingEventsStore;
+	combatEventsStore: CombatEventsStore;
 	/** Accounts with a synchronous goal currently executing. Used to prevent races. */
-	executingGoals: Map<
-		string,
-		{
-			goalType: string;
-			goalOptions?: Record<string, unknown>;
-			startedAt: string;
-			controller: AbortController;
-			progress: ProgressRef;
-			promise: Promise<unknown>;
-		}
-	>;
+	executingGoals: Map<string, ExecutingGoalEntry>;
 	/**
 	 * Accounts synchronously claimed by a goal submission that hasn't yet
 	 * reached its durable "running" record (`executingGoals`/`jobManager`).
@@ -1290,28 +1284,7 @@ export async function handleAbortAccount(
 	// Session layer don't check abort signals, so waiting for promises to settle
 	// can take 30s+. Instead, signal everything, clean up state, and let the old
 	// promises settle in the background.
-	log.info(`[${actualId}] Force abort initiated`);
-
-	if (loopStatus?.running) {
-		ctx.loopManager.forceRemove(actualId);
-		ctx.loopManager.deleteLoopConfig(actualId, ctx.configDir).catch((err) => {
-			log.warn(`Failed to delete loop config: ${errorMessage(err)}`);
-		});
-	}
-
-	if (syncGoal) {
-		syncGoal.controller.abort();
-	}
-
-	if (runningJob && jobExecution) {
-		jobExecution.controller.abort();
-	}
-
-	// Clean up in-memory state immediately
-	ctx.executingGoals.delete(actualId);
-	ctx.jobManager.failAllRunning(actualId);
-
-	log.info(`[${actualId}] Force abort complete, signals fired and state cleaned up`);
+	forceReleaseAccount(ctx, actualId);
 	return jsonResponse({ message: "Account aborted — abort signals fired and state cleaned up." });
 }
 
@@ -1751,6 +1724,53 @@ export function handleCraftingEvents(
 				controller.enqueue(encoder.encode(`data: ${JSON.stringify(envelope)}\n\n`));
 			}
 			unsubscribe = ctx.craftingEventsStore.subscribe(actualId, (envelope) => {
+				controller.enqueue(encoder.encode(`data: ${JSON.stringify(envelope)}\n\n`));
+			});
+		},
+		cancel(): void {
+			unsubscribe?.();
+		},
+	});
+
+	return new Response(stream, { headers: SSE_HEADERS });
+}
+
+// ── Combat Events ────────────────────────────────────────────────────
+
+/**
+ * Streams self-relevant combat pushes for an account as Server-Sent Events:
+ * the buffered backlog immediately on connect, then each new push live as it
+ * arrives. Includes both raw `battle_*`/`player_died`/`player_kill`
+ * notifications the combat detector confirmed involve this account, and
+ * synthetic `combat_interrupted`/`combat_recovery_*` events setpoint itself
+ * emits (see `CombatEventsStore`/`CombatReactor`). No subscribe-first step
+ * is needed, same as crafting events.
+ */
+export function handleCombatEvents(
+	_req: Request,
+	params: RouteParams,
+	ctx: HandlerContext,
+): Response {
+	const playerId = params["playerId"];
+	if (!playerId) {
+		return errorResponse("Missing playerId", 400);
+	}
+
+	const account = resolveAccount(ctx, playerId);
+	if (!account) {
+		return errorResponse("Account not found", 404);
+	}
+
+	const actualId = playerIdOf(account);
+	const encoder = new TextEncoder();
+	let unsubscribe: (() => void) | undefined;
+
+	const stream = new ReadableStream<Uint8Array>({
+		start(controller): void {
+			for (const envelope of ctx.combatEventsStore.recent(actualId)) {
+				controller.enqueue(encoder.encode(`data: ${JSON.stringify(envelope)}\n\n`));
+			}
+			unsubscribe = ctx.combatEventsStore.subscribe(actualId, (envelope) => {
 				controller.enqueue(encoder.encode(`data: ${JSON.stringify(envelope)}\n\n`));
 			});
 		},

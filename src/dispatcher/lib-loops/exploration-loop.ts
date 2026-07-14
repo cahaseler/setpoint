@@ -1,4 +1,4 @@
-import type { GameState, GetMapResponse } from "@spacemolt/lib";
+import type { GameState } from "@spacemolt/lib";
 import type { StoredGameState } from "../../state/store.js";
 import { errorMessage } from "../../util/errors.js";
 import { createLogger } from "../../util/logger.js";
@@ -8,10 +8,7 @@ import { LibPrepareAtStation } from "../lib-compounds/prepare-at-station.js";
 import type { LibGoal, LibGoalContext } from "../lib-goal-context.js";
 import { type LibGoalFactory, runLibLoop } from "../lib-loops.js";
 import { LibNavigateToSystem } from "../lib-primitives/navigate-to-system.js";
-
-// get_map without a system filter returns the full-map variant of the union,
-// whose systems entries carry connections, empire, and position data.
-type MapSystem = Extract<GetMapResponse, { systems: unknown }>["systems"][number];
+import { type MapSystem, bfsDistances, buildAdjacency } from "../route-graph.js";
 
 const log = createLogger("loop:exploration");
 
@@ -63,32 +60,6 @@ interface BfsTarget {
 }
 
 /**
- * BFS from startId through the system adjacency graph.
- * Returns a Map of systemId → hop distance from startId.
- */
-function bfsDistances(adjacency: Map<string, string[]>, startId: string): Map<string, number> {
-	const dist = new Map<string, number>();
-	const queue: string[] = [startId];
-	dist.set(startId, 0);
-
-	let i = 0;
-	while (i < queue.length) {
-		const current = queue[i++];
-		if (!current) continue;
-		const currentDist = dist.get(current) ?? 0;
-
-		for (const neighbor of adjacency.get(current) ?? []) {
-			if (!dist.has(neighbor)) {
-				dist.set(neighbor, currentDist + 1);
-				queue.push(neighbor);
-			}
-		}
-	}
-
-	return dist;
-}
-
-/**
  * Find the nearest system in the static map that has not yet been recorded in the
  * faction intel database and passes the empire filter.
  *
@@ -104,11 +75,9 @@ function bfsNearest(
 	homeEmpire: string,
 	allowLawless: boolean,
 ): BfsTarget | null {
-	const adjacency = new Map<string, string[]>();
+	const adjacency = buildAdjacency(systems);
 	const systemMap = new Map<string, MapSystem>();
-
 	for (const system of systems) {
-		adjacency.set(system.system_id, system.connections ?? []);
 		systemMap.set(system.system_id, system);
 	}
 

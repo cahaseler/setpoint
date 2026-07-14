@@ -298,6 +298,62 @@ describe("LibAccountManager", () => {
 		).not.toThrow();
 	});
 
+	test("wires onCombatUpdate for every combat notification type, passing playerId, type, payload, and the account", async () => {
+		const { client, accounts } = setup([player("Alpha", "pid-a")]);
+		const updates: Array<{ playerId: string; type: string; accountId: string | undefined }> = [];
+		const mgr = new LibAccountManager(
+			client,
+			{ clerkApiKey: "k" },
+			{
+				onCombatUpdate: (playerId, type, _payload, account) =>
+					updates.push({ playerId, type, accountId: account.id }),
+			},
+		);
+		await mgr.connect();
+
+		const account = accounts.get("Alpha");
+		account?.emitNotification("battle_alert", { battle_id: "b1" });
+		account?.emitNotification("battle_started", { battle_id: "b1" });
+		account?.emitNotification("battle_joined", { player_id: "pid-a" });
+		account?.emitNotification("battle_update", { battle_id: "b1" });
+		account?.emitNotification("battle_damage", { attacker_id: "pid-a" });
+		account?.emitNotification("battle_ended", { battle_id: "b1" });
+		account?.emitNotification("battle_left", { player_id: "pid-a" });
+		account?.emitNotification("player_died", { clone_cost: 100 });
+		account?.emitNotification("player_kill", { victim: "someone" });
+
+		expect(updates.map((u) => u.type)).toEqual([
+			"battle_alert",
+			"battle_started",
+			"battle_joined",
+			"battle_update",
+			"battle_damage",
+			"battle_ended",
+			"battle_left",
+			"player_died",
+			"player_kill",
+		]);
+		expect(updates.every((u) => u.playerId === "pid-a" && u.accountId === "Alpha")).toBe(true);
+	});
+
+	test("a throwing onCombatUpdate handler is caught and logged, not left to escape into the lib", async () => {
+		const { client, accounts } = setup([player("Alpha", "pid-a")]);
+		const mgr = new LibAccountManager(
+			client,
+			{ clerkApiKey: "k" },
+			{
+				onCombatUpdate: () => {
+					throw new Error("controller already closed");
+				},
+			},
+		);
+		await mgr.connect();
+
+		expect(() =>
+			accounts.get("Alpha")?.emitNotification("battle_started", { battle_id: "b1" }),
+		).not.toThrow();
+	});
+
 	test("connect() skips accounts with no player_id", async () => {
 		const players = [player("Ghost", "")]; // FakeAccount(playerId="") -> player.id === "" is falsy
 		const accounts = new Map<string, FakeAccount>();

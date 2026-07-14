@@ -246,6 +246,63 @@ test("patch is a flat partial", () => {
 	expect(loopPatchSchemas.trading.parse({ refuel: true })).toEqual({ refuel: true });
 });
 
+test("combatRecovery is optional and accepts auto/external/none on mining, enhanced-mining, and hauling", () => {
+	const miningBase = {
+		miningSystemId: "sol",
+		beltPoiId: "b",
+		sellSystemId: "sol",
+		sellStationPoiId: "s",
+		sellBaseId: "base",
+	};
+	expect(loopSchemas.mining.parse(miningBase).combatRecovery).toBeUndefined();
+	expect(loopSchemas.mining.parse({ ...miningBase, combatRecovery: "auto" }).combatRecovery).toBe(
+		"auto",
+	);
+	expect(
+		loopSchemas.mining.parse({ ...miningBase, combatRecovery: "external" }).combatRecovery,
+	).toBe("external");
+	expect(loopSchemas.mining.parse({ ...miningBase, combatRecovery: "none" }).combatRecovery).toBe(
+		"none",
+	);
+	expect(() => loopSchemas.mining.parse({ ...miningBase, combatRecovery: "fight" })).toThrow();
+
+	expect(
+		loopSchemas["enhanced-mining"].parse({
+			...miningBase,
+			junkItemIds: ["rock_dust"],
+			combatRecovery: "external",
+		}).combatRecovery,
+	).toBe("external");
+
+	const haulingBase = {
+		source: {
+			systemId: "a",
+			poiId: "p",
+			baseId: "b",
+			type: "personal-storage" as const,
+			items: [{ itemId: "ore", quantity: 10 }],
+		},
+		destination: {
+			systemId: "c",
+			poiId: "q",
+			baseId: "d",
+			type: "faction-storage" as const,
+		},
+	};
+	expect(loopSchemas.hauling.parse({ ...haulingBase, combatRecovery: "none" }).combatRecovery).toBe(
+		"none",
+	);
+});
+
+test("combatRecovery round-trips through the patch schema", () => {
+	expect(loopPatchSchemas.mining.parse({ combatRecovery: "external" })).toEqual({
+		combatRecovery: "external",
+	});
+	expect(loopPatchSchemas.hauling.parse({ combatRecovery: "auto" })).toEqual({
+		combatRecovery: "auto",
+	});
+});
+
 // Compile-time check: LoopOptionsMap["mining"] has miningSystemId: string.
 const _t: LoopOptionsMap["mining"] = {
 	miningSystemId: "sol",

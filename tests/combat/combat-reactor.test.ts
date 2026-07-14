@@ -1,0 +1,221 @@
+import { describe, expect, test } from "bun:test";
+import type { CombatEnvelope } from "@setpoint/protocol";
+import type { LibAccountManager } from "../../src/accounts/lib-manager.js";
+import { CombatReactor } from "../../src/combat/combat-reactor.js";
+import type {
+	CombatResponseResult,
+	CombatResponseStrategy,
+} from "../../src/combat/combat-response.js";
+import type { ExecutingGoalEntry } from "../../src/server/account-release.js";
+import type { JobManager } from "../../src/server/job-manager.js";
+import type { LoopManager } from "../../src/server/loop-manager.js";
+import { CombatEventsStore } from "../../src/state/combat-events-store.js";
+import { FakeAccount } from "../accounts/fakes.js";
+
+function battleStarted(playerId: string, battleId = "b1") {
+	return {
+		battle_id: battleId,
+		system_id: "sol",
+		participants: [{ player_id: playerId, side_id: 1, username: playerId, zone: "outer" }],
+		sides: [{ side_id: 1, player_count: 1 }],
+	};
+}
+
+function battleEnded(battleId = "b1") {
+	return {
+		battle_id: battleId,
+		duration: 10,
+		reason: "resolved",
+		ships_destroyed: 0,
+		total_damage: 0,
+		winning_side: 1,
+	};
+}
+
+/** Never actually attempts to flee — resolves immediately so tests don't wait on retry timing. */
+class StubStrategy implements CombatResponseStrategy {
+	readonly name = "stub";
+	calls: string[] = [];
+	result: CombatResponseResult = { success: true, message: "stub success", ticksUsed: 1 };
+
+	async respond(): Promise<CombatResponseResult> {
+		this.calls.push("respond");
+		return this.result;
+	}
+}
+
+function makeHarness(options: {
+	loopStatus?: { type: string; running: boolean; options: Record<string, unknown> } | undefined;
+	account?: FakeAccount | undefined;
+}) {
+	const forceRemoveCalls: string[] = [];
+	const deleteConfigCalls: string[] = [];
+	const loopManager = {
+		getStatus: () => options.loopStatus,
+		forceRemove: (id: string) => {
+			forceRemoveCalls.push(id);
+			return true;
+		},
+		deleteLoopConfig: (id: string) => {
+			deleteConfigCalls.push(id);
+			return Promise.resolve();
+		},
+	};
+	const jobManager = {
+		getRunningJob: () => undefined,
+		getExecutionForAccount: () => undefined,
+		failAllRunning: () => 0,
+	};
+	const executingGoals = new Map<string, ExecutingGoalEntry>();
+	const combatEventsStore = new CombatEventsStore();
+	const account = options.account;
+	const manager = {
+		getByPlayerId: (id: string) => (id === "p1" ? account : undefined),
+	};
+	const strategy = new StubStrategy();
+
+	const reactor = new CombatReactor({
+		manager: manager as unknown as LibAccountManager,
+		loopManager: loopManager as unknown as LoopManager,
+		jobManager: jobManager as unknown as JobManager,
+		executingGoals,
+		configDir: "/tmp/config",
+		combatEventsStore,
+		strategy,
+	});
+
+	return { reactor, combatEventsStore, forceRemoveCalls, deleteConfigCalls, strategy };
+}
+
+async function flush(): Promise<void> {
+	await new Promise((resolve) => setTimeout(resolve, 10));
+}
+
+describe("CombatReactor", () => {
+	test("bystander battle_started does not interrupt or record anything", () => {
+		const { reactor, combatEventsStore, forceRemoveCalls } = makeHarness({
+			loopStatus: { type: "mining", running: true, options: {} },
+		});
+		reactor.handle("p1", "battle_started", battleStarted("other-player"));
+		expect(forceRemoveCalls).toHaveLength(0);
+		expect(combatEventsStore.recent("p1")).toHaveLength(0);
+	});
+
+	test("self-relevant battle_started force-releases the running loop and records combat_interrupted", async () => {
+		const account = new FakeAccount("p1", "acc-1");
+		const { reactor, combatEventsStore, forceRemoveCalls, deleteConfigCalls, strategy } =
+			makeHarness({
+				loopStatus: {
+					type: "mining",
+					running: true,
+					options: { sellSystemId: "sol", sellStationPoiId: "sol-poi", sellBaseId: "sol-base" },
+				},
+				account,
+			});
+
+		reactor.handle("p1", "battle_started", battleStarted("p1"));
+		await flush();
+
+		expect(forceRemoveCalls).toEqual(["p1"]);
+		expect(deleteConfigCalls).toEqual(["p1"]);
+		expect(strategy.calls).toEqual(["respond"]);
+
+		const events = combatEventsStore.recent("p1");
+		expect(events.map((e) => e.type)).toEqual(["battle_started", "combat_interrupted"]);
+		const interrupted = events[1] as Extract<CombatEnvelope, { type: "combat_interrupted" }>;
+		expect(interrupted.payload).toEqual({
+			battleId: "b1",
+			previousLoopType: "mining",
+			previousGoalType: undefined,
+		});
+	});
+
+	test("battle_ended after entering combat runs recovery to the mining loop's sell station", async () => {
+		const account = new FakeAccount("p1", "acc-1", {
+			location: { system_id: "sol", poi_id: "sol-poi", docked_at: "sol-base" },
+			ship: { fuel: 100, max_fuel: 100, hull: 50, max_hull: 50 },
+		});
+		const { reactor, combatEventsStore } = makeHarness({
+			loopStatus: {
+				type: "mining",
+				running: true,
+				options: { sellSystemId: "sol", sellStationPoiId: "sol-poi", sellBaseId: "sol-base" },
+			},
+			account,
+		});
+
+		reactor.handle("p1", "battle_started", battleStarted("p1"));
+		await flush();
+		reactor.handle("p1", "battle_ended", battleEnded());
+		await flush();
+
+		const types = combatEventsStore.recent("p1").map((e) => e.type);
+		expect(types).toContain("combat_recovery_started");
+		expect(types).toContain("combat_recovery_completed");
+	});
+
+	test("combatRecovery: external skips recovery entirely", async () => {
+		const account = new FakeAccount("p1", "acc-1", {
+			location: { system_id: "sol", poi_id: "sol-poi", docked_at: "sol-base" },
+			ship: { fuel: 100, max_fuel: 100, hull: 50, max_hull: 50 },
+		});
+		const { reactor, combatEventsStore } = makeHarness({
+			loopStatus: {
+				type: "mining",
+				running: true,
+				options: {
+					sellSystemId: "sol",
+					sellStationPoiId: "sol-poi",
+					sellBaseId: "sol-base",
+					combatRecovery: "external",
+				},
+			},
+			account,
+		});
+
+		reactor.handle("p1", "battle_started", battleStarted("p1"));
+		await flush();
+		reactor.handle("p1", "battle_ended", battleEnded());
+		await flush();
+
+		const types = combatEventsStore.recent("p1").map((e) => e.type);
+		expect(types).not.toContain("combat_recovery_started");
+	});
+
+	test("battle_ended for an unrelated battle_id does not clear state or trigger recovery", async () => {
+		const account = new FakeAccount("p1", "acc-1");
+		const { reactor, combatEventsStore } = makeHarness({
+			loopStatus: { type: "mining", running: true, options: {} },
+			account,
+		});
+
+		reactor.handle("p1", "battle_started", battleStarted("p1", "b1"));
+		await flush();
+		reactor.handle("p1", "battle_ended", battleEnded("b2"));
+		await flush();
+
+		const types = combatEventsStore.recent("p1").map((e) => e.type);
+		expect(types).not.toContain("combat_recovery_started");
+	});
+
+	test("player_died force-releases work but records no recovery events", async () => {
+		const account = new FakeAccount("p1", "acc-1");
+		const { reactor, combatEventsStore, forceRemoveCalls } = makeHarness({
+			loopStatus: { type: "mining", running: true, options: {} },
+			account,
+		});
+
+		reactor.handle("p1", "player_died", {
+			clone_cost: 100,
+			insurance_payout: 0,
+			respawn_base: "home_base",
+			ship_lost: "frigate",
+		});
+		await flush();
+
+		expect(forceRemoveCalls).toEqual(["p1"]);
+		const types = combatEventsStore.recent("p1").map((e) => e.type);
+		expect(types).toEqual(["player_died"]);
+		expect(types).not.toContain("combat_recovery_started");
+	});
+});
