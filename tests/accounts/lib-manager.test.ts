@@ -91,6 +91,7 @@ describe("LibAccountManager", () => {
 				connectedListeners.add(listener);
 				return () => connectedListeners.delete(listener);
 			},
+			onAccountReconnected: () => () => {},
 			onAccountDisconnected: () => () => {},
 		};
 		const mgr = new LibAccountManager(client, { clerkApiKey: "k" });
@@ -399,7 +400,7 @@ describe("LibAccountManager", () => {
 		expect(accounts.get("Beta")?.closed).toBe(true);
 	});
 
-	test("a reconnect replaces the indexed account with the new instance", async () => {
+	test("a reconnect happens in place — the same instance stays indexed, no re-index needed", async () => {
 		const { client, accounts } = setup([player("Alpha", "pid-a")]);
 		const mgr = new LibAccountManager(client, { clerkApiKey: "k" });
 		await mgr.connect();
@@ -407,16 +408,14 @@ describe("LibAccountManager", () => {
 		const original = mgr.getByPlayerId("pid-a");
 		expect(original).toBe(accounts.get("Alpha"));
 
-		const reconnected = new FakeAccount("pid-a", "Alpha");
-		client.simulateReconnect("Alpha", reconnected);
+		client.simulateReconnected("Alpha");
 
-		expect(mgr.getByPlayerId("pid-a")).toBe(reconnected);
-		expect(mgr.getByPlayerId("pid-a")).not.toBe(original);
-		expect(mgr.getByUsername("alpha")).toBe(reconnected);
+		expect(mgr.getByPlayerId("pid-a")).toBe(original);
+		expect(mgr.getByUsername("alpha")).toBe(original);
 	});
 
-	test("a reconnect re-wires onStateChange on the new instance", async () => {
-		const { client } = setup([player("Alpha", "pid-a")]);
+	test("onStateChange keeps working on the original instance after a reconnect, with no double-wiring", async () => {
+		const { client, accounts } = setup([player("Alpha", "pid-a")]);
 		const stateChanges: string[][] = [];
 		const mgr = new LibAccountManager(
 			client,
@@ -426,11 +425,10 @@ describe("LibAccountManager", () => {
 		await mgr.connect();
 		stateChanges.length = 0; // clear the connect-time backfill call
 
-		const reconnected = new FakeAccount("pid-a", "Alpha");
-		client.simulateReconnect("Alpha", reconnected);
-		stateChanges.length = 0; // clear the reconnect's own backfill call
+		client.simulateReconnected("Alpha");
 
-		reconnected.emitStateChange(["ship"]);
+		const account = accounts.get("Alpha") as FakeAccount;
+		account.emitStateChange(["ship"]);
 		expect(stateChanges).toEqual([["ship"]]);
 	});
 
