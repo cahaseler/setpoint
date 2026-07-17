@@ -221,6 +221,7 @@ After finishing a set of changes, run `bun run deploy`. It bumps the patch versi
 ### Running the Daemon
 - **Check if it's running:** `curl -s http://localhost:7580/health`
 - **Free the port if needed:** `npx kill-port 7580` — avoid broad `pkill` that kills unrelated processes.
+- **NEVER restart the daemon (or kill its process) without explicit, in-the-moment instruction from Craig.** This holds even mid-incident, even when a fix clearly requires a restart to complete, even when it seems obviously implied by the conversation. Diagnose, explain what's wrong and why a restart would fix it, and ask — then wait for an explicit go-ahead before touching the process. The live daemon manages real, active accounts and other automation (patrols, loops, external scripts) depends on it staying up on Craig's own schedule, not whenever a fix is ready.
 
 ### Important Patterns
 - **Never hardcode API types** — always use the types exported by `@spacemolt/lib`
