@@ -1,4 +1,4 @@
-import type { DepositItemsResponse } from "@spacemolt/lib";
+import type { BulkStorageResponse } from "@spacemolt/lib";
 import { createLogger } from "../../util/logger.js";
 import type { GoalResult } from "../goals.js";
 import { alreadySatisfied, failed, succeeded } from "../goals.js";
@@ -12,7 +12,7 @@ export interface EnsureEmptyCargoOptions {
 }
 
 /** Bulk deposit result — the union member returned when `items` is set (per-item outcomes). */
-type BulkDepositResult = Extract<DepositItemsResponse, { results: unknown[] }>;
+type BulkDepositResult = BulkStorageResponse;
 
 /**
  * Ensure the ship's cargo hold is empty by depositing all items into storage.

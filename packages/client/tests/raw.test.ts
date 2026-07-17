@@ -41,7 +41,7 @@ describe("AccountApi.raw", () => {
 		result: { moved: true },
 		structuredContent: {
 			details: {
-				action: "jump",
+				action: "jumped",
 				from_system: "alpha",
 				system: "Sol",
 				system_id: "sol",

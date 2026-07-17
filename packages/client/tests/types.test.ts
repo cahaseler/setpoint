@@ -76,7 +76,7 @@ describe("RawApi types", () => {
 			command: "jump",
 			structuredContent: {
 				details: {
-					action: "jump",
+					action: "jumped",
 					from_system: "alpha",
 					system: "Sol",
 					system_id: "sol",
@@ -93,7 +93,7 @@ describe("RawApi types", () => {
 		// not `unknown` — narrowing on `system_id` (only present on the
 		// direct-jump variant) proves the real type made it through.
 		const details = result.structuredContent?.details;
-		expect(details?.action).toBe("jump");
+		expect(details?.action).toBe("jumped");
 		if (details && "system_id" in details) {
 			expect(details.system_id).toBe("sol");
 		} else {

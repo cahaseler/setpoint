@@ -1,6 +1,6 @@
 import type {
-	CreateSellOrderResponse,
-	DepositItemsResponse,
+	BulkCreateSellOrdersResponse,
+	BulkStorageResponse,
 	ViewMarketResponse,
 } from "@spacemolt/lib";
 import { type Logger, createLogger } from "../../util/logger.js";
@@ -15,10 +15,10 @@ const log = createLogger("goal:sell-or-deposit-cargo");
 type MarketItem = ViewMarketResponse["items"][number];
 
 /** Bulk sell-order result — the union member returned when `orders` is set (per-order outcomes). */
-type BulkCreateSellResult = Extract<CreateSellOrderResponse, { results: unknown[] }>;
+type BulkCreateSellResult = BulkCreateSellOrdersResponse;
 
 /** Bulk deposit result — the union member returned when `items` is set (per-item outcomes). */
-type BulkDepositResult = Extract<DepositItemsResponse, { results: unknown[] }>;
+type BulkDepositResult = BulkStorageResponse;
 
 /** Options for the SellOrDepositCargo goal. */
 export interface SellOrDepositCargoOptions {

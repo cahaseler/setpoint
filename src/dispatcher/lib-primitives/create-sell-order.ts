@@ -1,4 +1,4 @@
-import type { CreateSellOrderResponse } from "@spacemolt/lib";
+import type { CreateSellOrderCommandResponse } from "@spacemolt/lib";
 import { createLogger } from "../../util/logger.js";
 import type { GoalResult } from "../goals.js";
 import { failed, succeeded } from "../goals.js";
@@ -40,8 +40,8 @@ export class LibCreateSellOrder implements LibGoal {
 			price_each: this.price,
 		});
 
-		const content = response.delta.details as CreateSellOrderResponse | undefined;
-		if (content && "results" in content) {
+		const content = response.delta.details as CreateSellOrderCommandResponse | undefined;
+		if (content?.kind === "bulk") {
 			// Bulk-mode response shape — only expected when the request sends an
 			// orders array, but the response type is a union so handle it.
 			const { total, succeeded: ok, failed: failures } = content.summary;
