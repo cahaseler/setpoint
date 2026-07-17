@@ -126,6 +126,34 @@ describe("DaemonClient", () => {
 		expect(fetchCalls).toHaveLength(2); // 1 failure + 1 success
 	});
 
+	test("POST does not retry on connection error — fails after a single attempt", async () => {
+		fetchCalls = [];
+		globalThis.fetch = ((url: string | URL | Request, init?: RequestInit) => {
+			fetchCalls.push({ url: url.toString(), init });
+			return Promise.reject(new TypeError("fetch failed"));
+		}) as unknown as typeof fetch;
+
+		const client = new DaemonClient({ port: 7580, retryDelayMs: 0 });
+
+		await expect(client.post("/accounts/p1/goal", { type: "create-buy-order" })).rejects.toThrow(
+			ConnectionError,
+		);
+		expect(fetchCalls).toHaveLength(1);
+	});
+
+	test("DELETE does not retry on connection error — fails after a single attempt", async () => {
+		fetchCalls = [];
+		globalThis.fetch = ((url: string | URL | Request, init?: RequestInit) => {
+			fetchCalls.push({ url: url.toString(), init });
+			return Promise.reject(new TypeError("fetch failed"));
+		}) as unknown as typeof fetch;
+
+		const client = new DaemonClient({ port: 7580, retryDelayMs: 0 });
+
+		await expect(client.delete("/accounts/p1/loop")).rejects.toThrow(ConnectionError);
+		expect(fetchCalls).toHaveLength(1);
+	});
+
 	test("throws TimeoutError immediately on timeout without retrying", async () => {
 		fetchCalls = [];
 		globalThis.fetch = ((_url: string | URL | Request, init?: RequestInit) => {

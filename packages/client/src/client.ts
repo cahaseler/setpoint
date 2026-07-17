@@ -74,8 +74,14 @@ export class SetpointClient {
 	/**
 	 * Issues an HTTP request and returns the parsed JSON body.
 	 *
-	 * Retries connection failures (server unreachable) up to `RETRY_ATTEMPTS` times.
-	 * Does NOT retry timeouts — the server is running but slow/busy, and retrying
+	 * Retries connection failures (server unreachable) up to `RETRY_ATTEMPTS`
+	 * times — but only for GET, which has no side effects. A mutating request
+	 * (POST/PATCH/DELETE) may have already been processed by the daemon
+	 * before the connection dropped (e.g. mid-restart, or a dropped socket
+	 * after the daemon executed the mutation but before the response made it
+	 * back); blindly resubmitting it risks double-executing a non-idempotent
+	 * action, like creating a duplicate buy/sell order. Does NOT retry
+	 * timeouts either — the server is running but slow/busy, and retrying
 	 * just adds load and produces misleading "connection failed" errors.
 	 *
 	 * A `timeoutMs` of 0 (or leaving both this and the constructor default unset)
@@ -92,8 +98,9 @@ export class SetpointClient {
 			init.body = JSON.stringify(opts.body);
 		}
 
+		const maxAttempts = method === "GET" ? RETRY_ATTEMPTS : 1;
 		let lastErr: unknown;
-		for (let attempt = 0; attempt < RETRY_ATTEMPTS; attempt++) {
+		for (let attempt = 0; attempt < maxAttempts; attempt++) {
 			if (attempt > 0) {
 				await new Promise<void>((resolve) => setTimeout(resolve, this.retryDelayMs));
 			}

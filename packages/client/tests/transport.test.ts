@@ -120,6 +120,24 @@ describe("SetpointClient", () => {
 		expect(fetchCalls).toHaveLength(3);
 	});
 
+	test("POST connection failure does NOT retry — fails after a single attempt", async () => {
+		mockFetchError();
+		const client = new SetpointClient({ retryDelayMs: 0 });
+
+		await expect(
+			client.request("POST", "/accounts/p1/goal", { body: { type: "create-buy-order" } }),
+		).rejects.toThrow(ConnectionError);
+		expect(fetchCalls).toHaveLength(1);
+	});
+
+	test("DELETE connection failure does NOT retry — fails after a single attempt", async () => {
+		mockFetchError();
+		const client = new SetpointClient({ retryDelayMs: 0 });
+
+		await expect(client.request("DELETE", "/accounts/p1/loop")).rejects.toThrow(ConnectionError);
+		expect(fetchCalls).toHaveLength(1);
+	});
+
 	test("abort/timeout throws TimeoutError without retrying", async () => {
 		mockFetchAbort();
 		const client = new SetpointClient({ retryDelayMs: 0 });
