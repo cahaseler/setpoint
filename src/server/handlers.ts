@@ -1110,16 +1110,17 @@ export async function handleStartLoop(
 
 	const actualId = playerIdOf(account);
 
-	// If a loop is already running, stop it before starting the new one.
-	// This allows the fleet brain to update a ship's target without needing
-	// a separate stop call. forceRemove() evicts immediately so isRunning()
-	// returns false — the old promise settles in the background.
+	// If a loop is already running, stop it and wait for it to actually finish
+	// before starting the new one. Evicting the map entry without waiting (as
+	// forceRemove() does) lets the old loop's in-flight step keep issuing real
+	// navigation/mining commands concurrently with the new loop on the same
+	// account — two uncoordinated route planners racing on one ship. See
+	// LoopStatus.stopping's doc comment for the contract this must honor.
 	if (ctx.loopManager.isRunning(actualId)) {
 		log.info(`[${actualId}] Replacing existing loop with new ${loopType} loop`);
-		ctx.loopManager.forceRemove(actualId);
-		ctx.loopManager.deleteLoopConfig(actualId, ctx.configDir).catch((err) => {
-			log.warn(`Failed to delete old loop config: ${errorMessage(err)}`);
-		});
+		ctx.loopManager.abortLoop(actualId);
+		const oldPromise = ctx.loopManager.getPromise(actualId);
+		if (oldPromise) await oldPromise.catch(() => {});
 	}
 
 	const resolveLive = resolveLiveAccount(ctx, actualId);

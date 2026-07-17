@@ -183,7 +183,9 @@ describe("dispatch", () => {
 		const { ctx, client } = makeCtx({ status: 201, data: {} }, body);
 		await dispatch(ctx, ["loop", "start", "player-123"]);
 
-		expect(client.post).toHaveBeenCalledWith("/accounts/player-123/loop", body);
+		expect(client.post).toHaveBeenCalledWith("/accounts/player-123/loop", body, {
+			requestTimeoutMs: 0,
+		});
 	});
 
 	test("loop start tow-salvage POSTs /accounts/:playerId/loop with the body", async () => {
@@ -201,7 +203,9 @@ describe("dispatch", () => {
 		};
 		const { ctx, client } = makeCtx({ status: 201, data: {} }, body);
 		await dispatch(ctx, ["loop", "start", "player-123"]);
-		expect(client.post).toHaveBeenCalledWith("/accounts/player-123/loop", body);
+		expect(client.post).toHaveBeenCalledWith("/accounts/player-123/loop", body, {
+			requestTimeoutMs: 0,
+		});
 	});
 
 	test("loop stop calls DELETE /accounts/:playerId/loop", async () => {

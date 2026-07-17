@@ -1476,9 +1476,19 @@ describe("handleStartLoop", () => {
 		expect(body.error).toContain("raw");
 	});
 
-	test("stops existing loop before starting new one", async () => {
+	test("stops existing loop and waits for it to settle before starting new one", async () => {
 		const account = makeAccount("p1");
 		const ctx = makeContext({ accounts: [account], loopRunning: true });
+
+		// A deferred promise proves the handler actually awaits the old loop's
+		// settlement rather than racing ahead — forceRemove() used to evict the
+		// map entry without waiting, letting the old loop keep issuing commands
+		// concurrently with the new one on the same account.
+		let resolveOld: () => void = () => {};
+		const oldLoopSettled = new Promise<void>((resolve) => {
+			resolveOld = resolve;
+		});
+		ctx.loopManager.getPromise = mock(() => oldLoopSettled as Promise<never>);
 
 		const req = new Request("http://localhost/accounts/p1/loop", {
 			method: "POST",
@@ -1495,10 +1505,20 @@ describe("handleStartLoop", () => {
 			headers: { "Content-Type": "application/json" },
 		});
 
-		const res = await handleStartLoop(req, { playerId: "p1" }, ctx);
+		const resPromise = handleStartLoop(req, { playerId: "p1" }, ctx);
+
+		// Give the handler a turn to run up to the await — the new loop must not
+		// have started yet, since the old loop's promise hasn't settled.
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(ctx.loopManager.startMiningLoop).not.toHaveBeenCalled();
+		expect(ctx.loopManager.abortLoop).toHaveBeenCalledWith("p1");
+		expect(ctx.loopManager.forceRemove).not.toHaveBeenCalled();
+
+		resolveOld();
+		const res = await resPromise;
 		expect(res.status).toBe(201);
-		expect(ctx.loopManager.forceRemove).toHaveBeenCalledWith("p1");
-		expect(ctx.loopManager.deleteLoopConfig).toHaveBeenCalledWith("p1", "config");
+		expect(ctx.loopManager.startMiningLoop).toHaveBeenCalled();
 	});
 });
 

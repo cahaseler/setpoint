@@ -74,6 +74,12 @@ describe("isUnboundedRequest", () => {
 	test("POST /accounts (add) is not unbounded — connects in the background, returns 202 immediately", () => {
 		expect(isUnboundedRequest(new Request("http://x/accounts", { method: "POST" }))).toBe(false);
 	});
+
+	test("POST .../loop (start) is unbounded — waits for a replaced loop to actually stop", () => {
+		expect(isUnboundedRequest(new Request("http://x/accounts/p1/loop", { method: "POST" }))).toBe(
+			true,
+		);
+	});
 });
 
 describe("stopServerWithGracePeriod", () => {
