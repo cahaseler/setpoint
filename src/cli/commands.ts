@@ -427,8 +427,12 @@ async function handleLoopStart(ctx: CommandContext, args: string[]): Promise<voi
 			"--json or --stdin required. Usage: smctl loop start <playerId> --json '<json>' | --stdin",
 		);
 	}
+	// Replacing a running loop waits for the old one to actually stop, which
+	// blocks on its current game API call.
 	await sendAndOutput(ctx, () =>
-		ctx.client.post(`/accounts/${encodeURIComponent(playerId)}/loop`, ctx.jsonBody),
+		ctx.client.post(`/accounts/${encodeURIComponent(playerId)}/loop`, ctx.jsonBody, {
+			requestTimeoutMs: GAME_API_TIMEOUT_MS,
+		}),
 	);
 }
 

@@ -51,12 +51,18 @@ export class AccountLoopApi {
 		private readonly id: string,
 	) {}
 
-	/** Starts a loop, persisting its config on the daemon. Body is `{type, options}` (matches `handleStartLoop`). */
+	/**
+	 * Starts a loop, persisting its config on the daemon. Body is `{type, options}` (matches `handleStartLoop`).
+	 *
+	 * Replacing a running loop waits for the old one to actually stop, which can
+	 * legitimately take a while, so the request timeout is disabled (`timeoutMs: 0`)
+	 * rather than inherited from the client default.
+	 */
 	async start<T extends LoopType>(type: T, options: LoopOptionsMap[T]): Promise<LoopStatus> {
 		const result = await this.client.request(
 			"POST",
 			`/accounts/${encodeURIComponent(this.id)}/loop`,
-			{ body: { type, options } },
+			{ body: { type, options }, timeoutMs: 0 },
 		);
 		return result as LoopStatus;
 	}

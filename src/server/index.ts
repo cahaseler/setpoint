@@ -69,7 +69,12 @@ export function isUnboundedRequest(req: Request): boolean {
 		return /\/(crafting|combat)\/events$/.test(pathname);
 	}
 	if (req.method === "POST") {
-		return /\/goal$/.test(pathname) || /\/raw$/.test(pathname) || pathname === "/accounts/register";
+		return (
+			/\/goal$/.test(pathname) ||
+			/\/raw$/.test(pathname) ||
+			pathname === "/accounts/register" ||
+			/\/loop$/.test(pathname)
+		);
 	}
 	if (req.method === "DELETE") {
 		return /^\/accounts\/[^/]+$/.test(pathname) || /\/abort$/.test(pathname);
