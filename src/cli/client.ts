@@ -81,11 +81,18 @@ export class DaemonClient {
 			init.body = JSON.stringify(body);
 		}
 
-		// Retry on connection errors (daemon not reachable) up to 3 times.
-		// Do NOT retry on timeouts — the daemon is running but busy, retrying
+		// Retry on connection errors (daemon not reachable) up to 3 times — but
+		// only for GET, which has no side effects. A mutating request (POST/
+		// PATCH/DELETE) may have already been processed by the daemon before
+		// the connection dropped (e.g. mid-restart, or a dropped socket after
+		// the daemon executed the mutation but before the response made it
+		// back); blindly resubmitting it risks double-executing a non-
+		// idempotent action, like creating a duplicate buy/sell order. Do NOT
+		// retry on timeouts either — the daemon is running but busy, retrying
 		// just adds load and produces misleading "connection failed" errors.
+		const maxAttempts = method === "GET" ? 3 : 1;
 		let lastErr: unknown;
-		for (let attempt = 0; attempt < 3; attempt++) {
+		for (let attempt = 0; attempt < maxAttempts; attempt++) {
 			if (attempt > 0) {
 				await new Promise<void>((resolve) => setTimeout(resolve, this.retryDelayMs));
 			}

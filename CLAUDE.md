@@ -239,9 +239,9 @@ Key timing constants that interact — understand these before debugging any loc
 | Constant | Value | Location | Purpose |
 |----------|-------|----------|---------|
 | `DaemonClient.requestTimeoutMs` | 30s default; **no timeout (unbounded wait)** for sync goals, `raw`, `accounts register`, `accounts remove`, and forced `abort` | `src/cli/client.ts` (default), `GAME_API_TIMEOUT_MS` in `src/cli/commands.ts` (per-command override) | CLI per-request timeout |
-| `retryDelayMs` | 1s | `src/cli/client.ts` | CLI delay between connection retries (3 attempts max) |
+| `retryDelayMs` | 1s | `src/cli/client.ts` | CLI delay between connection retries (3 attempts max, GET only) |
 
-**Error handling**: The CLI distinguishes connection errors (daemon unreachable — retried 3 times) from timeouts (daemon running but slow — reported immediately, no retry). Timeouts produce exit code 5 (`"timeout"`); connection failures produce exit code 3 (`"connection_failed"`).
+**Error handling**: The CLI distinguishes connection errors (daemon unreachable) from timeouts (daemon running but slow — reported immediately, no retry). Connection errors are only retried (3 attempts) for GET requests — GET has no side effects, so retrying is safe. Mutating requests (POST/PATCH/DELETE) fail immediately on a connection error instead: the daemon may have already processed the mutation before the connection dropped (e.g. mid-restart), and blindly resubmitting risks double-executing a non-idempotent action like creating a duplicate buy/sell order. `@setpoint/client`'s `SetpointClient.request()` follows the same GET-only retry rule. Timeouts produce exit code 5 (`"timeout"`); connection failures produce exit code 3 (`"connection_failed"`).
 
 **Transit holds (game server behavior, hidden by `@spacemolt/lib`)**: a mutation like `jump` doesn't resolve until the ship *arrives* — the lib hides the two-phase mutation protocol, so the awaited call can take the full transit time (distance-based, can exceed 60s), not just one tick. A "slow" command (~1min wall clock, seconds of actual server processing) usually means it was queued behind a transit, not that anything is stuck. Queries always return instantly.
 
