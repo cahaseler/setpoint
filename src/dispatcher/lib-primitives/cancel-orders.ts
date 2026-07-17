@@ -1,4 +1,4 @@
-import type { CancelOrderResponse } from "@spacemolt/lib";
+import type { BulkCancelOrdersResponse } from "@spacemolt/lib";
 import { createLogger } from "../../util/logger.js";
 import type { GoalResult } from "../goals.js";
 import { failed, succeeded } from "../goals.js";
@@ -9,7 +9,7 @@ const log = createLogger("goal:cancel-orders");
 const BULK_LIMIT = 50;
 
 /** Bulk cancel result — the union member returned when `order_ids` is set (per-order outcomes). */
-type BulkCancelResult = Extract<CancelOrderResponse, { results: unknown[] }>;
+type BulkCancelResult = BulkCancelOrdersResponse;
 
 export interface CancelOrdersOptions {
 	/** Order IDs to cancel. Up to 50 are cancelled per tick. */

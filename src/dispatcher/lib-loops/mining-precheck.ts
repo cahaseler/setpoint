@@ -138,7 +138,9 @@ export async function checkHarvesterForPoi(
 
 	const missingRequirements = new Set<string>();
 	const canMineAny = resources.some((r) => {
-		const extractedBy = catalog.item(r.resource_id)?.["extracted_by"];
+		const catalogItem = catalog.item(r.resource_id);
+		const extractedBy =
+			catalogItem && "extracted_by" in catalogItem ? catalogItem.extracted_by : undefined;
 		if (extractedBy === "gas" || extractedBy === "ice") {
 			if (hasModule(harvesterModulePrefix(extractedBy))) return true;
 			missingRequirements.add(`${extractedBy} harvester`);

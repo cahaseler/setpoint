@@ -196,7 +196,11 @@ export class FakeClient implements AccountClientLike {
 		this.notifyConnected(account);
 		return Promise.resolve({
 			account,
-			result: { password: "generated-password", player_id: playerId, state: {} },
+			result: {
+				password: "generated-password",
+				player_id: playerId,
+				state: {} as unknown as RegisterResult["state"],
+			},
 		});
 	}
 	/** Passthrough over the fixture player list, ignoring connection status. */
