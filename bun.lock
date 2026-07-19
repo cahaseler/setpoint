@@ -6,7 +6,7 @@
       "name": "sm-dispatcher",
       "dependencies": {
         "@setpoint/protocol": "workspace:*",
-        "@spacemolt/lib": "11.5.0",
+        "@spacemolt/lib": "^11.5.0",
       },
       "devDependencies": {
         "@biomejs/biome": "^1.9.0",
