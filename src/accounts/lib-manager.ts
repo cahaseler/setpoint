@@ -241,10 +241,18 @@ export class LibAccountManager {
 	}
 
 	/**
-	 * Connect a single stored account by store-key/username. Indexing happens
-	 * via the onAccountConnected listener registered in the constructor,
-	 * which — unlike this method — treats a missing player_id as a
-	 * skip-and-warn (appropriate for a fleet-wide connect where one bad
+	 * Connect a single owned account by player_id or username, looked up fresh
+	 * from Clerk via a targeted `connectOwned` filter rather than
+	 * `client.connect()` — that method requires credentials already sitting in
+	 * the lib's credential store, which only happens for accounts covered by an
+	 * earlier `connect()` (fleet-wide, filtered by config) call. An account
+	 * added after startup and never in that filter has no stored credentials,
+	 * so `client.connect()` fails with a confusing "no stored credentials"
+	 * error even though Clerk owns it — reproduced live when `accounts add`ing
+	 * accounts outside `config/dispatcher.json`'s static filter. Indexing
+	 * happens via the onAccountConnected listener registered in the
+	 * constructor, which — unlike this method — treats a missing player_id as
+	 * a skip-and-warn (appropriate for a fleet-wide connect where one bad
 	 * account shouldn't fail the rest). A single, explicit connectOne() call
 	 * should surface that failure to its caller instead of silently
 	 * succeeding with nothing indexed.
@@ -252,7 +260,13 @@ export class LibAccountManager {
 	async connectOne(idOrUsername: string): Promise<LibManagedAccount> {
 		this.connecting.add(idOrUsername.toLowerCase());
 		try {
-			const account = await this.client.connect(idOrUsername);
+			const target = idOrUsername.toLowerCase();
+			const [account] = await this.client.connectOwned({
+				filter: (p) => p.id === idOrUsername || p.username.toLowerCase() === target,
+			});
+			if (!account) {
+				throw new Error(`No account owned by the configured Clerk user matches "${idOrUsername}"`);
+			}
 			if (!account.player?.id) {
 				throw new Error("Connected account has no player_id after connect");
 			}

@@ -492,6 +492,33 @@ describe("LibAccountManager", () => {
 		await expect(mgr.connectOne("Ghost")).rejects.toThrow("no player_id");
 	});
 
+	test("connectOne() connects an owned account never covered by an earlier connect()'s filter", async () => {
+		// Reproduces the real bug: a fleet-wide connect() only ran with a filter
+		// covering Alpha, so an unfiltered client.connect("Beta") would have
+		// found no stored credentials for Beta. connectOne() must resolve Beta
+		// straight from Clerk's owned-players list instead of depending on that
+		// earlier connect() having already stored its credentials.
+		const { client } = setup([player("Alpha", "pid-a"), player("Beta", "pid-b")]);
+		const mgr = new LibAccountManager(client, {
+			clerkApiKey: "k",
+			filter: { usernames: ["Alpha"] },
+		});
+		await mgr.connect();
+		expect(mgr.getByUsername("beta")).toBeUndefined();
+
+		const account = await mgr.connectOne("Beta");
+
+		expect(account.id).toBe("Beta");
+		expect(mgr.getByPlayerId("pid-b")).toBe(account);
+	});
+
+	test("connectOne() throws a clear error when no owned account matches", async () => {
+		const { client } = setup([player("Alpha", "pid-a")]);
+		const mgr = new LibAccountManager(client, { clerkApiKey: "k" });
+
+		await expect(mgr.connectOne("Nobody")).rejects.toThrow(/No account owned.*"Nobody"/);
+	});
+
 	test("connectOne() tracks isConnecting while the connect is in flight", async () => {
 		const { client } = setup([player("Alpha", "pid-a")]);
 		const mgr = new LibAccountManager(client, { clerkApiKey: "k" });

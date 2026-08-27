@@ -161,10 +161,17 @@ export class FakeClient implements AccountClientLike {
 	}): Promise<LibManagedAccount[]> {
 		this.lastFilter = opts.filter;
 		const selected = opts.filter ? this.players.filter(opts.filter) : this.players;
+		// Matches the real lib's connectIds(), which returns only the accounts
+		// connected by THIS call — not the client's whole accumulated connected
+		// set — so a targeted single-account connectOwned() (connectOne()) can
+		// destructure its result without picking up an unrelated account
+		// connected by an earlier call.
+		const justConnected: LibManagedAccount[] = [];
 		for (const player of selected) {
 			const acct = this.accountsByUsername.get(player.username);
 			if (acct) {
 				this.connected.set(player.username, acct);
+				justConnected.push(acct);
 				// Matches the real lib's ordering (persistent onAccountConnected
 				// listeners fire inside connect(), before connectIds's per-call
 				// onConnect wrapper runs) — callers rely on indexing having already
@@ -173,7 +180,7 @@ export class FakeClient implements AccountClientLike {
 				opts.onConnect?.(acct);
 			}
 		}
-		return Promise.resolve([...this.connected.values()]);
+		return Promise.resolve(justConnected);
 	}
 	/** Connect a single stored account by username. Throws if it isn't in the fixture map (simulates unknown creds). */
 	connect(id: string): Promise<LibManagedAccount> {
