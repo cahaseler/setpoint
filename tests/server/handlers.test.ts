@@ -1,10 +1,12 @@
 import { describe, expect, mock, test } from "bun:test";
 import type {
 	CombatEnvelope,
+	CombatMode,
 	CraftingUpdateEnvelope,
 	CraftingUpdateEvent,
 } from "@setpoint/protocol";
 import type { ClerkPlayer, GameState } from "@spacemolt/lib";
+import type { CombatModeStore } from "../../src/combat/combat-mode-store.js";
 import { markStateFresh } from "../../src/dispatcher/state-freshness.js";
 import {
 	type HandlerContext,
@@ -17,6 +19,7 @@ import {
 	handleExecuteGoal,
 	handleExecuteGoalAsync,
 	handleGetAccount,
+	handleGetCombatMode,
 	handleGetJob,
 	handleGetLogLevel,
 	handleGetLoop,
@@ -31,6 +34,7 @@ import {
 	handlePatchLoop,
 	handleRawAction,
 	handleRegisterAccount,
+	handleSetCombatMode,
 	handleSetLogLevel,
 	handleStartLoop,
 	handleStopLoop,
@@ -49,6 +53,22 @@ import {
 } from "../dispatcher/lib-fakes.js";
 
 // ── Mock Factories ───────────────────────────────────────────────────
+
+/** In-memory stand-in for CombatModeStore — no filesystem I/O, same get/set/clear contract. */
+class FakeCombatModeStore {
+	private readonly modes = new Map<string, CombatMode>();
+	get(playerId: string): CombatMode {
+		return this.modes.get(playerId) ?? "flee";
+	}
+	set(playerId: string, mode: CombatMode): Promise<void> {
+		this.modes.set(playerId, mode);
+		return Promise.resolve();
+	}
+	clear(playerId: string): Promise<void> {
+		this.modes.delete(playerId);
+		return Promise.resolve();
+	}
+}
 
 function makeAccount(
 	playerId: string,
@@ -187,6 +207,7 @@ function makeContext(
 		claimedAccounts: new Set(),
 		craftingEventsStore: new CraftingEventsStore(),
 		combatEventsStore: new CombatEventsStore(),
+		combatModeStore: new FakeCombatModeStore() as unknown as CombatModeStore,
 	};
 }
 
@@ -1575,6 +1596,110 @@ describe("handleStopLoop", () => {
 		);
 		expect(res.status).toBe(200);
 		expect(ctx.loopManager.abortLoop).toHaveBeenCalledWith("p1");
+	});
+});
+
+// ── Combat Mode ──────────────────────────────────────────────────────
+
+describe("handleGetCombatMode", () => {
+	test("defaults to flee for an account with no override", async () => {
+		const account = makeAccount("p1");
+		const ctx = makeContext({ accounts: [account] });
+
+		const res = await handleGetCombatMode(
+			new Request("http://localhost/accounts/p1/combat-mode"),
+			{ playerId: "p1" },
+			ctx,
+		);
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as Record<string, unknown>;
+		expect(body).toEqual({ playerId: "p1", mode: "flee" });
+	});
+
+	test("returns 404 for unknown account", async () => {
+		const ctx = makeContext();
+
+		const res = await handleGetCombatMode(
+			new Request("http://localhost/accounts/unknown/combat-mode"),
+			{ playerId: "unknown" },
+			ctx,
+		);
+		expect(res.status).toBe(404);
+	});
+});
+
+describe("handleSetCombatMode", () => {
+	test("sets external mode and it is reflected by a subsequent get", async () => {
+		const account = makeAccount("p1");
+		const ctx = makeContext({ accounts: [account] });
+
+		const setRes = await handleSetCombatMode(
+			new Request("http://localhost/accounts/p1/combat-mode", {
+				method: "PATCH",
+				body: JSON.stringify({ mode: "external" }),
+			}),
+			{ playerId: "p1" },
+			ctx,
+		);
+		expect(setRes.status).toBe(200);
+		expect((await setRes.json()) as Record<string, unknown>).toEqual({
+			playerId: "p1",
+			mode: "external",
+		});
+
+		const getRes = await handleGetCombatMode(
+			new Request("http://localhost/accounts/p1/combat-mode"),
+			{ playerId: "p1" },
+			ctx,
+		);
+		expect((await getRes.json()) as Record<string, unknown>).toEqual({
+			playerId: "p1",
+			mode: "external",
+		});
+	});
+
+	test("rejects an invalid mode", async () => {
+		const account = makeAccount("p1");
+		const ctx = makeContext({ accounts: [account] });
+
+		const res = await handleSetCombatMode(
+			new Request("http://localhost/accounts/p1/combat-mode", {
+				method: "PATCH",
+				body: JSON.stringify({ mode: "flee-forever" }),
+			}),
+			{ playerId: "p1" },
+			ctx,
+		);
+		expect(res.status).toBe(400);
+	});
+
+	test("returns 400 for invalid JSON body", async () => {
+		const account = makeAccount("p1");
+		const ctx = makeContext({ accounts: [account] });
+
+		const res = await handleSetCombatMode(
+			new Request("http://localhost/accounts/p1/combat-mode", {
+				method: "PATCH",
+				body: "not json",
+			}),
+			{ playerId: "p1" },
+			ctx,
+		);
+		expect(res.status).toBe(400);
+	});
+
+	test("returns 404 for unknown account", async () => {
+		const ctx = makeContext();
+
+		const res = await handleSetCombatMode(
+			new Request("http://localhost/accounts/unknown/combat-mode", {
+				method: "PATCH",
+				body: JSON.stringify({ mode: "external" }),
+			}),
+			{ playerId: "unknown" },
+			ctx,
+		);
+		expect(res.status).toBe(404);
 	});
 });
 
