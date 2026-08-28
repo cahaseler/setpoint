@@ -244,6 +244,32 @@ describe("dispatch", () => {
 		expect(client.post).toHaveBeenCalledWith("/log-level", { level: "debug" });
 	});
 
+	test("combat-mode without arg calls GET /accounts/:playerId/combat-mode", async () => {
+		const { ctx, client } = makeCtx();
+		await dispatch(ctx, ["combat-mode", "player-123"]);
+
+		expect(client.get).toHaveBeenCalledWith("/accounts/player-123/combat-mode");
+	});
+
+	test("combat-mode with arg calls PATCH /accounts/:playerId/combat-mode with body", async () => {
+		const { ctx, client } = makeCtx();
+		await dispatch(ctx, ["combat-mode", "player-123", "external"]);
+
+		expect(client.patch).toHaveBeenCalledWith("/accounts/player-123/combat-mode", {
+			mode: "external",
+		});
+	});
+
+	test("combat-mode with an invalid mode is a usage error", async () => {
+		const { ctx, client, output } = makeCtx();
+		await expect(dispatch(ctx, ["combat-mode", "player-123", "berserk"])).rejects.toThrow(
+			"usage_error",
+		);
+
+		expect(output.usageError).toHaveBeenCalled();
+		expect(client.patch).not.toHaveBeenCalled();
+	});
+
 	// --- New commands ---
 
 	test("accounts register calls POST /accounts/register with body", async () => {

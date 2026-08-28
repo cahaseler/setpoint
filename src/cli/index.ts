@@ -7,7 +7,7 @@ import { DaemonClient } from "./client.js";
 import { dispatch, getUsageText } from "./commands.js";
 import { createOutput } from "./output.js";
 
-const VERSION = "0.0.285";
+const VERSION = "0.0.286";
 
 const DEFAULT_PORT = 7580;
 

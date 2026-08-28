@@ -138,6 +138,14 @@ const commands: Command[] = [
 		description: "Patch options on a running loop (takes effect next iteration, no restart needed)",
 	},
 	{
+		pattern: "combat-mode",
+		positionals: ["playerId", "mode?"],
+		handler: handleCombatMode,
+		usage: "smctl combat-mode <playerId> [flee|external]",
+		description:
+			"Get or set an account's combat-response mode. \"external\" skips setpoint's automatic flee response (still releases any running loop/goal) so hand-written combat logic can drive the ship instead.",
+	},
+	{
 		pattern: "abort",
 		positionals: ["playerId"],
 		handler: handleAbort,
@@ -453,6 +461,24 @@ async function handleLoopUpdate(ctx: CommandContext, args: string[]): Promise<vo
 	}
 	await sendAndOutput(ctx, () =>
 		ctx.client.patch(`/accounts/${encodeURIComponent(playerId)}/loop`, ctx.jsonBody),
+	);
+}
+
+async function handleCombatMode(ctx: CommandContext, args: string[]): Promise<void> {
+	const playerId = args[0] as string;
+	const mode = args[1];
+	if (mode === undefined) {
+		await sendAndOutput(ctx, () =>
+			ctx.client.get(`/accounts/${encodeURIComponent(playerId)}/combat-mode`),
+		);
+		return;
+	}
+	if (mode !== "flee" && mode !== "external") {
+		ctx.output.usageError('mode must be "flee" or "external"');
+		return;
+	}
+	await sendAndOutput(ctx, () =>
+		ctx.client.patch(`/accounts/${encodeURIComponent(playerId)}/combat-mode`, { mode }),
 	);
 }
 

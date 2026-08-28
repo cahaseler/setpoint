@@ -4,6 +4,7 @@ import type { MarketBook, ObservationView, SpacemoltClient } from "@spacemolt/li
 import { loadRegistrationConfig } from "../accounts/config.js";
 import type { LibAccountManager } from "../accounts/lib-manager.js";
 import { type LibManagedAccount, playerId as playerIdOf } from "../accounts/lib-types.js";
+import type { CombatModeStore } from "../combat/combat-mode-store.js";
 import type { ProgressRef } from "../dispatcher/goals.js";
 import { makeLibGoalContext } from "../dispatcher/lib-goal-context.js";
 import type { CombatEventsStore } from "../state/combat-events-store.js";
@@ -46,6 +47,7 @@ export interface HandlerContext {
 	startedAt: string;
 	craftingEventsStore: CraftingEventsStore;
 	combatEventsStore: CombatEventsStore;
+	combatModeStore: CombatModeStore;
 	/** Accounts with a synchronous goal currently executing. Used to prevent races. */
 	executingGoals: Map<string, ExecutingGoalEntry>;
 	/**
@@ -1056,6 +1058,68 @@ export async function handleStopLoop(
 
 	log.info(`[${actualId}] Loop stopped via DELETE /loop`);
 	return jsonResponse({ message: "Loop stop signal sent" });
+}
+
+/**
+ * Get an account's combat-mode override. `"flee"` (the default) is
+ * setpoint's built-in auto-flee response on combat entry; `"external"`
+ * skips it, for accounts driven by hand-written combat logic outside
+ * setpoint (see `CombatModeStore`'s doc comment).
+ */
+export async function handleGetCombatMode(
+	_req: Request,
+	params: RouteParams,
+	ctx: HandlerContext,
+): Promise<Response> {
+	const playerId = params["playerId"];
+	if (!playerId) {
+		return errorResponse("Missing playerId", 400);
+	}
+
+	const account = resolveAccount(ctx, playerId);
+	if (!account) {
+		return errorResponse("Account not found", 404);
+	}
+
+	const actualId = playerIdOf(account);
+	return jsonResponse({ playerId: actualId, mode: ctx.combatModeStore.get(actualId) });
+}
+
+/** Set and persist an account's combat-mode override — takes effect on the next combat entry, no restart needed. */
+export async function handleSetCombatMode(
+	req: Request,
+	params: RouteParams,
+	ctx: HandlerContext,
+): Promise<Response> {
+	const playerId = params["playerId"];
+	if (!playerId) {
+		return errorResponse("Missing playerId", 400);
+	}
+
+	const account = resolveAccount(ctx, playerId);
+	if (!account) {
+		return errorResponse("Account not found", 404);
+	}
+
+	let body: unknown;
+	try {
+		body = await req.json();
+	} catch {
+		return errorResponse("Invalid JSON body", 400);
+	}
+
+	if (typeof body !== "object" || body === null || Array.isArray(body)) {
+		return errorResponse("Body must be a JSON object", 400);
+	}
+
+	const mode = (body as Record<string, unknown>)["mode"];
+	if (mode !== "flee" && mode !== "external") {
+		return errorResponse('mode must be "flee" or "external"', 400);
+	}
+
+	const actualId = playerIdOf(account);
+	await ctx.combatModeStore.set(actualId, mode);
+	return jsonResponse({ playerId: actualId, mode });
 }
 
 export async function handleStartLoop(

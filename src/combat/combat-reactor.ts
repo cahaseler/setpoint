@@ -33,6 +33,7 @@ import {
 	reduceCombatEvent,
 	reduceTimeout,
 } from "./combat-detector.js";
+import type { CombatModeStore } from "./combat-mode-store.js";
 import {
 	type RecoveryProximity,
 	resolveRecoveryTarget,
@@ -47,7 +48,9 @@ const DEFAULT_EXIT_TIMEOUT_MS = 60_000;
 export interface CombatReactorDeps extends AccountReleaseDeps {
 	manager: LibAccountManager;
 	combatEventsStore: CombatEventsStore;
-	/** Combat-response strategy to run on entering combat. Defaults to `FleeCombatStrategy`. */
+	/** Per-account override of the combat response — see `CombatModeStore`'s doc comment. */
+	combatModeStore: CombatModeStore;
+	/** Combat-response strategy to run on entering combat for accounts in `"flee"` mode. Defaults to `FleeCombatStrategy`. */
 	strategy?: CombatResponseStrategy;
 	/** Wall-clock ms with no combat activity before presuming a fight resolved. Defaults to 60s. */
 	exitTimeoutMs?: number;
@@ -176,6 +179,14 @@ export class CombatReactor {
 				previousGoalType: interrupted.goalType,
 			},
 		});
+
+		const mode = this.deps.combatModeStore.get(playerId);
+		if (mode === "external") {
+			log.info(
+				`[${playerId}] combat entered — combat mode is "external", released from setpoint work but skipping the automatic flee response`,
+			);
+			return;
+		}
 
 		const account = this.deps.manager.getByPlayerId(playerId);
 		if (!account) {

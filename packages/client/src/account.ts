@@ -2,6 +2,8 @@
 
 import type {
 	CombatEnvelope,
+	CombatMode,
+	CombatModeStatus,
 	CraftingUpdateEnvelope,
 	Empire,
 	GoalOptionsMap,
@@ -337,6 +339,40 @@ export class AccountCombatApi {
 	}
 }
 
+/**
+ * Combat-response mode API scoped to a single account. Mirrors the daemon's
+ * `GET|PATCH /accounts/:id/combat-mode` routes (`src/server/handlers.ts`).
+ * `"flee"` (the default) is setpoint's built-in auto-flee response on combat
+ * entry; `"external"` skips it — the account is still released from any
+ * running loop/goal, but no automatic `spacemolt_battle.stance` calls are
+ * sent, so hand-written combat logic can drive the ship instead.
+ */
+export class AccountCombatModeApi {
+	constructor(
+		private readonly client: SetpointClient,
+		private readonly id: string,
+	) {}
+
+	/** Gets the account's current combat-mode setting. */
+	async get(): Promise<CombatModeStatus> {
+		const result = await this.client.request(
+			"GET",
+			`/accounts/${encodeURIComponent(this.id)}/combat-mode`,
+		);
+		return result as CombatModeStatus;
+	}
+
+	/** Sets and persists the account's combat-mode setting — takes effect on the next combat entry, no restart needed. */
+	async set(mode: CombatMode): Promise<CombatModeStatus> {
+		const result = await this.client.request(
+			"PATCH",
+			`/accounts/${encodeURIComponent(this.id)}/combat-mode`,
+			{ body: { mode } },
+		);
+		return result as CombatModeStatus;
+	}
+}
+
 /** Goal API scoped to a single account, identified by player_id or username. */
 export class AccountApi {
 	/** Loop sub-API for this account (`sp.account(id).loop`). */
@@ -360,6 +396,9 @@ export class AccountApi {
 	/** Live combat-event sub-API for this account (`sp.account(id).combat`). */
 	readonly combat: AccountCombatApi;
 
+	/** Combat-response mode sub-API for this account (`sp.account(id).combatMode`). */
+	readonly combatMode: AccountCombatModeApi;
+
 	constructor(
 		private readonly client: SetpointClient,
 		private readonly id: string,
@@ -371,6 +410,7 @@ export class AccountApi {
 		this.observation = new AccountObservationApi(client, id);
 		this.crafting = new AccountCraftingApi(client, id);
 		this.combat = new AccountCombatApi(client, id);
+		this.combatMode = new AccountCombatModeApi(client, id);
 	}
 
 	/**

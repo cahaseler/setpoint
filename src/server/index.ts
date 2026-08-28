@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import type { SpacemoltClient } from "@spacemolt/lib";
 import type { LibAccountManager } from "../accounts/lib-manager.js";
+import type { CombatModeStore } from "../combat/combat-mode-store.js";
 import type { CombatEventsStore } from "../state/combat-events-store.js";
 import type { CraftingEventsStore } from "../state/crafting-events-store.js";
 import type { StateStore } from "../state/store.js";
@@ -17,6 +18,7 @@ import {
 	handleExecuteGoal,
 	handleExecuteGoalAsync,
 	handleGetAccount,
+	handleGetCombatMode,
 	handleGetGoalSchemas,
 	handleGetJob,
 	handleGetLogLevel,
@@ -34,6 +36,7 @@ import {
 	handleRawAction,
 	handleRefreshState,
 	handleRegisterAccount,
+	handleSetCombatMode,
 	handleSetLogLevel,
 	handleStartLoop,
 	handleStopLoop,
@@ -91,6 +94,7 @@ export interface ServerOptions {
 	configDir: string;
 	craftingEventsStore: CraftingEventsStore;
 	combatEventsStore: CombatEventsStore;
+	combatModeStore: CombatModeStore;
 	/**
 	 * Shared with the caller (rather than constructed privately here) so
 	 * combat detection — wired into `LibAccountManager` before `startServer()`
@@ -203,6 +207,7 @@ export function startServer(options: ServerOptions): DispatcherServer {
 		claimedAccounts: options.claimedAccounts ?? new Set(),
 		craftingEventsStore: options.craftingEventsStore,
 		combatEventsStore: options.combatEventsStore,
+		combatModeStore: options.combatModeStore,
 	};
 
 	const router = new Router<HandlerContext>();
@@ -239,6 +244,9 @@ export function startServer(options: ServerOptions): DispatcherServer {
 	router.post("/accounts/:playerId/loop", handleStartLoop);
 	router.patch("/accounts/:playerId/loop", handlePatchLoop);
 	router.delete("/accounts/:playerId/loop", handleStopLoop);
+
+	router.get("/accounts/:playerId/combat-mode", handleGetCombatMode);
+	router.patch("/accounts/:playerId/combat-mode", handleSetCombatMode);
 
 	// Config
 	router.get("/log-level", handleGetLogLevel);

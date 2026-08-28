@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, mock, test } from "bun:test";
 import type { GameState } from "@spacemolt/lib";
+import type { CombatModeStore } from "../../src/combat/combat-mode-store.js";
 import type { HandlerContext } from "../../src/server/handlers.js";
 import {
 	handleAddAccount,
@@ -108,6 +109,7 @@ describe("Server integration", () => {
 			claimedAccounts: new Set(),
 			craftingEventsStore: new CraftingEventsStore(),
 			combatEventsStore: new CombatEventsStore(),
+			combatModeStore: { get: () => "flee" } as unknown as CombatModeStore,
 		};
 
 		const router = new Router<HandlerContext>();

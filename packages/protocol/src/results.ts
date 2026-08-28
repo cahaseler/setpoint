@@ -58,6 +58,22 @@ export interface LoopStatus {
 	options?: Record<string, unknown>;
 }
 
+/**
+ * Combat-response mode for an account. `"flee"` (the default) is setpoint's
+ * built-in auto-flee response; `"external"` skips it entirely, leaving
+ * combat decisions to code outside setpoint — the account is still released
+ * from any running loop/goal on combat entry either way, so external combat
+ * logic never has to fight a setpoint loop for control, only the built-in
+ * flee response.
+ */
+export type CombatMode = "flee" | "external";
+
+/** Current combat-mode setting for an account, as exposed by GET/PATCH /accounts/:playerId/combat-mode. */
+export interface CombatModeStatus {
+	playerId: string;
+	mode: CombatMode;
+}
+
 export type JobStatus = "pending" | "running" | "completed" | "failed";
 
 /** A record of an async goal job, as tracked by the daemon's job manager. */

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import type { CombatEnvelope } from "@setpoint/protocol";
+import type { CombatEnvelope, CombatMode } from "@setpoint/protocol";
 import type { LibAccountManager } from "../../src/accounts/lib-manager.js";
+import type { CombatModeStore } from "../../src/combat/combat-mode-store.js";
 import { CombatReactor } from "../../src/combat/combat-reactor.js";
 import type {
 	CombatResponseResult,
@@ -47,6 +48,7 @@ class StubStrategy implements CombatResponseStrategy {
 function makeHarness(options: {
 	loopStatus?: { type: string; running: boolean; options: Record<string, unknown> } | undefined;
 	account?: FakeAccount | undefined;
+	combatMode?: CombatMode | undefined;
 }) {
 	const forceRemoveCalls: string[] = [];
 	const deleteConfigCalls: string[] = [];
@@ -68,6 +70,7 @@ function makeHarness(options: {
 	};
 	const executingGoals = new Map<string, ExecutingGoalEntry>();
 	const combatEventsStore = new CombatEventsStore();
+	const combatModeStore = { get: () => options.combatMode ?? "flee" } as unknown as CombatModeStore;
 	const account = options.account;
 	const manager = {
 		getByPlayerId: (id: string) => (id === "p1" ? account : undefined),
@@ -81,6 +84,7 @@ function makeHarness(options: {
 		executingGoals,
 		configDir: "/tmp/config",
 		combatEventsStore,
+		combatModeStore,
 		strategy,
 	});
 
@@ -128,6 +132,27 @@ describe("CombatReactor", () => {
 			previousLoopType: "mining",
 			previousGoalType: undefined,
 		});
+	});
+
+	test('combat mode "external" force-releases the account but skips the automatic flee response', async () => {
+		const account = new FakeAccount("p1", "acc-1");
+		const { reactor, combatEventsStore, forceRemoveCalls, strategy } = makeHarness({
+			loopStatus: { type: "mining", running: true, options: {} },
+			account,
+			combatMode: "external",
+		});
+
+		reactor.handle("p1", "battle_started", battleStarted("p1"));
+		await flush();
+
+		// Still released from the setpoint-managed loop...
+		expect(forceRemoveCalls).toEqual(["p1"]);
+		// ...but the built-in flee strategy never ran, leaving the ship free for
+		// hand-written combat logic outside setpoint.
+		expect(strategy.calls).toEqual([]);
+
+		const types = combatEventsStore.recent("p1").map((e) => e.type);
+		expect(types).toEqual(["battle_started", "combat_interrupted"]);
 	});
 
 	test("battle_ended after entering combat runs recovery to the mining loop's sell station", async () => {

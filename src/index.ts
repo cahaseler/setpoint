@@ -10,6 +10,7 @@ import {
 import { parseLibConfig } from "./accounts/lib-config.js";
 import { LibAccountManager } from "./accounts/lib-manager.js";
 import { type LibManagedAccount, playerId as playerIdOf } from "./accounts/lib-types.js";
+import { CombatModeStore } from "./combat/combat-mode-store.js";
 import { CombatReactor } from "./combat/combat-reactor.js";
 import { makeLibGoalContext } from "./dispatcher/lib-goal-context.js";
 import type { ExecutingGoalEntry } from "./server/account-release.js";
@@ -97,6 +98,10 @@ async function main(): Promise<void> {
 		craftingEventsStore.record(playerId, event);
 	};
 
+	// Per-account combat-response override (flee vs. externally-driven combat
+	// logic) — loaded before the reactor and server both need it.
+	const combatModeStore = await CombatModeStore.load(CONFIG_DIR);
+
 	// Combat detection (src/combat/) needs executingGoals/claimedAccounts —
 	// otherwise built privately inside startServer() — and loopManager/
 	// jobManager, which don't exist until startServer() returns. Constructed
@@ -170,6 +175,7 @@ async function main(): Promise<void> {
 		configDir: CONFIG_DIR,
 		craftingEventsStore,
 		combatEventsStore,
+		combatModeStore,
 		executingGoals,
 		claimedAccounts,
 	});
@@ -182,6 +188,7 @@ async function main(): Promise<void> {
 		executingGoals,
 		configDir: CONFIG_DIR,
 		combatEventsStore,
+		combatModeStore,
 	});
 
 	// Connect all owned accounts in the background (the lib staggers connections

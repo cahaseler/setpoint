@@ -124,6 +124,18 @@ const result2 = await account.runToCompletion("dock-at", { targetBaseId: "sol_st
 (`mining`, `enhanced-mining`, `salvage`, `roaming-salvage`, `tow-salvage`,
 `trading`, `hauling`, `storage-transfer`, `exploration`, `guard`).
 
+### Combat response (`account.combatMode`)
+
+| Call | Daemon route |
+|---|---|
+| `account.combatMode.get()` | `GET /accounts/:id/combat-mode` |
+| `account.combatMode.set(mode)` | `PATCH /accounts/:id/combat-mode` |
+
+`mode` is `"flee"` (setpoint's built-in auto-flee response on combat entry,
+the default) or `"external"` (setpoint releases the account from any running
+loop/goal but sends no automatic combat commands, leaving your own code to
+drive the ship). Persisted on the daemon, so it survives a restart.
+
 ### State (`account.state`)
 
 | Call | Daemon route |

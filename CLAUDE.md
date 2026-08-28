@@ -373,6 +373,21 @@ Loop configs are persisted to disk and auto-resume on daemon restart.
 
 Use `smctl help loops`, `smctl help trading`, or `smctl help hauling` for detailed schemas and examples.
 
+#### Combat Response
+
+On entering combat, setpoint always releases the account from any running loop/goal/job (`forceReleaseAccount`) so nothing else is fighting for control of the ship. What happens next is governed by a per-account combat-response mode (`src/combat/combat-mode-store.ts`), persisted to disk so it survives a daemon restart:
+
+- `flee` (default) — setpoint's built-in `FleeCombatStrategy` automatically sends the `flee` battle stance until it escapes or exhausts its retry budget.
+- `external` — setpoint sends no automatic combat commands at all, leaving the ship free for hand-written combat logic (a bot, a script) driving it directly via the raw API or goals.
+
+```bash
+smctl combat-mode <playerId>            # Get the current mode
+smctl combat-mode <playerId> external   # Drive this ship's combat with your own code
+smctl combat-mode <playerId> flee       # Revert to setpoint's built-in auto-flee
+```
+
+Post-combat recovery (returning to a loop's normal working area) is a separate, existing per-loop option (`combatRecovery: "external" | "none"` in loop options) and applies independently of the combat-response mode above.
+
 #### Raw Command (Game API Passthrough)
 
 The `raw` command posts directly to the daemon's `POST /accounts/:playerId/raw` endpoint, using the account's managed `@spacemolt/lib` connection — no external binary required.
@@ -418,6 +433,8 @@ The daemon listens on `http://127.0.0.1:7580` by default. All responses are JSON
 | `GET` | `/accounts/:playerId/loop` | Get loop status | `smctl loop status` |
 | `PATCH` | `/accounts/:playerId/loop` | Update loop options live (no restart) | `smctl loop update` |
 | `DELETE` | `/accounts/:playerId/loop` | Stop loop | `smctl loop stop` |
+| `GET` | `/accounts/:playerId/combat-mode` | Get combat-response mode | `smctl combat-mode <id>` |
+| `PATCH` | `/accounts/:playerId/combat-mode` | Set combat-response mode (no restart) | `smctl combat-mode <id> <mode>` |
 | `DELETE` | `/accounts/:playerId/abort` | Release account from all in-progress work | `smctl abort` |
 | `POST` | `/accounts/:playerId/raw` | Raw API passthrough | `smctl raw` |
 | `GET` | `/accounts/:playerId/market/:baseId` | Cached order book for a base (subscribe first via `raw`) | `smctl market <id> <baseId>` |
