@@ -1,16 +1,20 @@
+import type { GoalResult } from "@setpoint/protocol";
 import type { StoredGameState } from "../state/store.js";
 
-/** The outcome of executing a goal. */
-export interface GoalResult {
-	/** Whether the desired state was achieved. */
-	success: boolean;
-	/** Human-readable description of what happened. */
-	message: string;
-	/** Whether the goal was already satisfied before execution. */
-	alreadySatisfied: boolean;
-	/** Number of mutation actions consumed (each costs a tick). */
-	ticksUsed: number;
-}
+/**
+ * The goal/loop result shapes are defined once in `@setpoint/protocol` — the
+ * daemon and its typed HTTP client must agree on them field-for-field, so they
+ * live in the shared package rather than being mirrored here. Re-exported so
+ * the ~70 files under `src/dispatcher/` can keep importing them from their own
+ * layer.
+ */
+export type {
+	CompoundGoalResult,
+	GoalResult,
+	IterationResult,
+	LoopResult,
+	StepResult,
+} from "@setpoint/protocol";
 
 /**
  * Mutable progress tracker shared between an executing goal/sequence and
@@ -22,32 +26,6 @@ export interface ProgressRef {
 	currentStep?: string | undefined;
 	completedSteps: string[];
 	remainingSteps: string[];
-}
-
-/** Result of a single step within a compound goal. */
-export interface StepResult {
-	goalName: string;
-	result: GoalResult;
-}
-
-/** Extended result for compound goals that execute multiple steps. */
-export interface CompoundGoalResult extends GoalResult {
-	/** Results from each step that was attempted. */
-	steps: StepResult[];
-}
-
-/** Result of a single loop iteration. */
-export interface IterationResult {
-	iteration: number;
-	result: GoalResult;
-}
-
-/** Extended result for goal loops that run multiple iterations. */
-export interface LoopResult extends GoalResult {
-	/** Results from each iteration that ran. */
-	iterations: IterationResult[];
-	/** Total number of iterations completed. */
-	iterationCount: number;
 }
 
 /** Options controlling a goal loop. */
@@ -68,8 +46,9 @@ export interface LoopOptions {
 	maxConsecutiveFailures?: number;
 	/**
 	 * Milliseconds to wait between retry attempts after a failure.
-	 * Defaults to 30000 (30 seconds). RateLimitErrors override this with the
-	 * server's retry-after value.
+	 * Defaults to 30000 (30 seconds). Always applies: `@spacemolt/lib` retries
+	 * `rate_limited` mutations underneath this engine, so a game-level rate
+	 * limit never surfaces here as a failure with its own retry-after.
 	 */
 	retryDelayMs?: number;
 	/**

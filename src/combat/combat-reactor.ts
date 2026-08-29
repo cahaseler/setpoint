@@ -3,7 +3,7 @@
  * (`combat-detector.ts`) to the account-release primitive
  * (`../server/account-release.ts`), a pluggable response strategy
  * (`combat-response.ts`), and post-combat recovery (`combat-recovery.ts`),
- * publishing everything self-relevant to `CombatEventsStore` along the way.
+ * publishing everything self-relevant to the combat `EventBuffer` along the way.
  *
  * One instance runs for the whole daemon. `handle()` is called directly
  * from the notification-routing frame (`onCombatUpdate` in
@@ -17,12 +17,13 @@
  * reasons that have nothing to do with our own flee attempt.
  */
 
+import type { CombatEnvelope } from "@setpoint/protocol";
 import type { LibAccountManager } from "../accounts/lib-manager.js";
 import type { LibManagedAccount } from "../accounts/lib-types.js";
 import { makeLibGoalContext } from "../dispatcher/lib-goal-context.js";
 import type { AccountReleaseDeps } from "../server/account-release.js";
 import { forceReleaseAccount } from "../server/account-release.js";
-import type { CombatEventsStore } from "../state/combat-events-store.js";
+import type { EventBuffer } from "../state/event-buffer.js";
 import { errorMessage } from "../util/errors.js";
 import { createLogger } from "../util/logger.js";
 import {
@@ -47,7 +48,7 @@ const DEFAULT_EXIT_TIMEOUT_MS = 60_000;
 
 export interface CombatReactorDeps extends AccountReleaseDeps {
 	manager: LibAccountManager;
-	combatEventsStore: CombatEventsStore;
+	combatEventsStore: EventBuffer<CombatEnvelope>;
 	/** Per-account override of the combat response — see `CombatModeStore`'s doc comment. */
 	combatModeStore: CombatModeStore;
 	/** Combat-response strategy to run on entering combat for accounts in `"flee"` mode. Defaults to `FleeCombatStrategy`. */

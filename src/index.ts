@@ -1,6 +1,10 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { CombatNotificationType, CraftingUpdateEvent } from "@setpoint/protocol";
+import type {
+	CombatEnvelope,
+	CombatNotificationType,
+	CraftingUpdateEvent,
+} from "@setpoint/protocol";
 import {
 	type GameState,
 	type NotificationPayloads,
@@ -19,11 +23,11 @@ import { startServer } from "./server/index.js";
 import type { JobManager } from "./server/job-manager.js";
 import { LoopManager } from "./server/loop-manager.js";
 import { makeProjectingOnStateChange } from "./state/attach-projector.js";
-import { CombatEventsStore } from "./state/combat-events-store.js";
 import { CraftingEventsStore } from "./state/crafting-events-store.js";
 import { createDatabase } from "./state/database.js";
 import { logDrift } from "./state/drift-logger.js";
 import { startDriftSweep } from "./state/drift-sweep.js";
+import { createEventBuffer } from "./state/event-buffer.js";
 import { StateProjector } from "./state/projector.js";
 import { diffGameState } from "./state/state-diff.js";
 import { StateStore } from "./state/store.js";
@@ -108,7 +112,7 @@ async function main(): Promise<void> {
 	// built just below it, rather than each building its own copy.
 	const executingGoals: Map<string, ExecutingGoalEntry> = new Map();
 	const claimedAccounts = new Set<string>();
-	const combatEventsStore = new CombatEventsStore();
+	const combatEventsStore = createEventBuffer<CombatEnvelope>();
 
 	// Late-bound: CombatReactor can't be constructed until after startServer()
 	// returns (it needs loopManager/jobManager), but LibAccountManager's

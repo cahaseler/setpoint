@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, mock, test } from "bun:test";
+import type { CombatEnvelope } from "@setpoint/protocol";
 import type { GameState } from "@spacemolt/lib";
 import type { CombatModeStore } from "../../src/combat/combat-mode-store.js";
 import type { HandlerContext } from "../../src/server/handlers.js";
@@ -19,9 +20,9 @@ import {
 import { JobManager } from "../../src/server/job-manager.js";
 import { LoopManager } from "../../src/server/loop-manager.js";
 import { Router } from "../../src/server/router.js";
-import { CombatEventsStore } from "../../src/state/combat-events-store.js";
 import { CraftingEventsStore } from "../../src/state/crafting-events-store.js";
 import { createMemoryDatabase } from "../../src/state/database.js";
+import { createEventBuffer } from "../../src/state/event-buffer.js";
 import type { StateStore } from "../../src/state/store.js";
 import type { StoredGameState } from "../../src/state/store.js";
 import { FakeLibManagedAccount, makeFakeLibManager } from "../dispatcher/lib-fakes.js";
@@ -108,7 +109,7 @@ describe("Server integration", () => {
 			executingGoals: new Map(),
 			claimedAccounts: new Set(),
 			craftingEventsStore: new CraftingEventsStore(),
-			combatEventsStore: new CombatEventsStore(),
+			combatEventsStore: createEventBuffer<CombatEnvelope>(),
 			combatModeStore: { get: () => "flee" } as unknown as CombatModeStore,
 		};
 

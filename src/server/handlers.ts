@@ -1,4 +1,4 @@
-import type { MarketBookSnapshot, ObservationSnapshot } from "@setpoint/protocol";
+import type { CombatEnvelope, MarketBookSnapshot, ObservationSnapshot } from "@setpoint/protocol";
 import { type LoopType, loopPatchSchemas, loopSchemas } from "@setpoint/protocol";
 import type { MarketBook, ObservationView, SpacemoltClient } from "@spacemolt/lib";
 import { loadRegistrationConfig } from "../accounts/config.js";
@@ -7,8 +7,9 @@ import { type LibManagedAccount, playerId as playerIdOf } from "../accounts/lib-
 import type { CombatModeStore } from "../combat/combat-mode-store.js";
 import type { ProgressRef } from "../dispatcher/goals.js";
 import { makeLibGoalContext } from "../dispatcher/lib-goal-context.js";
-import type { CombatEventsStore } from "../state/combat-events-store.js";
+
 import type { CraftingEventsStore } from "../state/crafting-events-store.js";
+import type { EventBuffer } from "../state/event-buffer.js";
 import { STATE_SECTION_KEYS, type StateSectionKey, type StateStore } from "../state/store.js";
 import { ApiError, HttpError, errorMessage } from "../util/errors.js";
 import { createLogger } from "../util/logger.js";
@@ -46,7 +47,7 @@ export interface HandlerContext {
 	configDir: string;
 	startedAt: string;
 	craftingEventsStore: CraftingEventsStore;
-	combatEventsStore: CombatEventsStore;
+	combatEventsStore: EventBuffer<CombatEnvelope>;
 	combatModeStore: CombatModeStore;
 	/** Accounts with a synchronous goal currently executing. Used to prevent races. */
 	executingGoals: Map<string, ExecutingGoalEntry>;
@@ -1808,7 +1809,7 @@ export function handleCraftingEvents(
  * arrives. Includes both raw `battle_*`/`player_died`/`player_kill`
  * notifications the combat detector confirmed involve this account, and
  * synthetic `combat_interrupted`/`combat_recovery_*` events setpoint itself
- * emits (see `CombatEventsStore`/`CombatReactor`). No subscribe-first step
+ * emits (see `CombatReactor`). No subscribe-first step
  * is needed, same as crafting events.
  */
 export function handleCombatEvents(

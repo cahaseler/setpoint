@@ -1,9 +1,11 @@
 import type { Database } from "bun:sqlite";
+import type { CombatEnvelope } from "@setpoint/protocol";
 import type { SpacemoltClient } from "@spacemolt/lib";
 import type { LibAccountManager } from "../accounts/lib-manager.js";
 import type { CombatModeStore } from "../combat/combat-mode-store.js";
-import type { CombatEventsStore } from "../state/combat-events-store.js";
+
 import type { CraftingEventsStore } from "../state/crafting-events-store.js";
+import type { EventBuffer } from "../state/event-buffer.js";
 import type { StateStore } from "../state/store.js";
 import { createLogger } from "../util/logger.js";
 import type { ExecutingGoalEntry } from "./account-release.js";
@@ -93,7 +95,7 @@ export interface ServerOptions {
 	client: SpacemoltClient;
 	configDir: string;
 	craftingEventsStore: CraftingEventsStore;
-	combatEventsStore: CombatEventsStore;
+	combatEventsStore: EventBuffer<CombatEnvelope>;
 	combatModeStore: CombatModeStore;
 	/**
 	 * Shared with the caller (rather than constructed privately here) so
@@ -273,7 +275,7 @@ export function startServer(options: ServerOptions): DispatcherServer {
 	router.get("/accounts/:playerId/crafting/events", handleCraftingEvents);
 
 	// Combat events (SSE) — no subscribe-first step; battle_*/player_died/
-	// player_kill notifications push automatically. See CombatEventsStore.
+	// player_kill notifications push automatically. See state/event-buffer.ts.
 	router.get("/accounts/:playerId/combat/events", handleCombatEvents);
 
 	const server = Bun.serve({

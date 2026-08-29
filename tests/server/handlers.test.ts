@@ -41,9 +41,9 @@ import {
 } from "../../src/server/handlers.js";
 import { JobManager } from "../../src/server/job-manager.js";
 import type { LoopManager, LoopStatus } from "../../src/server/loop-manager.js";
-import { CombatEventsStore } from "../../src/state/combat-events-store.js";
 import { CraftingEventsStore } from "../../src/state/crafting-events-store.js";
 import { createMemoryDatabase } from "../../src/state/database.js";
+import { createEventBuffer } from "../../src/state/event-buffer.js";
 import type { StateStore } from "../../src/state/store.js";
 import type { StoredGameState } from "../../src/state/store.js";
 import {
@@ -206,7 +206,7 @@ function makeContext(
 		executingGoals: new Map(),
 		claimedAccounts: new Set(),
 		craftingEventsStore: new CraftingEventsStore(),
-		combatEventsStore: new CombatEventsStore(),
+		combatEventsStore: createEventBuffer<CombatEnvelope>(),
 		combatModeStore: new FakeCombatModeStore() as unknown as CombatModeStore,
 	};
 }

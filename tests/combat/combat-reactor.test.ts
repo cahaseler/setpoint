@@ -10,7 +10,7 @@ import type {
 import type { ExecutingGoalEntry } from "../../src/server/account-release.js";
 import type { JobManager } from "../../src/server/job-manager.js";
 import type { LoopManager } from "../../src/server/loop-manager.js";
-import { CombatEventsStore } from "../../src/state/combat-events-store.js";
+import { createEventBuffer } from "../../src/state/event-buffer.js";
 import { FakeAccount } from "../accounts/fakes.js";
 
 function battleStarted(playerId: string, battleId = "b1") {
@@ -69,7 +69,7 @@ function makeHarness(options: {
 		failAllRunning: () => 0,
 	};
 	const executingGoals = new Map<string, ExecutingGoalEntry>();
-	const combatEventsStore = new CombatEventsStore();
+	const combatEventsStore = createEventBuffer<CombatEnvelope>();
 	const combatModeStore = { get: () => options.combatMode ?? "flee" } as unknown as CombatModeStore;
 	const account = options.account;
 	const manager = {
