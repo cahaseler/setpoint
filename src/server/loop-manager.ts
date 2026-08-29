@@ -982,6 +982,23 @@ export class LoopManager {
 		// Initialize progress ref from the loop's type and options
 		activeLoop.progress = this.createProgress(activeLoop.type, activeLoop.options);
 		const cleanup = (): void => {
+			// An aborted loop keeps its persisted config so it resumes on the next
+			// start. A cancelled loop resolves normally — the engine returns a
+			// LoopResult once the signal lands — so without this guard a graceful
+			// shutdown (stopAll → abortLoop) made every loop that managed to unwind
+			// in time erase its own config, while the ones still stuck in a mutation
+			// when the grace period expired survived. Clean shutdown lost work and
+			// hanging preserved it, and the fleet came back a loop short by an
+			// amount that varied with timing.
+			//
+			// Only a loop that ended on its own terms (maxIterations, consecutive
+			// failures) should be forgotten here. Every path that deliberately
+			// retires a loop — DELETE /loop, forceReleaseAccount — deletes the
+			// config itself, so nothing depends on an abort deleting it.
+			if (activeLoop.stopping) {
+				return;
+			}
+
 			// Only delete the persisted config if this loop is still the active one.
 			// If a replacement loop was started, its config should not be deleted.
 			if (this.configDir && this.loops.get(playerId) === activeLoop) {

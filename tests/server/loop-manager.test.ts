@@ -1,4 +1,7 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { LoopManager } from "../../src/server/loop-manager.js";
 import type {
 	EnhancedMiningLoopApiOptions,
@@ -364,5 +367,62 @@ describe("LoopManager start*Loop methods", () => {
 		expect(manager.abortLoop("p1")).toBe(true);
 		// Cleaned up — status now undefined
 		expect(manager.getStatus("p1")).toBeUndefined();
+	});
+});
+
+// ── Persisted config lifetime ────────────────────────────────────────
+
+describe("persisted loop config lifetime", () => {
+	let manager: LoopManager;
+	let configDir: string;
+
+	const options: MiningLoopApiOptions = {
+		miningSystemId: "sol",
+		beltPoiId: "belt-1",
+		sellSystemId: "sol",
+		sellStationPoiId: "sol-station",
+		sellBaseId: "sol-base",
+	};
+
+	beforeEach(async () => {
+		manager = new LoopManager();
+		configDir = await mkdtemp(join(tmpdir(), "setpoint-loop-cfg-"));
+		manager.setConfigDir(configDir);
+	});
+
+	afterEach(async () => {
+		await rm(configDir, { recursive: true, force: true });
+	});
+
+	const configPath = (playerId: string): string => join(configDir, "loops", `${playerId}.json`);
+
+	/** Wait for the loop to leave the active map, i.e. its promise settled. */
+	async function settle(playerId: string): Promise<void> {
+		for (let i = 0; i < 200 && manager.isRunning(playerId); i++) {
+			await Bun.sleep(10);
+		}
+		// cleanup() deletes in a floating promise after the loop settles.
+		await Bun.sleep(50);
+	}
+
+	test("a loop aborted on shutdown keeps its config so a restart resumes it", async () => {
+		// handleStartLoop persists the config; the manager's start methods don't.
+		await manager.saveLoopConfig("p1", "mining", { ...options }, configDir);
+		manager.startMiningLoop("p1", options, () => makeAccount("p1"));
+		expect(await Bun.file(configPath("p1")).exists()).toBe(true);
+
+		// Exactly what stopAll() does for every loop on shutdown.
+		manager.abortLoop("p1");
+		await settle("p1");
+
+		expect(await Bun.file(configPath("p1")).exists()).toBe(true);
+	});
+
+	test("a loop that ends on its own terms deletes its config", async () => {
+		await manager.saveLoopConfig("p2", "mining", { ...options }, configDir);
+		manager.startMiningLoop("p2", { ...options, maxIterations: 0 }, () => makeAccount("p2"));
+		await settle("p2");
+
+		expect(await Bun.file(configPath("p2")).exists()).toBe(false);
 	});
 });
