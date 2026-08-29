@@ -285,58 +285,6 @@ describe("StateStore.deleteState", () => {
 	});
 });
 
-describe("StateStore.getSessionInfo / setSessionInfo", () => {
-	test("getSessionInfo returns undefined when account has no row", () => {
-		const info = store.getSessionInfo("no-such-account");
-		expect(info).toBeUndefined();
-	});
-
-	test("getSessionInfo returns undefined when session columns are null", () => {
-		// Create a row via applyUpdate (no session columns set)
-		store.applyUpdate("account-1", {
-			player: { id: "p1", username: "Test", credits: 0, empire: "solarian" },
-		});
-
-		const info = store.getSessionInfo("account-1");
-		expect(info).toBeUndefined();
-	});
-
-	test("setSessionInfo creates a row with session data when no row exists", () => {
-		const expiresAt = new Date("2026-03-01T00:00:00Z");
-		store.setSessionInfo("account-new", "sess-abc", expiresAt);
-
-		const info = store.getSessionInfo("account-new");
-		expect(info).toBeDefined();
-		expect(info?.sessionId).toBe("sess-abc");
-	});
-
-	test("setSessionInfo updates session columns without affecting game state columns", () => {
-		store.applyUpdate("account-1", {
-			player: { id: "p1", username: "Test", credits: 500, empire: "solarian" },
-		});
-
-		const expiresAt = new Date("2026-03-01T00:00:00Z");
-		store.setSessionInfo("account-1", "sess-xyz", expiresAt);
-
-		// Session info should be set
-		const info = store.getSessionInfo("account-1");
-		expect(info?.sessionId).toBe("sess-xyz");
-
-		// Game state should be unchanged
-		const state = store.getState("account-1");
-		expect(state?.player?.credits).toBe(500);
-	});
-
-	test("getSessionInfo round-trips sessionId and expiresAt correctly", () => {
-		const expiresAt = new Date("2026-04-15T12:30:00.000Z");
-		store.setSessionInfo("account-1", "sess-round-trip", expiresAt);
-
-		const info = store.getSessionInfo("account-1");
-		expect(info?.sessionId).toBe("sess-round-trip");
-		expect(info?.expiresAt.toISOString()).toBe(expiresAt.toISOString());
-	});
-});
-
 describe("StateStore.getAllAccountIds", () => {
 	test("returns empty array when no accounts exist", () => {
 		const ids = store.getAllAccountIds();

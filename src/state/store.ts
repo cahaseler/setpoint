@@ -65,12 +65,6 @@ export interface StoredGameState {
 	updatedAt: string;
 }
 
-/** Persisted session info for resuming across daemon restarts. */
-export interface StoredSessionInfo {
-	sessionId: string;
-	expiresAt: Date;
-}
-
 /** Row shape from the database. */
 interface StateRow {
 	account_id: string;
@@ -83,8 +77,6 @@ interface StateRow {
 	missions: string | null;
 	queue: string | null;
 	updated_at: string;
-	session_id: string | null;
-	session_expires_at: string | null;
 }
 
 /**
@@ -188,47 +180,6 @@ export class StateStore {
 
 		log.debug(`Updated state for ${accountId}: ${updatedSections.join(", ")}`);
 		return updatedSections;
-	}
-
-	/** Get persisted session info for an account, or undefined if none stored. */
-	getSessionInfo(accountId: string): StoredSessionInfo | undefined {
-		const row = this.db
-			.query<Pick<StateRow, "session_id" | "session_expires_at">, [string]>(
-				"SELECT session_id, session_expires_at FROM game_state WHERE account_id = ?",
-			)
-			.get(accountId);
-
-		if (!row || row.session_id === null || row.session_expires_at === null) {
-			return undefined;
-		}
-
-		return {
-			sessionId: row.session_id,
-			expiresAt: new Date(row.session_expires_at),
-		};
-	}
-
-	/** Persist session info for an account (upserts session columns only). */
-	setSessionInfo(accountId: string, sessionId: string, expiresAt: Date): void {
-		const existing = this.db
-			.query<{ account_id: string }, [string]>(
-				"SELECT account_id FROM game_state WHERE account_id = ?",
-			)
-			.get(accountId);
-
-		if (existing) {
-			this.db.run(
-				"UPDATE game_state SET session_id = ?, session_expires_at = ? WHERE account_id = ?",
-				[sessionId, expiresAt.toISOString(), accountId],
-			);
-		} else {
-			this.db.run(
-				"INSERT INTO game_state (account_id, session_id, session_expires_at, updated_at) VALUES (?, ?, ?, datetime('now'))",
-				[accountId, sessionId, expiresAt.toISOString()],
-			);
-		}
-
-		log.debug(`Persisted session info for ${accountId}`);
 	}
 
 	/**

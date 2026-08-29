@@ -37,9 +37,7 @@ export function createDatabase(path: string): Database {
 			skills             TEXT,
 			missions           TEXT,
 			queue              TEXT,
-			updated_at         TEXT NOT NULL DEFAULT (datetime('now')),
-			session_id         TEXT,
-			session_expires_at TEXT
+			updated_at         TEXT NOT NULL DEFAULT (datetime('now'))
 		)
 	`);
 
@@ -54,14 +52,6 @@ export function createDatabase(path: string): Database {
 			error        TEXT
 		)
 	`);
-
-	// Migrate existing databases that predate session columns
-	try {
-		db.run("ALTER TABLE game_state ADD COLUMN session_id TEXT");
-	} catch {}
-	try {
-		db.run("ALTER TABLE game_state ADD COLUMN session_expires_at TEXT");
-	} catch {}
 
 	// Migrate existing databases that predate goal_type column
 	try {

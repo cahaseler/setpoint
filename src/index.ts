@@ -27,7 +27,6 @@ import { startDriftSweep } from "./state/drift-sweep.js";
 import { StateProjector } from "./state/projector.js";
 import { diffGameState } from "./state/state-diff.js";
 import { StateStore } from "./state/store.js";
-import { bandwidthTracker } from "./util/bandwidth-tracker.js";
 import { errorMessage } from "./util/errors.js";
 import { type LogLevel, createLogger, enableFileLogging, setLogLevel } from "./util/logger.js";
 import { installCrashSafetyHandlers } from "./util/process-safety.js";
@@ -154,9 +153,6 @@ async function main(): Promise<void> {
 		onCombatUpdate,
 	});
 
-	// Start bandwidth rollup logging (5-minute windows)
-	bandwidthTracker.start();
-
 	// Periodically force a refresh() across the whole fleet so idle accounts
 	// (no goals/loops running) still get checked for drift, not just ones that
 	// happen to trigger an opportunistic refresh.
@@ -221,7 +217,6 @@ async function main(): Promise<void> {
 		shuttingDown = true;
 		log.info("Shutting down...");
 		driftSweep.stop();
-		bandwidthTracker.stop();
 		reactorRef.current?.stop();
 		try {
 			await server.stop();

@@ -30,26 +30,7 @@ export class HttpError extends Error {
 	}
 }
 
-/** Session is invalid or expired — triggers recovery flow. */
-export class SessionExpiredError extends ApiError {
-	constructor(message = "Session expired or invalid") {
-		super("session_expired", message, 401);
-		this.name = "SessionExpiredError";
-	}
-}
-
 /** Extract a readable message from an unknown thrown value. */
 export function errorMessage(err: unknown): string {
 	return err instanceof Error ? err.message : String(err);
-}
-
-/** Rate limited by the server — includes retry timing. */
-export class RateLimitError extends ApiError {
-	readonly retryAfterSeconds: number;
-
-	constructor(message: string, retryAfterSeconds: number) {
-		super("rate_limited", message, 429);
-		this.name = "RateLimitError";
-		this.retryAfterSeconds = retryAfterSeconds;
-	}
 }
