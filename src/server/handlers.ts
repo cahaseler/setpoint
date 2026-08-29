@@ -23,6 +23,7 @@ import {
 	getGoalTypes,
 	isZodLikeError,
 } from "./goal-registry.js";
+import { type RouteParams, errorResponse, jsonResponse } from "./http.js";
 import type { JobManager } from "./job-manager.js";
 import type {
 	EnhancedMiningLoopApiOptions,
@@ -32,7 +33,6 @@ import type {
 	MiningLoopApiOptions,
 	TradingLoopApiOptions,
 } from "./loop-manager.js";
-import { type RouteParams, errorResponse, jsonResponse } from "./router.js";
 
 const log = createLogger("handlers");
 

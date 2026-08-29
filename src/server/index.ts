@@ -7,6 +7,7 @@ import type { CombatModeStore } from "../combat/combat-mode-store.js";
 import type { CraftingEventsStore } from "../state/crafting-events-store.js";
 import type { EventBuffer } from "../state/event-buffer.js";
 import type { StateStore } from "../state/store.js";
+import { errorMessage } from "../util/errors.js";
 import { createLogger } from "../util/logger.js";
 import type { ExecutingGoalEntry } from "./account-release.js";
 import {
@@ -40,9 +41,9 @@ import {
 	handleStartLoop,
 	handleStopLoop,
 } from "./handlers.js";
+import { type RouteHandler, errorResponse } from "./http.js";
 import { JobManager } from "./job-manager.js";
 import { LoopManager } from "./loop-manager.js";
-import { Router } from "./router.js";
 
 const log = createLogger("server");
 
@@ -182,6 +183,114 @@ export async function stopGracefully(
 	await stopServerWithGracePeriod(server, graceMs);
 }
 
+/** A Bun route table: path pattern → HTTP method → handler. */
+type RouteTable = Record<
+	string,
+	Record<string, (req: Bun.BunRequest, server: Bun.Server<undefined>) => Promise<Response>>
+>;
+
+/**
+ * Adapt a handler to Bun's route signature: supply the shared context, read
+ * `:param` segments off `req.params` (Bun percent-decodes them), log the
+ * request, and turn a thrown handler error into a 500 rather than letting it
+ * reach Bun's default error page.
+ *
+ * Also lifts the per-request deadline for requests that can legitimately block
+ * on a tick-based game mutation or hold an SSE stream open — matching the
+ * CLI's own `GAME_API_TIMEOUT_MS=0` treatment of the same routes. This does
+ * not extend past the server-level 255s idleTimeout; use `--async` goals for
+ * work longer than that.
+ */
+function route(
+	handler: RouteHandler<HandlerContext>,
+	ctx: HandlerContext,
+): (req: Bun.BunRequest, server: Bun.Server<undefined>) => Promise<Response> {
+	return async (req: Bun.BunRequest, server: Bun.Server<undefined>): Promise<Response> => {
+		if (isUnboundedRequest(req)) {
+			server.timeout(req, 0);
+		}
+		log.info(`${req.method} ${new URL(req.url).pathname}`);
+		try {
+			return await handler(req, req.params as Record<string, string>, ctx);
+		} catch (err) {
+			log.error(`Handler error: ${errorMessage(err)}`);
+			return errorResponse("Internal server error", 500);
+		}
+	};
+}
+
+/**
+ * The daemon's full route table, in Bun's `routes` shape.
+ *
+ * Bun matches by specificity rather than declaration order, so a static
+ * segment always beats a `:param` one (`/accounts/register` wins over
+ * `/accounts/:playerId`) regardless of where each appears here. Anything
+ * unmatched falls through to `Bun.serve`'s `fetch`, which 404s.
+ *
+ * Exported so tests can serve the real table instead of re-declaring paths —
+ * a route registered here at the wrong path is then a test failure, not a
+ * silent 404 in production.
+ */
+export function buildRoutes(ctx: HandlerContext): RouteTable {
+	const r = (handler: RouteHandler<HandlerContext>) => route(handler, ctx);
+	return {
+		"/dashboard/data": { GET: r(handleDashboardData) },
+		"/health": { GET: r(handleHealth) },
+
+		// Accounts
+		"/accounts": { GET: r(handleListAccounts), POST: r(handleAddAccount) },
+		"/accounts/register": { POST: r(handleRegisterAccount) },
+		"/accounts/:playerId": { GET: r(handleGetAccount), DELETE: r(handleDeleteAccount) },
+
+		// State
+		"/accounts/:playerId/state": { GET: r(handleGetState) },
+		"/accounts/:playerId/state/refresh": { POST: r(handleRefreshState) },
+		"/accounts/:playerId/state/:section": { GET: r(handleGetStateSection) },
+
+		// Goals & Raw
+		"/accounts/:playerId/goal": { POST: r(handleExecuteGoal) },
+		"/accounts/:playerId/goal/async": { POST: r(handleExecuteGoalAsync) },
+		"/accounts/:playerId/raw": { POST: r(handleRawAction) },
+		"/accounts/:playerId/abort": { DELETE: r(handleAbortAccount) },
+
+		// Jobs
+		"/jobs/:jobId": { GET: r(handleGetJob) },
+
+		// Loops
+		"/accounts/:playerId/loop": {
+			GET: r(handleGetLoop),
+			POST: r(handleStartLoop),
+			PATCH: r(handlePatchLoop),
+			DELETE: r(handleStopLoop),
+		},
+
+		"/accounts/:playerId/combat-mode": {
+			GET: r(handleGetCombatMode),
+			PATCH: r(handleSetCombatMode),
+		},
+
+		// Config
+		"/log-level": { GET: r(handleGetLogLevel), POST: r(handleSetLogLevel) },
+
+		// System data (routed through a specific account)
+		"/accounts/:playerId/system": { GET: r(handleGetSystem) },
+		"/accounts/:playerId/system/:systemId": { GET: r(handleGetSystem) },
+
+		// Market / Observation (live subscription reads — subscribe first via the
+		// raw passthrough: spacemolt_market.subscribe_market / spacemolt.subscribe_observation)
+		"/accounts/:playerId/market/:baseId": { GET: r(handleGetMarket) },
+		"/accounts/:playerId/observation": { GET: r(handleGetObservation) },
+
+		// Crafting progress (SSE) — no subscribe-first step; the server pushes
+		// crafting_update automatically whenever the account has jobs in progress.
+		"/accounts/:playerId/crafting/events": { GET: r(handleCraftingEvents) },
+
+		// Combat events (SSE) — no subscribe-first step; battle_*/player_died/
+		// player_kill notifications push automatically. See state/event-buffer.ts.
+		"/accounts/:playerId/combat/events": { GET: r(handleCombatEvents) },
+	};
+}
+
 /**
  * Start the dispatcher HTTP API server.
  *
@@ -209,65 +318,6 @@ export function startServer(options: ServerOptions): DispatcherServer {
 		combatModeStore: options.combatModeStore,
 	};
 
-	const router = new Router<HandlerContext>();
-
-	// Dashboard
-	router.get("/dashboard/data", handleDashboardData);
-
-	// Health
-	router.get("/health", handleHealth);
-
-	// Accounts
-	router.get("/accounts", handleListAccounts);
-	router.get("/accounts/:playerId", handleGetAccount);
-	router.post("/accounts", handleAddAccount);
-	router.post("/accounts/register", handleRegisterAccount);
-	router.delete("/accounts/:playerId", handleDeleteAccount);
-
-	// State
-	router.get("/accounts/:playerId/state", handleGetState);
-	router.post("/accounts/:playerId/state/refresh", handleRefreshState);
-	router.get("/accounts/:playerId/state/:section", handleGetStateSection);
-
-	// Goals & Raw
-	router.post("/accounts/:playerId/goal/async", handleExecuteGoalAsync);
-	router.post("/accounts/:playerId/goal", handleExecuteGoal);
-	router.post("/accounts/:playerId/raw", handleRawAction);
-	router.delete("/accounts/:playerId/abort", handleAbortAccount);
-
-	// Jobs
-	router.get("/jobs/:jobId", handleGetJob);
-
-	// Loops
-	router.get("/accounts/:playerId/loop", handleGetLoop);
-	router.post("/accounts/:playerId/loop", handleStartLoop);
-	router.patch("/accounts/:playerId/loop", handlePatchLoop);
-	router.delete("/accounts/:playerId/loop", handleStopLoop);
-
-	router.get("/accounts/:playerId/combat-mode", handleGetCombatMode);
-	router.patch("/accounts/:playerId/combat-mode", handleSetCombatMode);
-
-	// Config
-	router.get("/log-level", handleGetLogLevel);
-	router.post("/log-level", handleSetLogLevel);
-
-	// System data (routed through specific account)
-	router.get("/accounts/:playerId/system", handleGetSystem);
-	router.get("/accounts/:playerId/system/:systemId", handleGetSystem);
-
-	// Market / Observation (live subscription reads — subscribe first via the
-	// raw passthrough: spacemolt_market.subscribe_market / spacemolt.subscribe_observation)
-	router.get("/accounts/:playerId/market/:baseId", handleGetMarket);
-	router.get("/accounts/:playerId/observation", handleGetObservation);
-
-	// Crafting progress (SSE) — no subscribe-first step; the server pushes
-	// crafting_update automatically whenever the account has jobs in progress.
-	router.get("/accounts/:playerId/crafting/events", handleCraftingEvents);
-
-	// Combat events (SSE) — no subscribe-first step; battle_*/player_died/
-	// player_kill notifications push automatically. See state/event-buffer.ts.
-	router.get("/accounts/:playerId/combat/events", handleCombatEvents);
-
 	const server = Bun.serve({
 		hostname: host,
 		port,
@@ -281,17 +331,8 @@ export function startServer(options: ServerOptions): DispatcherServer {
 		// it does NOT override the server-level idleTimeout. Requests longer than
 		// ~4 minutes WILL drop the sync connection. Use --async goals for those.
 		idleTimeout: 255,
-		fetch: (req, server) => {
-			// Disable the per-request deadline for requests that can legitimately
-			// block on a tick-based game mutation for a long time — matches the CLI's
-			// own GAME_API_TIMEOUT_MS=0 treatment of these same routes (sync goal,
-			// raw, accounts register, accounts remove, abort).
-			// (Does not extend past the 255s idle timeout — use --async goals for long-running work.)
-			if (isUnboundedRequest(req)) {
-				server.timeout(req, 0);
-			}
-			return router.handle(req, ctx);
-		},
+		routes: buildRoutes(ctx),
+		fetch: () => errorResponse("Not found", 404),
 	});
 
 	const actualPort = server.port ?? port;
