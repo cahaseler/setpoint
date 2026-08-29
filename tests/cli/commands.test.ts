@@ -1,5 +1,4 @@
 import { describe, expect, mock, test } from "bun:test";
-import { unlinkSync, writeFileSync } from "node:fs";
 import type { DaemonClient, DaemonResponse } from "../../src/cli/client.js";
 import { type CommandContext, dispatch, getUsageText } from "../../src/cli/commands.js";
 import type { CliOutput } from "../../src/cli/output.js";
@@ -598,26 +597,5 @@ describe("help commands", () => {
 		expect(text).toContain("wreckPoiId");
 		expect(text).toContain("disposition");
 		expect(text).toContain("storageTarget");
-	});
-});
-
-describe("migrate-ids", () => {
-	const tmpFile = "test-id-migration-tmp.json";
-
-	test("reads mapping file and calls POST /migrate-ids", async () => {
-		const mapping = { systems: { sol: "sol_prime" }, items: { ore_iron: "iron_ore" } };
-		writeFileSync(tmpFile, JSON.stringify(mapping));
-		try {
-			const { ctx, client } = makeCtx();
-			await dispatch(ctx, ["migrate-ids", tmpFile]);
-			expect(client.post).toHaveBeenCalledWith("/migrate-ids", mapping);
-		} finally {
-			unlinkSync(tmpFile);
-		}
-	});
-
-	test("shows usage error when no file path provided", async () => {
-		const { ctx } = makeCtx();
-		await expect(dispatch(ctx, ["migrate-ids"])).rejects.toThrow();
 	});
 });

@@ -9,7 +9,7 @@
  *
  * A thin wrapper over the generic `EventBuffer` (`event-buffer.ts`), which
  * owns the actual ring-buffer/pub-sub mechanics shared with
- * `CombatEventsStore`.
+ * the combat event buffer.
  */
 
 import type { CraftingUpdateEnvelope, CraftingUpdateEvent } from "@setpoint/protocol";

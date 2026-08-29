@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { ApiError, HttpError, RateLimitError, SessionExpiredError } from "../../src/util/errors.js";
+import { ApiError, HttpError } from "../../src/util/errors.js";
 
 describe("ApiError", () => {
 	test("constructs with code, message, and status", () => {
@@ -32,31 +32,5 @@ describe("HttpError", () => {
 		expect(err.message).toBe("Server error");
 		expect(err.statusCode).toBe(500);
 		expect(err).toBeInstanceOf(Error);
-	});
-});
-
-describe("SessionExpiredError", () => {
-	test("is an ApiError with 401 status", () => {
-		const err = new SessionExpiredError();
-		expect(err.name).toBe("SessionExpiredError");
-		expect(err.code).toBe("session_expired");
-		expect(err.statusCode).toBe(401);
-		expect(err).toBeInstanceOf(ApiError);
-	});
-
-	test("accepts custom message", () => {
-		const err = new SessionExpiredError("Custom message");
-		expect(err.message).toBe("Custom message");
-	});
-});
-
-describe("RateLimitError", () => {
-	test("includes retry-after seconds", () => {
-		const err = new RateLimitError("Too many requests", 30);
-		expect(err.name).toBe("RateLimitError");
-		expect(err.code).toBe("rate_limited");
-		expect(err.statusCode).toBe(429);
-		expect(err.retryAfterSeconds).toBe(30);
-		expect(err).toBeInstanceOf(ApiError);
 	});
 });

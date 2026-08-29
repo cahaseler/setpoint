@@ -358,8 +358,7 @@ setpoint/
 │   │   ├── router.ts               # Route matching
 │   │   ├── handlers.ts             # Request handlers
 │   │   ├── job-manager.ts          # Async job lifecycle (backed by the jobs table)
-│   │   ├── loop-manager.ts         # Loop lifecycle, persistence, and resume
-│   │   └── schemas.ts              # Goal/loop schema registry served at /schemas
+│   │   └── loop-manager.ts         # Loop lifecycle, persistence, and resume
 │   ├── cli/                        # smctl CLI client
 │   │   ├── index.ts                # Entry point
 │   │   ├── commands.ts             # Command dispatch and help text
@@ -367,8 +366,7 @@ setpoint/
 │   │   └── output.ts               # Output formatting
 │   └── util/                       # Shared utilities
 │       ├── logger.ts               # Logging + token redaction
-│       ├── errors.ts               # Typed error classes
-│       └── bandwidth-tracker.ts    # Request/byte accounting
+│       └── errors.ts               # Typed error classes
 ├── tests/                          # Mirrors src/ structure; packages/*/tests hold package-local tests
 ├── config/                         # Runtime config (gitignored): dispatcher.json, registration.json, loops/
 └── data/                           # SQLite database (gitignored)
@@ -381,8 +379,6 @@ also exposes:
 
 - `GET /dashboard/data` — aggregated JSON status for all accounts (loop status,
   running-job flags, recent jobs).
-- `GET /schemas/goals` and `GET /schemas/loops` — machine-readable schemas for the
-  registered goal and loop types.
 - `GET /accounts/:playerId/system` and
   `GET /accounts/:playerId/system/:systemId` — system data queried through a
   specific account's lib connection.

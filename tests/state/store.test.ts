@@ -285,58 +285,6 @@ describe("StateStore.deleteState", () => {
 	});
 });
 
-describe("StateStore.getSessionInfo / setSessionInfo", () => {
-	test("getSessionInfo returns undefined when account has no row", () => {
-		const info = store.getSessionInfo("no-such-account");
-		expect(info).toBeUndefined();
-	});
-
-	test("getSessionInfo returns undefined when session columns are null", () => {
-		// Create a row via applyUpdate (no session columns set)
-		store.applyUpdate("account-1", {
-			player: { id: "p1", username: "Test", credits: 0, empire: "solarian" },
-		});
-
-		const info = store.getSessionInfo("account-1");
-		expect(info).toBeUndefined();
-	});
-
-	test("setSessionInfo creates a row with session data when no row exists", () => {
-		const expiresAt = new Date("2026-03-01T00:00:00Z");
-		store.setSessionInfo("account-new", "sess-abc", expiresAt);
-
-		const info = store.getSessionInfo("account-new");
-		expect(info).toBeDefined();
-		expect(info?.sessionId).toBe("sess-abc");
-	});
-
-	test("setSessionInfo updates session columns without affecting game state columns", () => {
-		store.applyUpdate("account-1", {
-			player: { id: "p1", username: "Test", credits: 500, empire: "solarian" },
-		});
-
-		const expiresAt = new Date("2026-03-01T00:00:00Z");
-		store.setSessionInfo("account-1", "sess-xyz", expiresAt);
-
-		// Session info should be set
-		const info = store.getSessionInfo("account-1");
-		expect(info?.sessionId).toBe("sess-xyz");
-
-		// Game state should be unchanged
-		const state = store.getState("account-1");
-		expect(state?.player?.credits).toBe(500);
-	});
-
-	test("getSessionInfo round-trips sessionId and expiresAt correctly", () => {
-		const expiresAt = new Date("2026-04-15T12:30:00.000Z");
-		store.setSessionInfo("account-1", "sess-round-trip", expiresAt);
-
-		const info = store.getSessionInfo("account-1");
-		expect(info?.sessionId).toBe("sess-round-trip");
-		expect(info?.expiresAt.toISOString()).toBe(expiresAt.toISOString());
-	});
-});
-
 describe("StateStore.getAllAccountIds", () => {
 	test("returns empty array when no accounts exist", () => {
 		const ids = store.getAllAccountIds();
@@ -372,68 +320,5 @@ describe("StateStore.getAllAccountIds", () => {
 		store.deleteState("account-1");
 		const ids = store.getAllAccountIds();
 		expect(ids).toEqual(["account-2"]);
-	});
-});
-
-describe("StateStore.migrateSkillIds", () => {
-	test("returns unchanged when no state exists for account", () => {
-		const result = store.migrateSkillIds("unknown-account", { refinement: "ore_refinement" });
-		expect(result).toEqual({ changed: false, changes: [] });
-	});
-
-	test("returns unchanged when skills column is null", () => {
-		store.applyUpdate("account-1", {
-			player: { id: "p1", username: "Test", credits: 0, empire: "solarian" },
-		});
-
-		const result = store.migrateSkillIds("account-1", { refinement: "ore_refinement" });
-		expect(result).toEqual({ changed: false, changes: [] });
-	});
-
-	test("returns unchanged when no skills match the mapping", () => {
-		db.run(
-			"INSERT INTO game_state (account_id, skills, updated_at) VALUES (?, ?, datetime('now'))",
-			["account-1", JSON.stringify({ mining: 3, trading: 2 })],
-		);
-
-		const result = store.migrateSkillIds("account-1", { refinement: "ore_refinement" });
-		expect(result).toEqual({ changed: false, changes: [] });
-	});
-
-	test("remaps matching skill keys and writes back to database", () => {
-		db.run(
-			"INSERT INTO game_state (account_id, skills, updated_at) VALUES (?, ?, datetime('now'))",
-			["account-1", JSON.stringify({ refinement: 5, jump_drive: 2, mining: 3 })],
-		);
-
-		const result = store.migrateSkillIds("account-1", {
-			refinement: "ore_refinement",
-			jump_drive: "jump_drive_operation",
-		});
-
-		expect(result.changed).toBe(true);
-		expect(result.changes).toHaveLength(2);
-		expect(result.changes).toContainEqual({ from: "refinement", to: "ore_refinement" });
-		expect(result.changes).toContainEqual({ from: "jump_drive", to: "jump_drive_operation" });
-
-		// Verify persisted changes
-		const stored = store.getSection("account-1", "skills") as Record<string, number>;
-		expect(stored["ore_refinement"]).toBe(5);
-		expect(stored["jump_drive_operation"]).toBe(2);
-		expect(stored["mining"]).toBe(3);
-		expect(stored["refinement"]).toBeUndefined();
-		expect(stored["jump_drive"]).toBeUndefined();
-	});
-
-	test("preserves skill levels during remapping", () => {
-		db.run(
-			"INSERT INTO game_state (account_id, skills, updated_at) VALUES (?, ?, datetime('now'))",
-			["account-1", JSON.stringify({ crafting_basic: 7 })],
-		);
-
-		store.migrateSkillIds("account-1", { crafting_basic: "basic_crafting" });
-
-		const stored = store.getSection("account-1", "skills") as Record<string, number>;
-		expect(stored["basic_crafting"]).toBe(7);
 	});
 });

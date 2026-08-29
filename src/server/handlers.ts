@@ -1,4 +1,4 @@
-import type { MarketBookSnapshot, ObservationSnapshot } from "@setpoint/protocol";
+import type { CombatEnvelope, MarketBookSnapshot, ObservationSnapshot } from "@setpoint/protocol";
 import { type LoopType, loopPatchSchemas, loopSchemas } from "@setpoint/protocol";
 import type { MarketBook, ObservationView, SpacemoltClient } from "@spacemolt/lib";
 import { loadRegistrationConfig } from "../accounts/config.js";
@@ -7,8 +7,9 @@ import { type LibManagedAccount, playerId as playerIdOf } from "../accounts/lib-
 import type { CombatModeStore } from "../combat/combat-mode-store.js";
 import type { ProgressRef } from "../dispatcher/goals.js";
 import { makeLibGoalContext } from "../dispatcher/lib-goal-context.js";
-import type { CombatEventsStore } from "../state/combat-events-store.js";
+
 import type { CraftingEventsStore } from "../state/crafting-events-store.js";
+import type { EventBuffer } from "../state/event-buffer.js";
 import { STATE_SECTION_KEYS, type StateSectionKey, type StateStore } from "../state/store.js";
 import { ApiError, HttpError, errorMessage } from "../util/errors.js";
 import { createLogger } from "../util/logger.js";
@@ -22,6 +23,7 @@ import {
 	getGoalTypes,
 	isZodLikeError,
 } from "./goal-registry.js";
+import { type RouteParams, errorResponse, jsonResponse } from "./http.js";
 import type { JobManager } from "./job-manager.js";
 import type {
 	EnhancedMiningLoopApiOptions,
@@ -31,8 +33,6 @@ import type {
 	MiningLoopApiOptions,
 	TradingLoopApiOptions,
 } from "./loop-manager.js";
-import { type RouteParams, errorResponse, jsonResponse } from "./router.js";
-import { getGoalSchemas, getLoopSchemas } from "./schemas.js";
 
 const log = createLogger("handlers");
 
@@ -46,7 +46,7 @@ export interface HandlerContext {
 	configDir: string;
 	startedAt: string;
 	craftingEventsStore: CraftingEventsStore;
-	combatEventsStore: CombatEventsStore;
+	combatEventsStore: EventBuffer<CombatEnvelope>;
 	combatModeStore: CombatModeStore;
 	/** Accounts with a synchronous goal currently executing. Used to prevent races. */
 	executingGoals: Map<string, ExecutingGoalEntry>;
@@ -1397,75 +1397,6 @@ export async function handleSetLogLevel(
 	return jsonResponse({ level, previous });
 }
 
-// ── ID Migration ─────────────────────────────────────────────────────
-
-/**
- * Apply an ID migration mapping to all persisted loop configs.
- *
- * Body: the categorized migration JSON (e.g. from spacemolt.com/id-migrations.json).
- * All categories are merged into a flat old→new lookup and applied to every
- * string value in every saved loop config file.
- */
-export async function handleMigrateIds(
-	req: Request,
-	_params: RouteParams,
-	ctx: HandlerContext,
-): Promise<Response> {
-	let body: unknown;
-	try {
-		body = await req.json();
-	} catch {
-		return errorResponse("Invalid JSON body", 400);
-	}
-
-	if (typeof body !== "object" || body === null || Array.isArray(body)) {
-		return errorResponse("Body must be the categorized migration JSON object", 400);
-	}
-
-	// Merge all categories into a single flat old→new mapping
-	const flatMapping: Record<string, string> = {};
-	for (const [, entries] of Object.entries(body as Record<string, unknown>)) {
-		if (typeof entries !== "object" || entries === null) continue;
-		for (const [oldId, newId] of Object.entries(entries)) {
-			if (typeof newId === "string") {
-				flatMapping[oldId] = newId;
-			}
-		}
-	}
-
-	const results = await ctx.loopManager.migrateLoopConfigs(ctx.configDir, flatMapping);
-	const changed = results.filter((r) => r.changed).length;
-	const totalChanges = results.reduce((sum, r) => sum + r.changes.length, 0);
-
-	// Also remap skill IDs in the SQLite game state for all accounts
-	const allAccountIds = ctx.store.getAllAccountIds();
-	const skillResults: Array<{ accountId: string; changes: Array<{ from: string; to: string }> }> =
-		[];
-
-	for (const accountId of allAccountIds) {
-		const result = ctx.store.migrateSkillIds(accountId, flatMapping);
-		if (result.changed) {
-			skillResults.push({ accountId, changes: result.changes });
-			log.info(
-				`Migrated skill IDs for ${accountId}: ${result.changes.map((c) => `${c.from}→${c.to}`).join(", ")}`,
-			);
-		}
-	}
-
-	const totalSkillChanges = skillResults.reduce((sum, r) => sum + r.changes.length, 0);
-
-	log.info(
-		`ID migration complete: ${changed}/${results.length} loop config(s) updated, ${totalChanges} ID(s) replaced, ${totalSkillChanges} skill ID(s) remapped across ${skillResults.length} account(s)`,
-	);
-
-	return jsonResponse({
-		message: `Migrated ${changed}/${results.length} loop config(s), ${totalChanges} ID(s) updated, ${totalSkillChanges} skill ID(s) remapped across ${skillResults.length} account(s)`,
-		results,
-		skillResults,
-		mappingSize: Object.keys(flatMapping).length,
-	});
-}
-
 // ── Dashboard ───────────────────────────────────────────────────────
 
 export function handleDashboardData(
@@ -1544,24 +1475,6 @@ function resolveListPrices<T extends { listPrices?: Record<string, number> | str
 		throw new Error("options.listPrices must be an object of item_id → price");
 	}
 	return { ...rest, listPrices: parsed as Record<string, number> };
-}
-
-// ── Schema endpoints ─────────────────────────────────────────────────────────
-
-export function handleGetGoalSchemas(
-	_req: Request,
-	_params: RouteParams,
-	_ctx: HandlerContext,
-): Response {
-	return jsonResponse(getGoalSchemas());
-}
-
-export function handleGetLoopSchemas(
-	_req: Request,
-	_params: RouteParams,
-	_ctx: HandlerContext,
-): Response {
-	return jsonResponse(getLoopSchemas());
 }
 
 // ── Map data endpoints ──────────────────────────────────────────────────────
@@ -1808,7 +1721,7 @@ export function handleCraftingEvents(
  * arrives. Includes both raw `battle_*`/`player_died`/`player_kill`
  * notifications the combat detector confirmed involve this account, and
  * synthetic `combat_interrupted`/`combat_recovery_*` events setpoint itself
- * emits (see `CombatEventsStore`/`CombatReactor`). No subscribe-first step
+ * emits (see `CombatReactor`). No subscribe-first step
  * is needed, same as crafting events.
  */
 export function handleCombatEvents(

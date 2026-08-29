@@ -1,27 +1,15 @@
 import { afterAll, beforeAll, describe, expect, mock, test } from "bun:test";
+import type { CombatEnvelope } from "@setpoint/protocol";
 import type { GameState } from "@spacemolt/lib";
 import type { CombatModeStore } from "../../src/combat/combat-mode-store.js";
 import type { HandlerContext } from "../../src/server/handlers.js";
-import {
-	handleAddAccount,
-	handleDashboardData,
-	handleDeleteAccount,
-	handleExecuteGoalAsync,
-	handleGetAccount,
-	handleGetJob,
-	handleGetLoop,
-	handleGetState,
-	handleGetStateSection,
-	handleHealth,
-	handleListAccounts,
-	handleStartLoop,
-} from "../../src/server/handlers.js";
+import { errorResponse } from "../../src/server/http.js";
+import { buildRoutes } from "../../src/server/index.js";
 import { JobManager } from "../../src/server/job-manager.js";
 import { LoopManager } from "../../src/server/loop-manager.js";
-import { Router } from "../../src/server/router.js";
-import { CombatEventsStore } from "../../src/state/combat-events-store.js";
 import { CraftingEventsStore } from "../../src/state/crafting-events-store.js";
 import { createMemoryDatabase } from "../../src/state/database.js";
+import { createEventBuffer } from "../../src/state/event-buffer.js";
 import type { StateStore } from "../../src/state/store.js";
 import type { StoredGameState } from "../../src/state/store.js";
 import { FakeLibManagedAccount, makeFakeLibManager } from "../dispatcher/lib-fakes.js";
@@ -89,6 +77,9 @@ describe("Server integration", () => {
 		const store = {
 			getState: mock((id: string) => (id === "p1" ? TEST_STATE : null)),
 			getSection: mock((id: string, section: string) => {
+				// Lets a test drive a handler into throwing, so the route wrapper's
+				// catch-and-500 is exercised over real HTTP.
+				if (section === "queue") throw new Error("boom");
 				if (id !== "p1") return undefined;
 				return TEST_STATE[section as keyof StoredGameState];
 			}),
@@ -108,27 +99,17 @@ describe("Server integration", () => {
 			executingGoals: new Map(),
 			claimedAccounts: new Set(),
 			craftingEventsStore: new CraftingEventsStore(),
-			combatEventsStore: new CombatEventsStore(),
+			combatEventsStore: createEventBuffer<CombatEnvelope>(),
 			combatModeStore: { get: () => "flee" } as unknown as CombatModeStore,
 		};
 
-		const router = new Router<HandlerContext>();
-		router.get("/health", handleHealth);
-		router.get("/accounts", handleListAccounts);
-		router.get("/accounts/:playerId", handleGetAccount);
-		router.post("/accounts", handleAddAccount);
-		router.delete("/accounts/:playerId", handleDeleteAccount);
-		router.get("/accounts/:playerId/state", handleGetState);
-		router.get("/accounts/:playerId/state/:section", handleGetStateSection);
-		router.get("/accounts/:playerId/loop", handleGetLoop);
-		router.post("/accounts/:playerId/loop", handleStartLoop);
-		router.post("/accounts/:playerId/goal/async", handleExecuteGoalAsync);
-		router.get("/jobs/:jobId", handleGetJob);
-		router.get("/dashboard/data", handleDashboardData);
-
+		// Serve the daemon's real route table rather than re-declaring a subset
+		// here — a handler registered at the wrong path is then a failure in
+		// these tests instead of a silent 404 in production.
 		server = Bun.serve({
 			port: 0, // random available port
-			fetch: (req) => router.handle(req, ctx),
+			routes: buildRoutes(ctx),
+			fetch: () => errorResponse("Not found", 404),
 		});
 
 		base = `http://localhost:${server.port}`;
@@ -279,6 +260,14 @@ describe("Server integration", () => {
 	test("wrong method returns 404", async () => {
 		const res = await fetch(`${base}/health`, { method: "DELETE" });
 		expect(res.status).toBe(404);
+	});
+
+	test("a throwing handler returns 500 rather than escaping to Bun", async () => {
+		const res = await fetch(`${base}/accounts/p1/state/queue`);
+		const body = (await res.json()) as Record<string, unknown>;
+
+		expect(res.status).toBe(500);
+		expect(body["error"]).toBe("Internal server error");
 	});
 
 	// ── Dashboard ─────────────────────────────────────────────────────
