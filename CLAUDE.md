@@ -50,7 +50,8 @@ setpoint/
 │   │   ├── database.ts             # SQLite schema and queries
 │   │   ├── store.ts                # State store interface
 │   │   ├── projector.ts            # Writes lib-cache state changes into the SQLite store
-│   │   └── attach-projector.ts     # Wires an account's onStateChange stream to the projector
+│   │   ├── attach-projector.ts     # Wires an account's onStateChange stream to the projector
+│   │   └── event-buffer.ts         # Generic per-key ring buffer + pub/sub behind the SSE routes
 │   ├── dispatcher/                 # Declarative goal engine (runs on @spacemolt/lib)
 │   │   ├── goals.ts                # Shared goal result/status types (GoalResult, LoopResult, …)
 │   │   ├── lib-goal-context.ts     # LibGoalContext + LibGoalAccount boundary; makeLibGoalContext
@@ -61,9 +62,15 @@ setpoint/
 │   │   ├── lib-primitives/         # Single-action goals (travel, dock, refuel, …) on the lib
 │   │   ├── lib-compounds/          # Multi-step goal sequences on the lib
 │   │   └── lib-loops/              # Loop definitions (mining, trading, hauling, …) on the lib
+│   ├── combat/                     # Combat detection and response
+│   │   ├── combat-detector.ts      # Pure reducer: notifications → entered/exited/died transitions
+│   │   ├── combat-reactor.ts       # Per-fleet orchestrator; releases the account, runs the strategy
+│   │   ├── combat-response.ts      # CombatResponseStrategy + FleeCombatStrategy
+│   │   ├── combat-mode-store.ts    # Persisted per-account flee vs. external mode
+│   │   └── combat-recovery.ts      # Post-combat return to the loop's working area
 │   ├── server/                     # Local HTTP API
-│   │   ├── index.ts                # Server startup and route registration
-│   │   ├── router.ts               # Route definitions and matching
+│   │   ├── index.ts                # Server startup + buildRoutes() (Bun native route table)
+│   │   ├── http.ts                 # jsonResponse/errorResponse + RouteParams/RouteHandler types
 │   │   ├── handlers.ts             # Request handlers
 │   │   ├── goal-registry.ts        # Goal type registry for the API
 │   │   └── loop-manager.ts         # Loop lifecycle management
@@ -187,13 +194,15 @@ bun run deploy           # Full deploy: bump version, check, typecheck, test, bu
 - Prefer `interface` over `type` for object shapes
 - Use `unknown` over `any` — `any` should never appear in committed code
 - All public functions must have explicit return types
-- Use barrel exports (`index.ts`) per directory
+- Barrel exports (`index.ts`) only where something actually imports the barrel — `lib-primitives/` and `lib-compounds/` earn theirs via `goal-registry.ts`. Elsewhere, deep-import; an unimported barrel is just a second place to update.
+- Anything crossing the daemon↔client HTTP boundary (goal/loop results, status shapes) is defined once in `@setpoint/protocol` and re-exported by `src/`, never re-declared. A second copy silently drifts from the one the typed client compiles against.
 
 ### Testing
 - **95% coverage target**
 - Test files mirror source structure in `tests/`
 - Fake the lib account surface (`FakeLibGoalAccount` / `tests/dispatcher/lib-fakes.ts`, `tests/accounts/fakes.ts`), never call the real `@spacemolt/lib` or game server in tests
 - Test state transitions thoroughly — the state model is the core of the system
+- `package.json`'s `test` script **enumerates test directories**. A new `tests/<dir>` does not run until it's added to both `test` and `test:coverage`. Verify a new directory's tests actually appear in the run count — `tests/combat` was silently skipped this way, hiding 55 tests from every `bun run deploy`.
 
 #### What must always have a test
 Every piece of new behavior needs a test written at the same time as the code — not after:
@@ -203,8 +212,11 @@ Every piece of new behavior needs a test written at the same time as the code �
 - **Every new goal/primitive** must have a test covering: already-satisfied case, success case, failure/precondition-not-met case.
 - **Every new option added to an existing goal** must have a test for the new behavior (e.g., adding `depositTarget: "faction"` requires a test that faction storage is called when set).
 
-#### Before writing a CLI command that calls a server route
-Read `src/server/index.ts` to verify the exact registered route path before using it in the CLI. Route names are not always obvious from the handler name — e.g., `handleDashboardData` is registered at `/dashboard/data`, not `/dashboard-data`.
+#### Route paths are covered by tests
+`tests/server/integration.test.ts` serves the real `buildRoutes()` table, so a handler registered at the wrong path fails a test rather than 404ing in production. Route paths still aren't guessable from handler names (`handleDashboardData` → `/dashboard/data`, not `/dashboard-data`), so read `buildRoutes()` in `src/server/index.ts` before referencing a route from the CLI — but you'll now get a test failure if you get it wrong.
+
+### Before deleting an endpoint or feature
+The route wrapper logs every request at INFO, so the daemon's own logs are the evidence for whether anything still calls something: `grep "GET /path" logs/daemon.log* logs/stdout.log`. Check a known-live route (`/dashboard/data`) in the same window as a control — zero hits only means something if the log actually captures traffic. `logs/stdout.log` holds months; `daemon.log` rotates at 10MB and may only span hours.
 
 ### Error Handling
 - Game API rejections surface as `SpacemoltError` (from `@spacemolt/lib`), with a `.code` field goals match against (e.g. `already_docked`, `unknown_destination`) — see `src/dispatcher/lib-primitives/dock-at.ts` for the pattern
@@ -231,7 +243,7 @@ After finishing a set of changes, run `bun run deploy`. It bumps the patch versi
 - **Queue-based account connection** — `POST /accounts` (username of an account already owned by the configured Clerk API key) returns 202 Accepted and connects in the background; `@spacemolt/lib` batches and staggers the underlying connects to respect the 100/min per-IP WS-connection cap. Use `GET /accounts` to check connection status.
 - **Account resolution by ID or username** — all API endpoints accepting a `playerId` parameter also accept a username (case-insensitive). Handlers use `resolveAccount()` to look up by player_id first, then by username.
 - **Idempotent goals** — if a goal is already satisfied (e.g., already at the target location), it should succeed immediately without making API calls.
-- **Crafting progress is push-only, no subscribe step** — unlike market/observation, the game server sends `crafting_update` automatically whenever an account has jobs in progress. `GET /accounts/:playerId/crafting/events` streams it as Server-Sent Events: the buffered backlog (`CraftingEventsStore`, last ~50 per account, in-memory only) immediately on connect, then each new push live. It's the one GET route in `isUnboundedRequest` (`src/server/index.ts`) — a long-lived stream, not a tick-bound mutation, but needs the same idle-timeout override.
+- **Crafting progress is push-only, no subscribe step** — unlike market/observation, the game server sends `crafting_update` automatically whenever an account has jobs in progress. `GET /accounts/:playerId/crafting/events` streams it as Server-Sent Events: the buffered backlog (`CraftingEventsStore`, last ~50 per account, in-memory only) immediately on connect, then each new push live. It's one of two GET routes in `isUnboundedRequest` (`src/server/index.ts`, alongside `/combat/events`) — a long-lived stream, not a tick-bound mutation, but needs the same idle-timeout override.
 
 ### Known Timing Behaviors
 Key timing constants that interact — understand these before debugging any lock or retry issue:
@@ -440,6 +452,7 @@ The daemon listens on `http://127.0.0.1:7580` by default. All responses are JSON
 | `GET` | `/accounts/:playerId/market/:baseId` | Cached order book for a base (subscribe first via `raw`) | `smctl market <id> <baseId>` |
 | `GET` | `/accounts/:playerId/observation` | Cached observation-watch view (subscribe first via `raw`) | `smctl observation <id>` |
 | `GET` | `/accounts/:playerId/crafting/events` | Live crafting progress (Server-Sent Events) — no subscribe step needed | — (use `@setpoint/client`'s `account.crafting.events()`) |
+| `GET` | `/accounts/:playerId/combat/events` | Live combat events (Server-Sent Events) — no subscribe step needed | — |
 | `GET` | `/log-level` | Get log level | `smctl log-level` |
 | `POST` | `/log-level` | Set log level | `smctl log-level <level>` |
 
