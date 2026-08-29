@@ -21,11 +21,9 @@ import {
 	handleExecuteGoalAsync,
 	handleGetAccount,
 	handleGetCombatMode,
-	handleGetGoalSchemas,
 	handleGetJob,
 	handleGetLogLevel,
 	handleGetLoop,
-	handleGetLoopSchemas,
 	handleGetMarket,
 	handleGetObservation,
 	handleGetState,
@@ -33,7 +31,6 @@ import {
 	handleGetSystem,
 	handleHealth,
 	handleListAccounts,
-	handleMigrateIds,
 	handlePatchLoop,
 	handleRawAction,
 	handleRefreshState,
@@ -253,13 +250,6 @@ export function startServer(options: ServerOptions): DispatcherServer {
 	// Config
 	router.get("/log-level", handleGetLogLevel);
 	router.post("/log-level", handleSetLogLevel);
-
-	// ID Migration
-	router.post("/migrate-ids", handleMigrateIds);
-
-	// Schemas (goal/loop schema registry)
-	router.get("/schemas/goals", handleGetGoalSchemas);
-	router.get("/schemas/loops", handleGetLoopSchemas);
 
 	// System data (routed through specific account)
 	router.get("/accounts/:playerId/system", handleGetSystem);

@@ -182,54 +182,6 @@ export class StateStore {
 		return updatedSections;
 	}
 
-	/**
-	 * Remap skill IDs in the stored skills object for an account.
-	 *
-	 * Skills are stored as `{ [skill_id: string]: number }`. This replaces any
-	 * key that appears in the mapping with its new value, preserving the level.
-	 * Returns the list of changes made; an empty list means nothing was changed.
-	 */
-	migrateSkillIds(
-		accountId: string,
-		mapping: Record<string, string>,
-	): { changed: boolean; changes: Array<{ from: string; to: string }> } {
-		const row = this.db
-			.query<{ skills: string | null }, [string]>(
-				"SELECT skills FROM game_state WHERE account_id = ?",
-			)
-			.get(accountId);
-
-		if (!row || row.skills === null) {
-			return { changed: false, changes: [] };
-		}
-
-		const skills = JSON.parse(row.skills) as Record<string, unknown>;
-		const changes: Array<{ from: string; to: string }> = [];
-		const migrated: Record<string, unknown> = {};
-
-		for (const [key, value] of Object.entries(skills)) {
-			const newKey = mapping[key] ?? key;
-			if (newKey !== key) {
-				changes.push({ from: key, to: newKey });
-			}
-			migrated[newKey] = value;
-		}
-
-		if (changes.length === 0) {
-			return { changed: false, changes: [] };
-		}
-
-		this.db.run(
-			"UPDATE game_state SET skills = ?, updated_at = datetime('now') WHERE account_id = ?",
-			[JSON.stringify(migrated), accountId],
-		);
-
-		log.debug(
-			`Migrated skill IDs for ${accountId}: ${changes.map((c) => `${c.from}→${c.to}`).join(", ")}`,
-		);
-		return { changed: true, changes };
-	}
-
 	/** Delete all state for an account. */
 	deleteState(accountId: string): void {
 		this.db.run("DELETE FROM game_state WHERE account_id = ?", [accountId]);

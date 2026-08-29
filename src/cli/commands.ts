@@ -1,8 +1,3 @@
-/** Command registry and handlers for the smctl CLI. */
-
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { errorMessage } from "../util/errors.js";
 import { ConnectionError, type DaemonClient, TimeoutError } from "./client.js";
 import type { CliOutput } from "./output.js";
 
@@ -180,13 +175,6 @@ const commands: Command[] = [
 		handler: handleLogLevel,
 		usage: "smctl log-level [debug|info|warn|error]",
 		description: "Get or set the log level",
-	},
-	{
-		pattern: "migrate-ids",
-		positionals: ["mappingFile"],
-		handler: handleMigrateIds,
-		usage: "smctl migrate-ids <mapping-file>",
-		description: "Apply an ID migration mapping to all persisted loop configs",
 	},
 	{
 		pattern: "help goals",
@@ -584,24 +572,6 @@ async function handleLogLevel(ctx: CommandContext, args: string[]): Promise<void
 		// POST new level
 		await sendAndOutput(ctx, () => ctx.client.post("/log-level", { level }));
 	}
-}
-
-async function handleMigrateIds(ctx: CommandContext, args: string[]): Promise<void> {
-	const filePath = args[0];
-	if (!filePath) {
-		ctx.output.usageError("Usage: smctl migrate-ids <mapping-file>");
-		return;
-	}
-
-	let mapping: unknown;
-	try {
-		mapping = JSON.parse(readFileSync(resolve(filePath), "utf-8"));
-	} catch (err) {
-		ctx.output.usageError(`Failed to read mapping file: ${errorMessage(err)}`);
-		return;
-	}
-
-	await sendAndOutput(ctx, () => ctx.client.post("/migrate-ids", mapping));
 }
 
 // ── Help Handlers ─────────────────────────────────────────────────

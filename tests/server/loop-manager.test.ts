@@ -1,6 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdir, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { beforeEach, describe, expect, test } from "bun:test";
 import { LoopManager } from "../../src/server/loop-manager.js";
 import type {
 	EnhancedMiningLoopApiOptions,
@@ -13,8 +11,6 @@ import type {
 	TradingLoopApiOptions,
 } from "../../src/server/loop-manager.js";
 import { FakeLibManagedAccount } from "../dispatcher/lib-fakes.js";
-
-const TEST_CONFIG_DIR = join(import.meta.dir, "..", "..", "test-config-temp", "loop-mgr");
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -368,141 +364,5 @@ describe("LoopManager start*Loop methods", () => {
 		expect(manager.abortLoop("p1")).toBe(true);
 		// Cleaned up — status now undefined
 		expect(manager.getStatus("p1")).toBeUndefined();
-	});
-});
-
-// ── migrateLoopConfigs / migrateJsonValue ────────────────────────────
-
-describe("migrateLoopConfigs", () => {
-	let manager: LoopManager;
-
-	beforeEach(async () => {
-		manager = new LoopManager();
-		await mkdir(join(TEST_CONFIG_DIR, "loops"), { recursive: true });
-	});
-
-	afterEach(async () => {
-		await rm(TEST_CONFIG_DIR, { recursive: true, force: true });
-	});
-
-	test("returns empty array when no loop configs exist", async () => {
-		const results = await manager.migrateLoopConfigs(TEST_CONFIG_DIR, { old_id: "new_id" });
-		expect(results).toHaveLength(0);
-	});
-
-	test("migrates string values in loop config", async () => {
-		const config = {
-			type: "mining",
-			options: {
-				miningSystemId: "old-sys",
-				beltPoiId: "old-belt",
-				sellSystemId: "sol",
-				sellStationPoiId: "sol-station",
-				sellBaseId: "sol-base",
-			},
-		};
-		await writeFile(
-			join(TEST_CONFIG_DIR, "loops", "player1.json"),
-			JSON.stringify(config),
-			"utf-8",
-		);
-
-		const results = await manager.migrateLoopConfigs(TEST_CONFIG_DIR, {
-			"old-sys": "new-sys",
-			"old-belt": "new-belt",
-		});
-
-		expect(results).toHaveLength(1);
-		const result = results[0];
-		expect(result).toBeDefined();
-		expect(result?.playerId).toBe("player1");
-		expect(result?.changed).toBe(true);
-		expect(result?.changes).toHaveLength(2);
-		expect(result?.changes.some((c) => c.from === "old-sys" && c.to === "new-sys")).toBe(true);
-		expect(result?.changes.some((c) => c.from === "old-belt" && c.to === "new-belt")).toBe(true);
-	});
-
-	test("reports unchanged when no IDs match", async () => {
-		const config = {
-			type: "mining",
-			options: {
-				miningSystemId: "sol",
-				beltPoiId: "belt-1",
-				sellSystemId: "sol",
-				sellStationPoiId: "sol-station",
-				sellBaseId: "sol-base",
-			},
-		};
-		await writeFile(
-			join(TEST_CONFIG_DIR, "loops", "player1.json"),
-			JSON.stringify(config),
-			"utf-8",
-		);
-
-		const results = await manager.migrateLoopConfigs(TEST_CONFIG_DIR, { "old-id": "new-id" });
-
-		expect(results).toHaveLength(1);
-		expect(results[0]?.changed).toBe(false);
-		expect(results[0]?.changes).toHaveLength(0);
-	});
-
-	test("migrates string values inside arrays", async () => {
-		const config = {
-			type: "enhanced-mining",
-			options: {
-				miningSystemId: "sol",
-				beltPoiId: "belt-1",
-				sellSystemId: "sol",
-				sellStationPoiId: "sol-station",
-				sellBaseId: "sol-base",
-				junkItemIds: ["old-junk-1", "old-junk-2"],
-			},
-		};
-		await writeFile(
-			join(TEST_CONFIG_DIR, "loops", "player1.json"),
-			JSON.stringify(config),
-			"utf-8",
-		);
-
-		const results = await manager.migrateLoopConfigs(TEST_CONFIG_DIR, {
-			"old-junk-1": "new-junk-1",
-		});
-
-		expect(results[0]?.changed).toBe(true);
-		expect(results[0]?.changes[0]?.from).toBe("old-junk-1");
-		expect(results[0]?.changes[0]?.to).toBe("new-junk-1");
-	});
-
-	test("handles multiple player configs independently", async () => {
-		const config1 = {
-			type: "mining",
-			options: {
-				miningSystemId: "old-sys",
-				beltPoiId: "b1",
-				sellSystemId: "s",
-				sellStationPoiId: "sp",
-				sellBaseId: "sb",
-			},
-		};
-		const config2 = {
-			type: "mining",
-			options: {
-				miningSystemId: "sol",
-				beltPoiId: "b2",
-				sellSystemId: "s",
-				sellStationPoiId: "sp",
-				sellBaseId: "sb",
-			},
-		};
-		await writeFile(join(TEST_CONFIG_DIR, "loops", "p1.json"), JSON.stringify(config1), "utf-8");
-		await writeFile(join(TEST_CONFIG_DIR, "loops", "p2.json"), JSON.stringify(config2), "utf-8");
-
-		const results = await manager.migrateLoopConfigs(TEST_CONFIG_DIR, { "old-sys": "new-sys" });
-
-		expect(results).toHaveLength(2);
-		const p1Result = results.find((r) => r.playerId === "p1");
-		const p2Result = results.find((r) => r.playerId === "p2");
-		expect(p1Result?.changed).toBe(true);
-		expect(p2Result?.changed).toBe(false);
 	});
 });

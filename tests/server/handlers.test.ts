@@ -30,7 +30,6 @@ import {
 	handleGetSystem,
 	handleHealth,
 	handleListAccounts,
-	handleMigrateIds,
 	handlePatchLoop,
 	handleRawAction,
 	handleRegisterAccount,
@@ -132,7 +131,6 @@ function makeContext(
 			return s[section as keyof StoredGameState];
 		}),
 		getAllAccountIds: mock(() => []),
-		migrateSkillIds: mock(() => ({ changed: false, changes: [] })),
 	} as unknown as StateStore;
 
 	const loopManager = {
@@ -192,7 +190,6 @@ function makeContext(
 		),
 		saveLoopConfig: mock(() => Promise.resolve()),
 		deleteLoopConfig: mock(() => Promise.resolve()),
-		migrateLoopConfigs: mock(() => Promise.resolve([])),
 	} as unknown as LoopManager;
 
 	return {
@@ -2880,103 +2877,6 @@ describe("handleDashboardData", () => {
 		const body = (await res.json()) as Record<string, unknown>;
 		const accounts = body["accounts"] as Array<Record<string, unknown>>;
 		expect(accounts).toHaveLength(0);
-	});
-});
-
-// ── Migrate IDs ──────────────────────────────────────────────────────
-
-describe("handleMigrateIds", () => {
-	test("is wired to POST /migrate-ids", () => {
-		expect(handleMigrateIds).toBeDefined();
-	});
-
-	test("merges categories into flat mapping and returns change report", async () => {
-		const migrateResults = [
-			{
-				playerId: "p1",
-				changed: true,
-				changes: [{ path: "options.miningSystemId", from: "sol", to: "sol_prime" }],
-			},
-		];
-		const ctx = makeContext();
-		(
-			ctx.loopManager as unknown as { migrateLoopConfigs: ReturnType<typeof mock> }
-		).migrateLoopConfigs = mock(() => Promise.resolve(migrateResults));
-
-		const body = { systems: { sol: "sol_prime" }, items: { ore_iron: "iron_ore" } };
-		const req = new Request("http://localhost/migrate-ids", {
-			method: "POST",
-			body: JSON.stringify(body),
-			headers: { "Content-Type": "application/json" },
-		});
-
-		const res = await handleMigrateIds(req, {}, ctx);
-		const data = (await res.json()) as Record<string, unknown>;
-
-		expect(res.status).toBe(200);
-		// 2 entries across 2 categories
-		expect(data["mappingSize"]).toBe(2);
-		expect(data["results"]).toHaveLength(1);
-		expect((data["results"] as Array<unknown>)[0]).toMatchObject({ playerId: "p1", changed: true });
-	});
-
-	test("returns 400 for invalid JSON body", async () => {
-		const ctx = makeContext();
-		const req = new Request("http://localhost/migrate-ids", {
-			method: "POST",
-			body: "not json",
-		});
-
-		const res = await handleMigrateIds(req, {}, ctx);
-		expect(res.status).toBe(400);
-	});
-
-	test("returns 400 for non-object body", async () => {
-		const ctx = makeContext();
-		const req = new Request("http://localhost/migrate-ids", {
-			method: "POST",
-			body: JSON.stringify([1, 2, 3]),
-			headers: { "Content-Type": "application/json" },
-		});
-
-		const res = await handleMigrateIds(req, {}, ctx);
-		expect(res.status).toBe(400);
-	});
-
-	test("migrates skill IDs in SQLite game state for all accounts", async () => {
-		const ctx = makeContext();
-		(
-			ctx.loopManager as unknown as { migrateLoopConfigs: ReturnType<typeof mock> }
-		).migrateLoopConfigs = mock(() => Promise.resolve([]));
-
-		const skillMigrateResults = [
-			{ accountId: "p1", changes: [{ from: "refinement", to: "ore_refinement" }] },
-		];
-		const mockGetAll = mock(() => ["p1"]);
-		const mockMigrateSkillIds = mock((_accountId: string) => ({
-			changed: true,
-			changes: skillMigrateResults[0]?.changes ?? [],
-		}));
-		(ctx.store as unknown as Record<string, unknown>)["getAllAccountIds"] = mockGetAll;
-		(ctx.store as unknown as Record<string, unknown>)["migrateSkillIds"] = mockMigrateSkillIds;
-
-		const body = { skills: { refinement: "ore_refinement" } };
-		const req = new Request("http://localhost/migrate-ids", {
-			method: "POST",
-			body: JSON.stringify(body),
-			headers: { "Content-Type": "application/json" },
-		});
-
-		const res = await handleMigrateIds(req, {}, ctx);
-		const data = (await res.json()) as Record<string, unknown>;
-
-		expect(res.status).toBe(200);
-		expect(mockGetAll).toHaveBeenCalled();
-		expect(mockMigrateSkillIds).toHaveBeenCalledWith("p1", { refinement: "ore_refinement" });
-		const sr = data["skillResults"] as Array<Record<string, unknown>>;
-		expect(sr).toHaveLength(1);
-		expect(sr[0]).toMatchObject({ accountId: "p1" });
-		expect(data["message"]).toContain("1 skill ID(s) remapped");
 	});
 });
 

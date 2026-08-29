@@ -29,38 +29,6 @@ import { createLogger } from "../util/logger.js";
 
 const log = createLogger("loop-mgr");
 
-/**
- * Recursively walk a parsed JSON value and replace any string that appears in
- * the ID mapping with its new value. Returns the (possibly new) value and
- * appends change records.
- */
-function migrateJsonValue(
-	value: unknown,
-	mapping: Record<string, string>,
-	path: string,
-	changes: Array<{ path: string; from: string; to: string }>,
-): unknown {
-	if (typeof value === "string") {
-		const newValue = mapping[value];
-		if (newValue !== undefined && newValue !== value) {
-			changes.push({ path, from: value, to: newValue });
-			return newValue;
-		}
-		return value;
-	}
-	if (Array.isArray(value)) {
-		return value.map((item, i) => migrateJsonValue(item, mapping, `${path}[${i}]`, changes));
-	}
-	if (typeof value === "object" && value !== null) {
-		const result: Record<string, unknown> = {};
-		for (const [key, val] of Object.entries(value)) {
-			result[key] = migrateJsonValue(val, mapping, `${path}.${key}`, changes);
-		}
-		return result;
-	}
-	return value;
-}
-
 /** Status of a running loop, safe to serialize. */
 export interface LoopStatus {
 	type: string;
@@ -1187,49 +1155,5 @@ export class LoopManager {
 		}
 
 		return configs;
-	}
-
-	/**
-	 * Apply an ID migration mapping to all saved loop configs.
-	 *
-	 * Recursively walks every string value in each config and replaces any
-	 * old ID found in the mapping with its new ID. Saves updated configs and
-	 * returns a per-account change report.
-	 */
-	async migrateLoopConfigs(
-		configDir: string,
-		mapping: Record<string, string>,
-	): Promise<
-		Array<{
-			playerId: string;
-			changed: boolean;
-			changes: Array<{ path: string; from: string; to: string }>;
-		}>
-	> {
-		const configs = await LoopManager.loadLoopConfigs(configDir);
-		const results: Array<{
-			playerId: string;
-			changed: boolean;
-			changes: Array<{ path: string; from: string; to: string }>;
-		}> = [];
-
-		for (const { playerId, type, options } of configs) {
-			const changes: Array<{ path: string; from: string; to: string }> = [];
-			const migratedOptions = migrateJsonValue(options, mapping, "options", changes);
-
-			results.push({ playerId, changed: changes.length > 0, changes });
-
-			if (changes.length > 0) {
-				await this.saveLoopConfig(
-					playerId,
-					type,
-					migratedOptions as Record<string, unknown>,
-					configDir,
-				);
-				log.info(`[${playerId}] Migrated loop config: ${changes.length} ID(s) updated`);
-			}
-		}
-
-		return results;
 	}
 }
