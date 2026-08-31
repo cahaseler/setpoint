@@ -1,4 +1,4 @@
-import type { StorageResponse, UninstallModResponse } from "@spacemolt/lib";
+import type { StorageResponse } from "@spacemolt/lib";
 import { createLogger } from "../../util/logger.js";
 import type { CompoundGoalResult, GoalResult, StepResult } from "../goals.js";
 import { alreadySatisfied, failed, succeeded } from "../goals.js";
@@ -242,16 +242,9 @@ export class LibEnsureLoadout implements LibGoal {
 			const typeId = mod["type_id"] as string;
 
 			log.info(`Uninstalling module: ${typeId} (${moduleId})`);
-			const response = await ctx.account.commands.spacemolt.uninstall_mod({ id: moduleId });
+			await ctx.account.commands.spacemolt.uninstall_mod({ id: moduleId });
 			ticksUsed++;
 			await ctx.refreshState();
-
-			const result = response.delta.details as UninstallModResponse | undefined;
-			if (result?.destroyed) {
-				log.warn(`Module ${typeId} (${moduleId}) was destroyed on removal`);
-				messages.push(`${typeId}: destroyed on removal`);
-				continue;
-			}
 
 			// Deposit uninstalled module to configured storage (it's now in cargo)
 			if (storage !== "cargo") {

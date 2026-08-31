@@ -46,9 +46,8 @@ export class LibUninstallMod implements LibGoal {
 		});
 		const result = response.delta.details as UninstallModResponse | undefined;
 
-		const destroyedMsg = result?.destroyed ? " (destroyed on removal)" : "";
-		log.info(`Uninstalled module ${result?.module_id}${destroyedMsg}`);
+		log.info(`Uninstalled module ${result?.module_id}`);
 
-		return succeeded(`Uninstalled module ${result?.module_id}${destroyedMsg}`, 1);
+		return succeeded(`Uninstalled module ${result?.module_id}`, 1);
 	}
 }

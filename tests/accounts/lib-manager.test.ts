@@ -8,6 +8,7 @@ import {
 import { LibAccountManager } from "../../src/accounts/lib-manager.js";
 import type { AccountClientLike, LibManagedAccount } from "../../src/accounts/lib-types.js";
 import { STATE_FRESHNESS_TTL_MS, isStateStale } from "../../src/dispatcher/state-freshness.js";
+import { partial } from "../helpers/deep-partial.js";
 import { FakeAccount, FakeClient } from "./fakes.js";
 
 /**
@@ -206,7 +207,7 @@ describe("LibAccountManager", () => {
 			{
 				playerId: "pid-a",
 				before: {},
-				after: { player: { credits: 500 } },
+				after: partial<GameState>({ player: { credits: 500 } }),
 				accountId: "Alpha",
 			},
 		]);
@@ -675,6 +676,25 @@ describe("LibAccountManager", () => {
 			expect(logged).toContain("server notice");
 			expect(logged).toContain("Server restarting in 30 seconds");
 			expect(logged).toContain("pid-a");
+		});
+
+		test("logs a server_restart_warning with its countdown", async () => {
+			const { client, accounts } = setup([player("Alpha", "pid-a")]);
+			const mgr = new LibAccountManager(client, { clerkApiKey: "k" });
+			await mgr.connect();
+
+			const infoSpy = spyOn(console, "info").mockImplementation(() => {});
+			accounts.get("Alpha")?.emitNotification("server_restart_warning", {
+				message: "Server restarting for deploy",
+				seconds_until_restart: 30,
+				target_version: "v0.573.1",
+			});
+			const logged = infoSpy.mock.calls.map((c) => String(c[0])).join("\n");
+			infoSpy.mockRestore();
+
+			expect(logged).toContain("server-lifecycle");
+			expect(logged).toContain("restart in 30s");
+			expect(logged).toContain("v0.573.1");
 		});
 
 		test("logs an undocumented push type", async () => {

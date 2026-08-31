@@ -2,7 +2,9 @@ import type { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, test } from "bun:test";
 import type { V2GameState } from "@spacemolt/lib";
 import { createMemoryDatabase } from "../../src/state/database.js";
+import type { StateSectionKey } from "../../src/state/store.js";
 import { StateStore } from "../../src/state/store.js";
+import { type DeepPartial, partial } from "../helpers/deep-partial.js";
 
 let db: Database;
 let store: StateStore;
@@ -12,6 +14,14 @@ beforeEach(() => {
 	store = new StateStore(db);
 });
 
+/**
+ * `applyUpdate` takes a complete `V2GameState`; these fixtures deliberately
+ * carry only the sections and fields each test is about, so they go through
+ * one cast here rather than at every call site.
+ */
+const applyUpdate = (accountId: string, state: DeepPartial<V2GameState>): StateSectionKey[] =>
+	store.applyUpdate(accountId, partial<V2GameState>(state));
+
 describe("StateStore.getState", () => {
 	test("returns undefined for unknown account", () => {
 		const state = store.getState("unknown-account");
@@ -19,7 +29,7 @@ describe("StateStore.getState", () => {
 	});
 
 	test("returns stored state after applyUpdate", () => {
-		const gameState: V2GameState = {
+		const gameState: DeepPartial<V2GameState> = {
 			player: {
 				id: "p1",
 				username: "TestPlayer",
@@ -28,7 +38,7 @@ describe("StateStore.getState", () => {
 			},
 		};
 
-		store.applyUpdate("account-1", gameState);
+		applyUpdate("account-1", gameState);
 		const state = store.getState("account-1");
 
 		expect(state).toBeDefined();
@@ -38,7 +48,7 @@ describe("StateStore.getState", () => {
 	});
 
 	test("returns undefined sections for fields not yet set", () => {
-		const gameState: V2GameState = {
+		const gameState: DeepPartial<V2GameState> = {
 			player: {
 				id: "p1",
 				username: "TestPlayer",
@@ -47,7 +57,7 @@ describe("StateStore.getState", () => {
 			},
 		};
 
-		store.applyUpdate("account-1", gameState);
+		applyUpdate("account-1", gameState);
 		const state = store.getState("account-1");
 
 		expect(state?.player).toBeDefined();
@@ -61,7 +71,7 @@ describe("StateStore.getState", () => {
 	});
 
 	test("returns updatedAt timestamp", () => {
-		store.applyUpdate("account-1", {
+		applyUpdate("account-1", {
 			player: { id: "p1", username: "Test", credits: 0, empire: "solarian" },
 		});
 
@@ -78,7 +88,7 @@ describe("StateStore.getSection", () => {
 	});
 
 	test("returns undefined for unset section", () => {
-		store.applyUpdate("account-1", {
+		applyUpdate("account-1", {
 			player: { id: "p1", username: "Test", credits: 0, empire: "solarian" },
 		});
 
@@ -87,7 +97,7 @@ describe("StateStore.getSection", () => {
 	});
 
 	test("returns specific section data", () => {
-		store.applyUpdate("account-1", {
+		applyUpdate("account-1", {
 			player: { id: "p1", username: "Test", credits: 100, empire: "solarian" },
 			location: {
 				system_id: "sol",
@@ -102,7 +112,7 @@ describe("StateStore.getSection", () => {
 	});
 
 	test("returns player section independently", () => {
-		store.applyUpdate("account-1", {
+		applyUpdate("account-1", {
 			player: { id: "p1", username: "Test", credits: 100, empire: "solarian" },
 		});
 
@@ -114,12 +124,12 @@ describe("StateStore.getSection", () => {
 
 describe("StateStore.applyUpdate", () => {
 	test("returns empty array when no sections provided", () => {
-		const updated = store.applyUpdate("account-1", {} as V2GameState);
+		const updated = applyUpdate("account-1", {} as V2GameState);
 		expect(updated).toEqual([]);
 	});
 
 	test("returns list of updated section keys", () => {
-		const updated = store.applyUpdate("account-1", {
+		const updated = applyUpdate("account-1", {
 			player: { id: "p1", username: "Test", credits: 0, empire: "solarian" },
 			ship: { id: "s1", class_id: "scout" },
 		});
@@ -130,7 +140,7 @@ describe("StateStore.applyUpdate", () => {
 	});
 
 	test("inserts new row on first update", () => {
-		store.applyUpdate("account-1", {
+		applyUpdate("account-1", {
 			player: { id: "p1", username: "Test", credits: 0, empire: "solarian" },
 		});
 
@@ -139,11 +149,11 @@ describe("StateStore.applyUpdate", () => {
 	});
 
 	test("updates existing row on subsequent updates", () => {
-		store.applyUpdate("account-1", {
+		applyUpdate("account-1", {
 			player: { id: "p1", username: "Test", credits: 100, empire: "solarian" },
 		});
 
-		store.applyUpdate("account-1", {
+		applyUpdate("account-1", {
 			player: { id: "p1", username: "Test", credits: 200, empire: "solarian" },
 		});
 
@@ -157,7 +167,7 @@ describe("StateStore.applyUpdate", () => {
 
 	test("skips null section values to avoid clobbering existing state", () => {
 		// First update: set ship with cargo_used
-		store.applyUpdate("account-1", {
+		applyUpdate("account-1", {
 			player: { id: "p1", username: "Test", credits: 100, empire: "solarian" },
 			ship: {
 				id: "s1",
@@ -170,7 +180,7 @@ describe("StateStore.applyUpdate", () => {
 		});
 
 		// Second update: ship is null (e.g. from get_cargo response) — should not overwrite
-		store.applyUpdate("account-1", { ship: null } as unknown as V2GameState);
+		applyUpdate("account-1", { ship: null } as unknown as V2GameState);
 
 		const state = store.getState("account-1");
 		// Ship should be preserved from first update
@@ -180,13 +190,13 @@ describe("StateStore.applyUpdate", () => {
 
 	test("partial update preserves existing sections", () => {
 		// First update: set player and ship
-		store.applyUpdate("account-1", {
+		applyUpdate("account-1", {
 			player: { id: "p1", username: "Test", credits: 100, empire: "solarian" },
 			ship: { id: "s1", class_id: "scout", hull: 100, max_hull: 100 },
 		});
 
 		// Second update: only update player credits
-		store.applyUpdate("account-1", {
+		applyUpdate("account-1", {
 			player: { id: "p1", username: "Test", credits: 200, empire: "solarian" },
 		});
 
@@ -199,14 +209,14 @@ describe("StateStore.applyUpdate", () => {
 	});
 
 	test("handles all section types", () => {
-		const gameState: V2GameState = {
+		const gameState: DeepPartial<V2GameState> = {
 			player: { id: "p1", username: "Test", credits: 0, empire: "solarian" },
 			ship: { id: "s1", class_id: "scout" },
 			cargo: [{ item_id: "iron", item_name: "Iron", quantity: 10, size: 1 }],
 			location: { system_id: "sol", system_name: "Sol" },
 		};
 
-		const updated = store.applyUpdate("account-1", gameState);
+		const updated = applyUpdate("account-1", gameState);
 		expect(updated).toHaveLength(4);
 
 		const state = store.getState("account-1");
@@ -217,11 +227,11 @@ describe("StateStore.applyUpdate", () => {
 	});
 
 	test("handles multiple accounts independently", () => {
-		store.applyUpdate("account-1", {
+		applyUpdate("account-1", {
 			player: { id: "p1", username: "Player1", credits: 100, empire: "solarian" },
 		});
 
-		store.applyUpdate("account-2", {
+		applyUpdate("account-2", {
 			player: { id: "p2", username: "Player2", credits: 200, empire: "colonial" },
 		});
 
@@ -235,7 +245,7 @@ describe("StateStore.applyUpdate", () => {
 	});
 
 	test("updates timestamp on every update", () => {
-		store.applyUpdate("account-1", {
+		applyUpdate("account-1", {
 			player: { id: "p1", username: "Test", credits: 0, empire: "solarian" },
 		});
 
@@ -243,7 +253,7 @@ describe("StateStore.applyUpdate", () => {
 		const firstTimestamp = state1?.updatedAt;
 
 		// Apply another update
-		store.applyUpdate("account-1", {
+		applyUpdate("account-1", {
 			player: { id: "p1", username: "Test", credits: 100, empire: "solarian" },
 		});
 
@@ -256,7 +266,7 @@ describe("StateStore.applyUpdate", () => {
 
 describe("StateStore.deleteState", () => {
 	test("removes all state for an account", () => {
-		store.applyUpdate("account-1", {
+		applyUpdate("account-1", {
 			player: { id: "p1", username: "Test", credits: 0, empire: "solarian" },
 		});
 
@@ -266,10 +276,10 @@ describe("StateStore.deleteState", () => {
 	});
 
 	test("does not affect other accounts", () => {
-		store.applyUpdate("account-1", {
+		applyUpdate("account-1", {
 			player: { id: "p1", username: "Player1", credits: 0, empire: "solarian" },
 		});
-		store.applyUpdate("account-2", {
+		applyUpdate("account-2", {
 			player: { id: "p2", username: "Player2", credits: 0, empire: "colonial" },
 		});
 
@@ -292,13 +302,13 @@ describe("StateStore.getAllAccountIds", () => {
 	});
 
 	test("returns all stored account IDs", () => {
-		store.applyUpdate("account-1", {
+		applyUpdate("account-1", {
 			player: { id: "p1", username: "P1", credits: 0, empire: "solarian" },
 		});
-		store.applyUpdate("account-2", {
+		applyUpdate("account-2", {
 			player: { id: "p2", username: "P2", credits: 0, empire: "colonial" },
 		});
-		store.applyUpdate("account-3", {
+		applyUpdate("account-3", {
 			player: { id: "p3", username: "P3", credits: 0, empire: "solarian" },
 		});
 
@@ -310,10 +320,10 @@ describe("StateStore.getAllAccountIds", () => {
 	});
 
 	test("reflects deletions", () => {
-		store.applyUpdate("account-1", {
+		applyUpdate("account-1", {
 			player: { id: "p1", username: "P1", credits: 0, empire: "solarian" },
 		});
-		store.applyUpdate("account-2", {
+		applyUpdate("account-2", {
 			player: { id: "p2", username: "P2", credits: 0, empire: "colonial" },
 		});
 

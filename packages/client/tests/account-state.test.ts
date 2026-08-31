@@ -31,10 +31,12 @@ describe("AccountApi.state", () => {
 		globalThis.fetch = originalFetch;
 	});
 
-	const gameState: V2GameState = {
+	// Only the fields these assertions read; cast rather than spelling out the
+	// whole of V2Ship.
+	const gameState = {
 		credits: 5000,
 		ship: { hull: 100, max_hull: 100, fuel: 80, max_fuel: 100 },
-	};
+	} as unknown as V2GameState;
 
 	test("get() GETs /accounts/:id/state and returns the V2GameState", async () => {
 		mockFetchSequence([{ status: 200, body: gameState }]);

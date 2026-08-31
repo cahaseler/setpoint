@@ -1,6 +1,6 @@
 {
 	"name": "setpoint",
-	"version": "0.0.287",
+	"version": "0.0.288",
 	"description": "SpaceMolt game client service — declarative multi-account automation via the v2 REST API",
 	"license": "MIT",
 	"type": "module",
@@ -31,6 +31,6 @@
 	},
 	"dependencies": {
 		"@setpoint/protocol": "workspace:*",
-		"@spacemolt/lib": "^12.2.1"
+		"@spacemolt/lib": "^13.0.0"
 	}
 }
