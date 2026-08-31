@@ -658,4 +658,78 @@ describe("LibAccountManager", () => {
 			expect(isStateStale(account as object, undefined, 1_000_000 + 40_000)).toBe(true); // past TTL of the re-mark
 		});
 	});
+	describe("server notices", () => {
+		test("logs a system-channel chat message reaching any account", async () => {
+			const { client, accounts } = setup([player("Alpha", "pid-a")]);
+			const mgr = new LibAccountManager(client, { clerkApiKey: "k" });
+			await mgr.connect();
+
+			const infoSpy = spyOn(console, "info").mockImplementation(() => {});
+			accounts.get("Alpha")?.emitNotification("chat_message", {
+				channel: "system",
+				content: "Server restarting in 30 seconds",
+			});
+			const logged = infoSpy.mock.calls.map((c) => String(c[0])).join("\n");
+			infoSpy.mockRestore();
+
+			expect(logged).toContain("server notice");
+			expect(logged).toContain("Server restarting in 30 seconds");
+			expect(logged).toContain("pid-a");
+		});
+
+		test("logs an undocumented push type", async () => {
+			const { client, accounts } = setup([player("Alpha", "pid-a")]);
+			const mgr = new LibAccountManager(client, { clerkApiKey: "k" });
+			await mgr.connect();
+
+			const infoSpy = spyOn(console, "info").mockImplementation(() => {});
+			accounts.get("Alpha")?.emitNotification("server_restart", { seconds: 30 });
+			const logged = infoSpy.mock.calls.map((c) => String(c[0])).join("\n");
+			infoSpy.mockRestore();
+
+			expect(logged).toContain("undocumented-push");
+			expect(logged).toContain("server_restart");
+		});
+
+		test("does not log ordinary gameplay pushes or player chat", async () => {
+			const { client, accounts } = setup([player("Alpha", "pid-a")]);
+			const mgr = new LibAccountManager(client, { clerkApiKey: "k" });
+			await mgr.connect();
+
+			const infoSpy = spyOn(console, "info").mockImplementation(() => {});
+			accounts.get("Alpha")?.emitNotification("mining_yield", { quantity: 3 });
+			accounts.get("Alpha")?.emitNotification("chat_message", {
+				channel: "global",
+				content: "anyone selling ore?",
+			});
+			const logged = infoSpy.mock.calls.map((c) => String(c[0])).join("\n");
+			infoSpy.mockRestore();
+
+			expect(logged).not.toContain("server notice");
+		});
+
+		test("a fleet-wide broadcast logs once, not once per account", async () => {
+			const { client, accounts } = setup([
+				player("Alpha", "pid-a"),
+				player("Beta", "pid-b"),
+				player("Gamma", "pid-c"),
+			]);
+			const mgr = new LibAccountManager(client, { clerkApiKey: "k" });
+			await mgr.connect();
+
+			const infoSpy = spyOn(console, "info").mockImplementation(() => {});
+			for (const id of ["Alpha", "Beta", "Gamma"]) {
+				accounts.get(id)?.emitNotification("chat_message", {
+					channel: "system",
+					content: "Server restarting in 30 seconds",
+				});
+			}
+			const lines = infoSpy.mock.calls
+				.map((c) => String(c[0]))
+				.filter((line) => line.includes("server notice"));
+			infoSpy.mockRestore();
+
+			expect(lines).toHaveLength(1);
+		});
+	});
 });

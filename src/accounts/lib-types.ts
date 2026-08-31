@@ -8,6 +8,7 @@ import type {
 	NotificationPayloads,
 	ObservationView,
 	QueryResult,
+	RawFrame,
 	RegisterParams,
 	RegisterResult,
 	StateSection,
@@ -97,6 +98,13 @@ export interface LibManagedAccount {
 		handler: (payload: NotificationPayloads[K]) => void,
 	): () => void;
 	on(type: string, handler: (payload: Record<string, unknown>) => void): () => void;
+	/**
+	 * Listen for every inbound push frame, including `msg_type`s with no
+	 * published schema. `frame.type` is the `msg_type`; the lib routes
+	 * anything it doesn't recognise here rather than dropping it. Returns an
+	 * unsubscribe function.
+	 */
+	onAny(handler: (frame: RawFrame) => void): () => void;
 }
 
 /** The subset of a lib `Account` the account layer (connection/state) depends on. */

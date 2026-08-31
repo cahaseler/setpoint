@@ -7,6 +7,7 @@ import type {
 	MutationResult,
 	ObservationView,
 	QueryResult,
+	RawFrame,
 	RegisterParams,
 	RegisterResult,
 	StateSection,
@@ -50,6 +51,7 @@ export class FakeAccount implements LibManagedAccount {
 		string,
 		Set<(payload: Record<string, unknown>) => void>
 	>();
+	private readonly anyHandlers = new Set<(frame: RawFrame) => void>();
 	constructor(
 		private readonly playerId: string,
 		readonly id: string,
@@ -133,10 +135,21 @@ export class FakeAccount implements LibManagedAccount {
 		handlers.add(handler);
 		return () => handlers?.delete(handler);
 	}
-	/** Test helper: simulates a typed server push (e.g. crafting_update) arriving. */
+	onAny(handler: (frame: RawFrame) => void): () => void {
+		this.anyHandlers.add(handler);
+		return () => this.anyHandlers.delete(handler);
+	}
+	/**
+	 * Test helper: simulates a typed server push (e.g. crafting_update) arriving.
+	 * Mirrors the lib's dispatch — per-type listeners get the payload, `onAny`
+	 * listeners get the whole frame.
+	 */
 	emitNotification(type: string, payload: Record<string, unknown>): void {
 		for (const handler of this.notificationHandlers.get(type) ?? []) {
 			handler(payload);
+		}
+		for (const handler of this.anyHandlers) {
+			handler({ type, payload });
 		}
 	}
 }
