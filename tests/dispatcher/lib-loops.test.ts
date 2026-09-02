@@ -154,4 +154,28 @@ describe("runLibLoop", () => {
 		expect(result.success).toBe(false);
 		expect(calls).toEqual([[1, "nope"]]);
 	});
+
+	test("onIterationComplete fires when an iteration throws, not just when it returns a failure", async () => {
+		// Without this a loop dying on exceptions never reports anything, so its
+		// status is indistinguishable from one still on its first cycle.
+		const account = new FakeLibGoalAccount({});
+		const calls: Array<{ iter: number; success: boolean; message: string }> = [];
+		const result = await runLibLoop(
+			() =>
+				goal("x", () => {
+					throw new Error("socket exploded");
+				}),
+			makeLibGoalContext(account),
+			{
+				maxConsecutiveFailures: 1,
+				retryDelayMs: 1,
+				onIterationComplete: (iter, r) =>
+					calls.push({ iter, success: r.success, message: r.message }),
+			},
+		);
+		expect(result.success).toBe(false);
+		expect(calls).toHaveLength(1);
+		expect(calls[0]?.success).toBe(false);
+		expect(calls[0]?.message).toContain("socket exploded");
+	});
 });

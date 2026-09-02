@@ -54,6 +54,18 @@ export interface LoopStatus {
 	lastStep?: string;
 	/** When `lastStep` was recorded — a `running: true` loop with a stale `lastStepAt` is stalled, not dead. */
 	lastStepAt?: string;
+	/**
+	 * Consecutive failed iterations as of the last one that finished. Zero once
+	 * an iteration succeeds. Lets a consumer tell a loop that is failing from
+	 * one that simply has not completed its first cycle yet — both report
+	 * `running: true`, and before this the only difference was the absence of
+	 * `lastStep`, which is also how a healthy first cycle looks.
+	 */
+	consecutiveFailures?: number;
+	/** Message from the most recent failed iteration, including one that failed by throwing. */
+	lastFailure?: string;
+	/** When `lastFailure` was recorded. */
+	lastFailureAt?: string;
 	result?: LoopResult;
 	/** Original API options (system IDs, etc.) for route visualization. */
 	options?: Record<string, unknown>;

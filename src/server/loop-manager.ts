@@ -45,6 +45,18 @@ export interface LoopStatus {
 	lastStep?: string;
 	/** When `lastStep` was recorded — a `running: true` loop with a stale `lastStepAt` is stalled, not dead. */
 	lastStepAt?: string;
+	/**
+	 * Consecutive failed iterations as of the last one that finished. Zero once
+	 * an iteration succeeds. Lets a consumer tell a loop that is failing from
+	 * one that simply has not completed its first cycle yet — both report
+	 * `running: true`, and before this the only difference was the absence of
+	 * `lastStep`, which is also how a healthy first cycle looks.
+	 */
+	consecutiveFailures?: number;
+	/** Message from the most recent failed iteration, including one that failed by throwing. */
+	lastFailure?: string;
+	/** When `lastFailure` was recorded. */
+	lastFailureAt?: string;
 	result?: LoopResult;
 	/** Original API options (system IDs, etc.) for route visualization. */
 	options?: Record<string, unknown>;
@@ -55,12 +67,28 @@ interface StepRef {
 	last: string | undefined;
 	/** When `last` was set — lets a caller detect a loop that's `running: true` but stalled. */
 	lastAt: string | undefined;
+	/** Consecutive failed iterations; reset to 0 by the first success. */
+	consecutiveFailures: number;
+	lastFailure: string | undefined;
+	lastFailureAt: string | undefined;
 }
 
-/** Record a completed iteration's message and timestamp on a StepRef. */
-function recordStep(stepRef: StepRef, result: { message: string }): void {
+/**
+ * Record a finished iteration on a StepRef. `success === false` also advances
+ * the failure counter, so a loop stuck failing is distinguishable from one
+ * still working through its first cycle.
+ */
+function recordStep(stepRef: StepRef, result: { message: string; success?: boolean }): void {
+	const at = new Date().toISOString();
 	stepRef.last = result.message;
-	stepRef.lastAt = new Date().toISOString();
+	stepRef.lastAt = at;
+	if (result.success === false) {
+		stepRef.consecutiveFailures++;
+		stepRef.lastFailure = result.message;
+		stepRef.lastFailureAt = at;
+	} else {
+		stepRef.consecutiveFailures = 0;
+	}
 }
 
 /** Internal tracking for an active loop. */
@@ -295,6 +323,11 @@ export class LoopManager {
 			...(loop.stopping ? { stopping: true } : {}),
 			...(loop.stepRef.last !== undefined ? { lastStep: loop.stepRef.last } : {}),
 			...(loop.stepRef.lastAt !== undefined ? { lastStepAt: loop.stepRef.lastAt } : {}),
+			consecutiveFailures: loop.stepRef.consecutiveFailures,
+			...(loop.stepRef.lastFailure !== undefined ? { lastFailure: loop.stepRef.lastFailure } : {}),
+			...(loop.stepRef.lastFailureAt !== undefined
+				? { lastFailureAt: loop.stepRef.lastFailureAt }
+				: {}),
 			...(loop.result !== undefined ? { result: loop.result } : {}),
 			options: loop.options,
 		};
@@ -383,7 +416,13 @@ export class LoopManager {
 		const controller = new AbortController();
 		const ctx = makeLibGoalContext(resolveAccount);
 
-		const stepRef: StepRef = { last: undefined, lastAt: undefined };
+		const stepRef: StepRef = {
+			last: undefined,
+			lastAt: undefined,
+			consecutiveFailures: 0,
+			lastFailure: undefined,
+			lastFailureAt: undefined,
+		};
 		const loopOptions: MiningLoopOptions = {
 			miningSystemId: options.miningSystemId,
 			beltPoiId: options.beltPoiId,
@@ -452,7 +491,13 @@ export class LoopManager {
 		const controller = new AbortController();
 		const ctx = makeLibGoalContext(resolveAccount);
 
-		const stepRef: StepRef = { last: undefined, lastAt: undefined };
+		const stepRef: StepRef = {
+			last: undefined,
+			lastAt: undefined,
+			consecutiveFailures: 0,
+			lastFailure: undefined,
+			lastFailureAt: undefined,
+		};
 		const loopOptions: EnhancedMiningLoopOptions = {
 			miningSystemId: options.miningSystemId,
 			beltPoiId: options.beltPoiId,
@@ -525,7 +570,13 @@ export class LoopManager {
 		const controller = new AbortController();
 		const ctx = makeLibGoalContext(resolveAccount);
 
-		const stepRef: StepRef = { last: undefined, lastAt: undefined };
+		const stepRef: StepRef = {
+			last: undefined,
+			lastAt: undefined,
+			consecutiveFailures: 0,
+			lastFailure: undefined,
+			lastFailureAt: undefined,
+		};
 		const loopOptions: SalvageLoopOptions = {
 			salvageSystemId: options.salvageSystemId,
 			salvagePoiId: options.salvagePoiId,
@@ -589,7 +640,13 @@ export class LoopManager {
 		const controller = new AbortController();
 		const ctx = makeLibGoalContext(resolveAccount);
 
-		const stepRef: StepRef = { last: undefined, lastAt: undefined };
+		const stepRef: StepRef = {
+			last: undefined,
+			lastAt: undefined,
+			consecutiveFailures: 0,
+			lastFailure: undefined,
+			lastFailureAt: undefined,
+		};
 		const loopOptions: TradingLoopOptions = {
 			buyStation: options.buyStation,
 			sellStation: options.sellStation,
@@ -645,7 +702,13 @@ export class LoopManager {
 		const controller = new AbortController();
 		const ctx = makeLibGoalContext(resolveAccount);
 
-		const stepRef: StepRef = { last: undefined, lastAt: undefined };
+		const stepRef: StepRef = {
+			last: undefined,
+			lastAt: undefined,
+			consecutiveFailures: 0,
+			lastFailure: undefined,
+			lastFailureAt: undefined,
+		};
 		const loopOptions: HaulingLoopOptions = {
 			source: options.source,
 			destination: options.destination,
@@ -700,7 +763,13 @@ export class LoopManager {
 		const controller = new AbortController();
 		const ctx = makeLibGoalContext(resolveAccount);
 
-		const stepRef: StepRef = { last: undefined, lastAt: undefined };
+		const stepRef: StepRef = {
+			last: undefined,
+			lastAt: undefined,
+			consecutiveFailures: 0,
+			lastFailure: undefined,
+			lastFailureAt: undefined,
+		};
 		const loopOptions: StorageTransferLoopOptions = {
 			systemId: options.systemId,
 			stationPoiId: options.stationPoiId,
@@ -756,7 +825,13 @@ export class LoopManager {
 		const controller = new AbortController();
 		const ctx = makeLibGoalContext(resolveAccount);
 
-		const stepRef: StepRef = { last: undefined, lastAt: undefined };
+		const stepRef: StepRef = {
+			last: undefined,
+			lastAt: undefined,
+			consecutiveFailures: 0,
+			lastFailure: undefined,
+			lastFailureAt: undefined,
+		};
 		const loopOptions: ExplorationLoopOptions = {
 			systemId: options.systemId,
 			stationPoiId: options.stationPoiId,
@@ -819,7 +894,13 @@ export class LoopManager {
 		const controller = new AbortController();
 		const ctx = makeLibGoalContext(resolveAccount);
 
-		const stepRef: StepRef = { last: undefined, lastAt: undefined };
+		const stepRef: StepRef = {
+			last: undefined,
+			lastAt: undefined,
+			consecutiveFailures: 0,
+			lastFailure: undefined,
+			lastFailureAt: undefined,
+		};
 		const loopOptions: GuardLoopOptions = {
 			homeSystemId: options.homeSystemId,
 			homeStationPoiId: options.homeStationPoiId,
@@ -881,7 +962,13 @@ export class LoopManager {
 		const controller = new AbortController();
 		const ctx = makeLibGoalContext(resolveAccount);
 
-		const stepRef: StepRef = { last: undefined, lastAt: undefined };
+		const stepRef: StepRef = {
+			last: undefined,
+			lastAt: undefined,
+			consecutiveFailures: 0,
+			lastFailure: undefined,
+			lastFailureAt: undefined,
+		};
 		const loopOptions: RoamingSalvageLoopOptions = {
 			homeSystemId: options.homeSystemId,
 			homeStationPoiId: options.homeStationPoiId,
@@ -942,7 +1029,13 @@ export class LoopManager {
 
 		const controller = new AbortController();
 		const ctx = makeLibGoalContext(resolveAccount);
-		const stepRef: StepRef = { last: undefined, lastAt: undefined };
+		const stepRef: StepRef = {
+			last: undefined,
+			lastAt: undefined,
+			consecutiveFailures: 0,
+			lastFailure: undefined,
+			lastFailureAt: undefined,
+		};
 
 		const loopOptions: TowSalvageLoopOptions = {
 			mode: "fixed",

@@ -143,6 +143,16 @@ export async function runLibLoop(
 				};
 			}
 			consecutiveFailures++;
+			// Report the throw as a failed iteration too. Without this the only
+			// failures a status consumer ever sees are the ones a goal returns;
+			// a loop dying on exceptions leaves lastStep unset and reads exactly
+			// like one still working through its first cycle.
+			options.onIterationComplete?.(i + 1, {
+				success: false,
+				message: `Iteration ${i + 1} threw: ${errorMessage(err)}`,
+				alreadySatisfied: false,
+				ticksUsed: 0,
+			});
 			log.warn(
 				`[${playerId}] Loop iteration ${i + 1} threw exception (failure ${consecutiveFailures}/${maxConsecutiveFailures}): ${errorMessage(err)}`,
 			);

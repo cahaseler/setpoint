@@ -8,6 +8,7 @@ import {
 import { LibAccountManager } from "../../src/accounts/lib-manager.js";
 import type { AccountClientLike, LibManagedAccount } from "../../src/accounts/lib-types.js";
 import { STATE_FRESHNESS_TTL_MS, isStateStale } from "../../src/dispatcher/state-freshness.js";
+import { setLogLevel } from "../../src/util/logger.js";
 import { partial } from "../helpers/deep-partial.js";
 import { FakeAccount, FakeClient } from "./fakes.js";
 
@@ -721,55 +722,65 @@ describe("LibAccountManager", () => {
 	});
 
 	describe("server notices", () => {
-		test("logs a system-channel chat message reaching any account", async () => {
+		test("logs a system-channel chat message at debug, not info", async () => {
+			// System-channel chat is an NPC/customs firehose in production, so it is
+			// classified but kept off INFO. It stays reachable at debug.
 			const { client, accounts } = setup([player("Alpha", "pid-a")]);
 			const mgr = new LibAccountManager(client, { clerkApiKey: "k" });
 			await mgr.connect();
 
+			setLogLevel("debug");
 			const infoSpy = spyOn(console, "info").mockImplementation(() => {});
+			const debugSpy = spyOn(console, "debug").mockImplementation(() => {});
 			accounts.get("Alpha")?.emitNotification("chat_message", {
 				channel: "system",
-				content: "Server restarting in 30 seconds",
+				content: "customs inspection pending",
 			});
-			const logged = infoSpy.mock.calls.map((c) => String(c[0])).join("\n");
+			const infoLines = infoSpy.mock.calls.map((c) => String(c[0])).join("\n");
+			const debugLines = debugSpy.mock.calls.map((c) => String(c[0])).join("\n");
 			infoSpy.mockRestore();
+			debugSpy.mockRestore();
+			setLogLevel("info");
 
-			expect(logged).toContain("server notice");
-			expect(logged).toContain("Server restarting in 30 seconds");
-			expect(logged).toContain("pid-a");
+			expect(debugLines).toContain("customs inspection pending");
+			expect(infoLines).not.toContain("server notice");
 		});
 
-		test("logs a server_restart_warning with its countdown", async () => {
+		test("logs an undocumented push type at debug, not info", async () => {
+			const { client, accounts } = setup([player("Alpha", "pid-a")]);
+			const mgr = new LibAccountManager(client, { clerkApiKey: "k" });
+			await mgr.connect();
+
+			setLogLevel("debug");
+			const infoSpy = spyOn(console, "info").mockImplementation(() => {});
+			const debugSpy = spyOn(console, "debug").mockImplementation(() => {});
+			accounts.get("Alpha")?.emitNotification("some_new_push", { seconds: 30 });
+			const infoLines = infoSpy.mock.calls.map((c) => String(c[0])).join("\n");
+			const debugLines = debugSpy.mock.calls.map((c) => String(c[0])).join("\n");
+			infoSpy.mockRestore();
+			debugSpy.mockRestore();
+			setLogLevel("info");
+
+			expect(debugLines).toContain("undocumented-push");
+			expect(infoLines).not.toContain("server notice");
+		});
+
+		test("keeps high-volume gameplay traffic off INFO entirely", async () => {
+			// Regression guard: these are the frames that buried the restart warning
+			// at a ratio of roughly 600:1 when every classified notice logged at INFO.
 			const { client, accounts } = setup([player("Alpha", "pid-a")]);
 			const mgr = new LibAccountManager(client, { clerkApiKey: "k" });
 			await mgr.connect();
 
 			const infoSpy = spyOn(console, "info").mockImplementation(() => {});
-			accounts.get("Alpha")?.emitNotification("server_restart_warning", {
-				message: "Server restarting for deploy",
-				seconds_until_restart: 30,
-				target_version: "v0.573.1",
-			});
-			const logged = infoSpy.mock.calls.map((c) => String(c[0])).join("\n");
+			const account = accounts.get("Alpha");
+			account?.emitNotification("ok", { action: "jump", destination: "sol" });
+			account?.emitNotification("complete_mission", { mission_id: "m1" });
+			account?.emitNotification("chat_message", { channel: "system", content: "customs" });
+			const infoLines = infoSpy.mock.calls.map((c) => String(c[0])).join("\n");
 			infoSpy.mockRestore();
 
-			expect(logged).toContain("server-lifecycle");
-			expect(logged).toContain("restart in 30s");
-			expect(logged).toContain("v0.573.1");
-		});
-
-		test("logs an undocumented push type", async () => {
-			const { client, accounts } = setup([player("Alpha", "pid-a")]);
-			const mgr = new LibAccountManager(client, { clerkApiKey: "k" });
-			await mgr.connect();
-
-			const infoSpy = spyOn(console, "info").mockImplementation(() => {});
-			accounts.get("Alpha")?.emitNotification("server_restart", { seconds: 30 });
-			const logged = infoSpy.mock.calls.map((c) => String(c[0])).join("\n");
-			infoSpy.mockRestore();
-
-			expect(logged).toContain("undocumented-push");
-			expect(logged).toContain("server_restart");
+			expect(infoLines).not.toContain("server notice");
 		});
 
 		test("does not log ordinary gameplay pushes or player chat", async () => {
@@ -789,7 +800,7 @@ describe("LibAccountManager", () => {
 			expect(logged).not.toContain("server notice");
 		});
 
-		test("a fleet-wide broadcast logs once, not once per account", async () => {
+		test("a fleet-wide restart broadcast logs once, not once per account", async () => {
 			const { client, accounts } = setup([
 				player("Alpha", "pid-a"),
 				player("Beta", "pid-b"),
@@ -800,9 +811,9 @@ describe("LibAccountManager", () => {
 
 			const infoSpy = spyOn(console, "info").mockImplementation(() => {});
 			for (const id of ["Alpha", "Beta", "Gamma"]) {
-				accounts.get(id)?.emitNotification("chat_message", {
-					channel: "system",
-					content: "Server restarting in 30 seconds",
+				accounts.get(id)?.emitNotification("server_restart_warning", {
+					message: "Server restarting for deploy",
+					seconds_until_restart: 30,
 				});
 			}
 			const lines = infoSpy.mock.calls
