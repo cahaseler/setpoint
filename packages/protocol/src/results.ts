@@ -4,6 +4,7 @@ import type {
 	MarketItem,
 	NotificationPayloads,
 	ObservedPlayer,
+	PirateRadioEvent,
 } from "./game.js";
 
 /** The outcome of executing a goal. */
@@ -162,6 +163,19 @@ export interface CraftingUpdateEnvelope {
 	/** Wall-clock time setpoint received this push (ISO 8601) — the server payload only carries a game tick. */
 	receivedAt: string;
 	event: CraftingUpdateEvent;
+}
+
+/**
+ * A single `pirate_radio` push, timestamped on receipt and delivered over
+ * `GET /accounts/:playerId/pirate-radio/events` (SSE) — both as backlog on
+ * connect and live as new pushes arrive. Like crafting progress, pirate radio
+ * needs no explicit subscribe call; the server sends it to an account that is
+ * in range to intercept.
+ */
+export interface PirateRadioEnvelope {
+	/** Wall-clock time setpoint received this push (ISO 8601) — the server payload carries no timestamp of its own. */
+	receivedAt: string;
+	event: PirateRadioEvent;
 }
 
 /**

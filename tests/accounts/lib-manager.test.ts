@@ -659,6 +659,67 @@ describe("LibAccountManager", () => {
 			expect(isStateStale(account as object, undefined, 1_000_000 + 40_000)).toBe(true); // past TTL of the re-mark
 		});
 	});
+	describe("pirate radio", () => {
+		test("forwards pirate_radio pushes to onPirateRadio", async () => {
+			const events: Array<{ playerId: string; message: string; accountId: string | undefined }> =
+				[];
+			const { client, accounts } = setup([player("Alpha", "pid-a")]);
+			const mgr = new LibAccountManager(
+				client,
+				{ clerkApiKey: "k" },
+				{
+					onPirateRadio: (playerId, event, account) =>
+						events.push({ playerId, message: event.message, accountId: account.id }),
+				},
+			);
+			await mgr.connect();
+
+			accounts.get("Alpha")?.emitNotification("pirate_radio", {
+				message: "we ride at dawn",
+				pirate_name: "Blackvane",
+				source_system: "sol",
+			});
+
+			expect(events).toEqual([
+				{ playerId: "pid-a", message: "we ride at dawn", accountId: "Alpha" },
+			]);
+		});
+
+		test("a throwing onPirateRadio handler is caught and logged, not left to escape into the lib", async () => {
+			const { client, accounts } = setup([player("Alpha", "pid-a")]);
+			const mgr = new LibAccountManager(
+				client,
+				{ clerkApiKey: "k" },
+				{
+					onPirateRadio: () => {
+						throw new Error("controller already closed");
+					},
+				},
+			);
+			await mgr.connect();
+
+			expect(() =>
+				accounts.get("Alpha")?.emitNotification("pirate_radio", {
+					message: "boom",
+					pirate_name: "Blackvane",
+				}),
+			).not.toThrow();
+		});
+
+		test("is not wired when no onPirateRadio handler is given", async () => {
+			const { client, accounts } = setup([player("Alpha", "pid-a")]);
+			const mgr = new LibAccountManager(client, { clerkApiKey: "k" });
+			await mgr.connect();
+
+			expect(() =>
+				accounts.get("Alpha")?.emitNotification("pirate_radio", {
+					message: "ignored",
+					pirate_name: "Blackvane",
+				}),
+			).not.toThrow();
+		});
+	});
+
 	describe("server notices", () => {
 		test("logs a system-channel chat message reaching any account", async () => {
 			const { client, accounts } = setup([player("Alpha", "pid-a")]);

@@ -4,6 +4,8 @@ import type {
 	CombatEnvelope,
 	CombatNotificationType,
 	CraftingUpdateEvent,
+	PirateRadioEnvelope,
+	PirateRadioEvent,
 } from "@setpoint/protocol";
 import {
 	type GameState,
@@ -101,6 +103,14 @@ async function main(): Promise<void> {
 		craftingEventsStore.record(playerId, event);
 	};
 
+	// Buffers pirate_radio pushes per account for
+	// GET /accounts/:id/pirate-radio/events (SSE). Like crafting, the server
+	// sends these unprompted, so there is no subscription side to manage.
+	const pirateRadioStore = createEventBuffer<PirateRadioEnvelope>();
+	const onPirateRadio = (playerId: string, event: PirateRadioEvent): void => {
+		pirateRadioStore.record(playerId, { receivedAt: new Date().toISOString(), event });
+	};
+
 	// Per-account combat-response override (flee vs. externally-driven combat
 	// logic) — loaded before the reactor and server both need it.
 	const combatModeStore = await CombatModeStore.load(CONFIG_DIR);
@@ -155,6 +165,7 @@ async function main(): Promise<void> {
 		onDrift,
 		onCraftingUpdate,
 		onCombatUpdate,
+		onPirateRadio,
 	});
 
 	// Periodically force a refresh() across the whole fleet so idle accounts
@@ -175,6 +186,7 @@ async function main(): Promise<void> {
 		configDir: CONFIG_DIR,
 		craftingEventsStore,
 		combatEventsStore,
+		pirateRadioStore,
 		combatModeStore,
 		executingGoals,
 		claimedAccounts,

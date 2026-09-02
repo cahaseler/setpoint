@@ -1,4 +1,9 @@
-import type { CombatEnvelope, MarketBookSnapshot, ObservationSnapshot } from "@setpoint/protocol";
+import type {
+	CombatEnvelope,
+	MarketBookSnapshot,
+	ObservationSnapshot,
+	PirateRadioEnvelope,
+} from "@setpoint/protocol";
 import { type LoopType, loopPatchSchemas, loopSchemas } from "@setpoint/protocol";
 import type { MarketBook, ObservationView, SpacemoltClient } from "@spacemolt/lib";
 import { loadRegistrationConfig } from "../accounts/config.js";
@@ -47,6 +52,7 @@ export interface HandlerContext {
 	startedAt: string;
 	craftingEventsStore: CraftingEventsStore;
 	combatEventsStore: EventBuffer<CombatEnvelope>;
+	pirateRadioStore: EventBuffer<PirateRadioEnvelope>;
 	combatModeStore: CombatModeStore;
 	/** Accounts with a synchronous goal currently executing. Used to prevent races. */
 	executingGoals: Map<string, ExecutingGoalEntry>;
@@ -1749,6 +1755,51 @@ export function handleCombatEvents(
 				controller.enqueue(encoder.encode(`data: ${JSON.stringify(envelope)}\n\n`));
 			}
 			unsubscribe = ctx.combatEventsStore.subscribe(actualId, (envelope) => {
+				controller.enqueue(encoder.encode(`data: ${JSON.stringify(envelope)}\n\n`));
+			});
+		},
+		cancel(): void {
+			unsubscribe?.();
+		},
+	});
+
+	return new Response(stream, { headers: SSE_HEADERS });
+}
+
+// ── Pirate Radio Events ──────────────────────────────────────────────
+
+/**
+ * Streams intercepted pirate transmissions for an account as Server-Sent
+ * Events: the buffered backlog immediately on connect, then each new push
+ * live as it arrives. No subscribe-first step is needed — the server sends
+ * `pirate_radio` to any account in range to intercept — same as crafting and
+ * combat events.
+ */
+export function handlePirateRadioEvents(
+	_req: Request,
+	params: RouteParams,
+	ctx: HandlerContext,
+): Response {
+	const playerId = params["playerId"];
+	if (!playerId) {
+		return errorResponse("Missing playerId", 400);
+	}
+
+	const account = resolveAccount(ctx, playerId);
+	if (!account) {
+		return errorResponse("Account not found", 404);
+	}
+
+	const actualId = playerIdOf(account);
+	const encoder = new TextEncoder();
+	let unsubscribe: (() => void) | undefined;
+
+	const stream = new ReadableStream<Uint8Array>({
+		start(controller): void {
+			for (const envelope of ctx.pirateRadioStore.recent(actualId)) {
+				controller.enqueue(encoder.encode(`data: ${JSON.stringify(envelope)}\n\n`));
+			}
+			unsubscribe = ctx.pirateRadioStore.subscribe(actualId, (envelope) => {
 				controller.enqueue(encoder.encode(`data: ${JSON.stringify(envelope)}\n\n`));
 			});
 		},

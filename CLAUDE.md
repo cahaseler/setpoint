@@ -243,7 +243,7 @@ After finishing a set of changes, run `bun run deploy`. It bumps the patch versi
 - **Queue-based account connection** — `POST /accounts` (username of an account already owned by the configured Clerk API key) returns 202 Accepted and connects in the background; `@spacemolt/lib` batches and staggers the underlying connects to respect the 100/min per-IP WS-connection cap. Use `GET /accounts` to check connection status.
 - **Account resolution by ID or username** — all API endpoints accepting a `playerId` parameter also accept a username (case-insensitive). Handlers use `resolveAccount()` to look up by player_id first, then by username.
 - **Idempotent goals** — if a goal is already satisfied (e.g., already at the target location), it should succeed immediately without making API calls.
-- **Crafting progress is push-only, no subscribe step** — unlike market/observation, the game server sends `crafting_update` automatically whenever an account has jobs in progress. `GET /accounts/:playerId/crafting/events` streams it as Server-Sent Events: the buffered backlog (`CraftingEventsStore`, last ~50 per account, in-memory only) immediately on connect, then each new push live. It's one of two GET routes in `isUnboundedRequest` (`src/server/index.ts`, alongside `/combat/events`) — a long-lived stream, not a tick-bound mutation, but needs the same idle-timeout override.
+- **Crafting progress is push-only, no subscribe step** — unlike market/observation, the game server sends `crafting_update` automatically whenever an account has jobs in progress. `GET /accounts/:playerId/crafting/events` streams it as Server-Sent Events: the buffered backlog (`CraftingEventsStore`, last ~50 per account, in-memory only) immediately on connect, then each new push live. It's one of three GET routes in `isUnboundedRequest` (`src/server/index.ts`, alongside `/combat/events` and `/pirate-radio/events`) — a long-lived stream, not a tick-bound mutation, but needs the same idle-timeout override. `pirate_radio` works the same way: the server pushes intercepted pirate transmissions to any account in range, buffered per account through the same generic `EventBuffer` and streamed by `GET /accounts/:playerId/pirate-radio/events`.
 
 ### Known Timing Behaviors
 Key timing constants that interact — understand these before debugging any lock or retry issue:
@@ -453,6 +453,7 @@ The daemon listens on `http://127.0.0.1:7580` by default. All responses are JSON
 | `GET` | `/accounts/:playerId/observation` | Cached observation-watch view (subscribe first via `raw`) | `smctl observation <id>` |
 | `GET` | `/accounts/:playerId/crafting/events` | Live crafting progress (Server-Sent Events) — no subscribe step needed | — (use `@setpoint/client`'s `account.crafting.events()`) |
 | `GET` | `/accounts/:playerId/combat/events` | Live combat events (Server-Sent Events) — no subscribe step needed | — |
+| `GET` | `/accounts/:playerId/pirate-radio/events` | Live intercepted pirate transmissions (Server-Sent Events) — no subscribe step needed | — (use `@setpoint/client`'s `account.pirateRadio.events()`) |
 | `GET` | `/log-level` | Get log level | `smctl log-level` |
 | `POST` | `/log-level` | Set log level | `smctl log-level <level>` |
 
