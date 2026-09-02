@@ -35,25 +35,33 @@ const PROTOCOL_FRAME_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Chat channels the server itself talks on. The game devs describe the
- * pre-restart warning as an admin message delivered through the notification
- * system, and `chat_message` is the only documented push that carries
- * free-text server announcements — its `channel` field is documented as one
- * of global, system, local, faction, private, admin. Player chatter (global,
- * local, faction, private) is deliberately excluded: it is high-volume and
- * has nothing to do with server lifecycle.
+ * Chat channels the server itself talks on. `chat_message`'s `channel` field
+ * is documented as one of global, system, local, faction, private, admin; the
+ * two here are the ones an operator uses to address players directly, so they
+ * carry announcements — maintenance windows, incident notices — that have no
+ * dedicated `msg_type` of their own. Player chatter (global, local, faction,
+ * private) is deliberately excluded: it is high-volume and says nothing about
+ * the server's operation.
  */
 const SERVER_CHAT_CHANNELS: ReadonlySet<string> = new Set(["system", "admin"]);
+
+/**
+ * Documented push types that are operational notices rather than gameplay.
+ * These have a published schema, so they would otherwise be filtered out with
+ * the rest of the typed pushes.
+ */
+const SERVER_LIFECYCLE_TYPES: ReadonlySet<string> = new Set(["server_restart_warning"]);
 
 /** A push frame worth logging, and why it was picked out. */
 export interface ServerNotice {
 	/**
+	 * `server-lifecycle` — a documented operational push, above all
+	 * `server_restart_warning`.
 	 * `server-chat` — an announcement on the system/admin chat channel.
 	 * `undocumented-push` — a `msg_type` absent from the generated spec, which
-	 * is what a restart warning would look like if it ships as its own type
-	 * rather than as chat.
+	 * catches an operational notice the spec doesn't describe yet.
 	 */
-	kind: "server-chat" | "undocumented-push";
+	kind: "server-lifecycle" | "server-chat" | "undocumented-push";
 	/** The frame's `msg_type`. */
 	type: string;
 	/** Human-readable one-liner for the log. */
@@ -86,11 +94,31 @@ function summarizePayload(payload: unknown): string {
 }
 
 /**
+ * Render a `server_restart_warning` payload, leading with the countdown so the
+ * log line answers "how long have I got" without parsing JSON. Falls back to
+ * the raw payload if the server sends a shape the schema doesn't describe.
+ */
+function describeRestartWarning(payload: unknown): string {
+	const body = asRecord(payload);
+	const seconds = body?.["seconds_until_restart"];
+	if (typeof seconds !== "number") {
+		return summarizePayload(payload);
+	}
+	const message = asString(body?.["message"]) ?? "server restarting";
+	const version = asString(body?.["target_version"]);
+	return `restart in ${seconds}s${version === undefined ? "" : ` (→ ${version})`}: ${message}`;
+}
+
+/**
  * Decide whether a push frame is a server notice worth logging.
  * Returns `null` for the overwhelming majority of frames — ordinary gameplay
  * pushes and player chat.
  */
 export function classifyServerNotice(type: string, payload: unknown): ServerNotice | null {
+	if (SERVER_LIFECYCLE_TYPES.has(type)) {
+		return { kind: "server-lifecycle", type, summary: describeRestartWarning(payload) };
+	}
+
 	if (type === "chat_message") {
 		const body = asRecord(payload);
 		const channel = asString(body?.["channel"])?.toLowerCase();

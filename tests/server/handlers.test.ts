@@ -50,6 +50,7 @@ import {
 	type FakeLibManagerOverrides,
 	makeFakeLibManager,
 } from "../dispatcher/lib-fakes.js";
+import type { DeepPartial } from "../helpers/deep-partial.js";
 
 // ── Mock Factories ───────────────────────────────────────────────────
 
@@ -81,7 +82,7 @@ function makeAccount(
 	});
 }
 
-function makeState(overrides: Partial<StoredGameState> = {}): StoredGameState {
+function makeState(overrides: DeepPartial<StoredGameState> = {}): StoredGameState {
 	return {
 		player: undefined,
 		ship: undefined,
@@ -92,8 +93,10 @@ function makeState(overrides: Partial<StoredGameState> = {}): StoredGameState {
 		missions: undefined,
 		queue: undefined,
 		updatedAt: new Date().toISOString(),
+		// Fixtures name only the fields a test is about; the cast is the seam
+		// between that and the complete stored shape.
 		...overrides,
-	};
+	} as StoredGameState;
 }
 
 function makeContext(
@@ -2605,7 +2608,7 @@ describe("handleRawAction", () => {
 		account.send = mock(async (toolGroup: string) => {
 			capturedToolGroup = toolGroup;
 			return { command: "list", tick: 3, delta: { ship: { fuel: 9 } } };
-		}) as typeof account.send;
+		}) as unknown as typeof account.send;
 		const ctx = makeContext({ accounts: [account] });
 		const req = new Request("http://localhost/accounts/p1/raw", {
 			method: "POST",
@@ -2624,7 +2627,7 @@ describe("handleRawAction", () => {
 		account.send = mock(async (toolGroup: string) => {
 			capturedToolGroup = toolGroup;
 			return { result: "ok", structuredContent: {} };
-		}) as typeof account.send;
+		}) as unknown as typeof account.send;
 		const ctx = makeContext({ accounts: [account] });
 		const req = new Request("http://localhost/accounts/p1/raw", {
 			method: "POST",
@@ -2644,7 +2647,7 @@ describe("handleRawAction", () => {
 			tick: 7,
 			delta: { location: { docked_at: "base-1" } },
 			autoDocked: true,
-		})) as typeof account.send;
+		})) as unknown as typeof account.send;
 		const ctx = makeContext({ accounts: [account] });
 		const req = new Request("http://localhost/accounts/p1/raw", {
 			method: "POST",

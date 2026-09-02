@@ -26,7 +26,7 @@ describe("LibUninstallMod", () => {
 		expect(account.calls).toHaveLength(0);
 	});
 
-	test("uninstalls module and reports destruction", async () => {
+	test("uninstalls module and reports which one", async () => {
 		const account = new FakeLibGoalAccount(
 			{ location: { docked_at: "station-1" }, modules: [{ module_id: "mining_laser" }] },
 			{
@@ -39,8 +39,6 @@ describe("LibUninstallMod", () => {
 							message: "Uninstalled",
 							cpu_used: 5,
 							power_used: 10,
-							damaged: false,
-							destroyed: true,
 						},
 					},
 				}),
@@ -51,7 +49,7 @@ describe("LibUninstallMod", () => {
 		);
 		expect(result.success).toBe(true);
 		expect(result.ticksUsed).toBe(1);
-		expect(result.message).toContain("destroyed on removal");
+		expect(result.message).toContain("mining_laser");
 		expect(account.calls[0]).toEqual({ action: "uninstall_mod", params: { id: "mining_laser" } });
 	});
 });

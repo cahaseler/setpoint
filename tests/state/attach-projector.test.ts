@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import type { ClerkPlayer, GameState } from "@spacemolt/lib";
+import type { ClerkPlayer, GameState, V2Location } from "@spacemolt/lib";
 import { LibAccountManager } from "../../src/accounts/lib-manager.js";
 import { makeProjectingOnStateChange } from "../../src/state/attach-projector.js";
 import { createMemoryDatabase } from "../../src/state/database.js";
 import { StateProjector } from "../../src/state/projector.js";
 import { StateStore } from "../../src/state/store.js";
 import { FakeAccount, FakeClient } from "../accounts/fakes.js";
+import { partial } from "../helpers/deep-partial.js";
 
 const player = (username: string, id: string): ClerkPlayer => ({
 	id,
@@ -35,7 +36,9 @@ describe("makeProjectingOnStateChange (integration)", () => {
 		const next = { location: { system_id: "sol", poi_id: "belt-1" } } as unknown as GameState;
 		accounts.get("Alpha")?.emitStateChange(["location"], next);
 
-		expect(store.getSection("pid-a", "location")).toEqual({ system_id: "sol", poi_id: "belt-1" });
+		expect(store.getSection("pid-a", "location")).toEqual(
+			partial<V2Location>({ system_id: "sol", poi_id: "belt-1" }),
+		);
 	});
 
 	test("projects each account's seeded state at connect (backfill, no emit)", async () => {
@@ -57,6 +60,8 @@ describe("makeProjectingOnStateChange (integration)", () => {
 		);
 		await mgr.connect();
 		// No emitStateChange — the seed must have been projected at connect time.
-		expect(store.getSection("pid-a", "location")).toEqual({ system_id: "sol" });
+		expect(store.getSection("pid-a", "location")).toEqual(
+			partial<V2Location>({ system_id: "sol" }),
+		);
 	});
 });

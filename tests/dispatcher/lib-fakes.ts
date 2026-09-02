@@ -13,6 +13,7 @@ import type {
 	SubscribeMarketResponse,
 	SubscribeObservationResponse,
 } from "@spacemolt/lib";
+import type { DeepPartial } from "../helpers/deep-partial.js";
 
 /** Indexes a list by a key extractor, dropping entries with no key — mirrors the lib's internal `indexBy`. */
 function indexBy<T, K extends string | undefined>(
@@ -65,13 +66,13 @@ export class FakeLibGoalAccount implements LibGoalAccount {
 	readonly calls: RecordedCall[] = [];
 	refreshCalls = 0;
 	/** State returned by the next `refresh()` (defaults to current state). */
-	refreshReturns?: GameState | undefined;
+	refreshReturns?: DeepPartial<GameState> | undefined;
 	readonly commands: Commands;
 	private readonly marketBooks = new Map<string, MarketBook>();
 	private _observation: ObservationView | null = null;
 
-	constructor(initial: GameState = {}, handlers: FakeCommandHandlers = {}) {
-		this._state = initial;
+	constructor(initial: DeepPartial<GameState> = {}, handlers: FakeCommandHandlers = {}) {
+		this._state = initial as GameState;
 
 		const groupProxy = new Proxy(
 			{},
@@ -105,14 +106,14 @@ export class FakeLibGoalAccount implements LibGoalAccount {
 	}
 
 	/** Merge a partial into the cached state (simulates a delta being applied). */
-	setState(patch: GameState): void {
-		this._state = { ...this._state, ...patch };
+	setState(patch: DeepPartial<GameState>): void {
+		this._state = { ...this._state, ...(patch as GameState) };
 	}
 
 	refresh(): Promise<Readonly<GameState>> {
 		this.refreshCalls++;
 		if (this.refreshReturns) {
-			this._state = this.refreshReturns;
+			this._state = this.refreshReturns as GameState;
 		}
 		return Promise.resolve(this._state);
 	}
@@ -153,7 +154,7 @@ export interface FakeLibManagedAccountOptions {
 	/** The account's `id` — the store-key/username it is managed under. */
 	username?: string;
 	/** Initial game-state cache. */
-	state?: GameState;
+	state?: DeepPartial<GameState>;
 	/**
 	 * Handlers keyed by action name. Shared by the `commands` proxy and the
 	 * `query`/`send`/`mutate` low-level paths. A handler returns the resolved

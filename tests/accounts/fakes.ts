@@ -15,6 +15,7 @@ import type {
 	SubscribeObservationResponse,
 } from "@spacemolt/lib";
 import type { AccountClientLike, LibManagedAccount } from "../../src/accounts/lib-types.js";
+import type { DeepPartial } from "../helpers/deep-partial.js";
 
 /** Generic recording proxy: any `commands.<group>.<action>(...)` call resolves to an empty MutationResult. */
 function makeFakeCommands(): Commands {
@@ -55,20 +56,22 @@ export class FakeAccount implements LibManagedAccount {
 	constructor(
 		private readonly playerId: string,
 		readonly id: string,
-		initialState: GameState = {},
+		initialState: DeepPartial<GameState> = {},
 	) {
-		this._state = initialState;
+		this._state = initialState as GameState;
 	}
-	get player(): { id: string; username?: string; empire?: string } {
-		return { id: this.playerId };
+	get player(): GameState["player"] {
+		// Only `id` is ever read by the account layer; the rest of V2Player is
+		// irrelevant to these tests, so it is not spelled out.
+		return { id: this.playerId } as GameState["player"];
 	}
 	get state(): Readonly<GameState> {
 		return this._state;
 	}
 	/** Test helper: replace state and emit the given changed sections. */
-	emitStateChange(changed: StateSection[], nextState?: GameState): void {
+	emitStateChange(changed: StateSection[], nextState?: DeepPartial<GameState>): void {
 		if (nextState) {
-			this._state = nextState;
+			this._state = nextState as GameState;
 		}
 		this.listener?.(changed);
 	}

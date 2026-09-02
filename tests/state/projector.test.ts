@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import type { GameState } from "@spacemolt/lib";
+import type { GameState, V2Location } from "@spacemolt/lib";
 import { createMemoryDatabase } from "../../src/state/database.js";
 import { StateProjector } from "../../src/state/projector.js";
 import { StateStore } from "../../src/state/store.js";
+import { partial } from "../helpers/deep-partial.js";
 
 function makeStore(): StateStore {
 	return new StateStore(createMemoryDatabase());
@@ -19,7 +20,9 @@ describe("StateProjector", () => {
 
 		projector.project("pid-a", state, ["location"]);
 
-		expect(store.getSection("pid-a", "location")).toEqual({ system_id: "sol", poi_id: "sol-belt" });
+		expect(store.getSection("pid-a", "location")).toEqual(
+			partial<V2Location>({ system_id: "sol", poi_id: "sol-belt" }),
+		);
 		// ship was NOT in `changed`, so it must not have been written
 		expect(store.getSection("pid-a", "ship")).toBeUndefined();
 	});
@@ -34,7 +37,9 @@ describe("StateProjector", () => {
 
 		projector.project("pid-b", state, ["location", "cargo"]);
 
-		expect(store.getSection("pid-b", "location")).toEqual({ system_id: "sol" });
+		expect(store.getSection("pid-b", "location")).toEqual(
+			partial<V2Location>({ system_id: "sol" }),
+		);
 		expect(store.getSection("pid-b", "cargo")).toEqual([]);
 	});
 

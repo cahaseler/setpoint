@@ -2,8 +2,9 @@ import { describe, expect, test } from "bun:test";
 import type { GetBattleStatusResponse } from "@spacemolt/lib";
 import { FleeCombatStrategy } from "../../src/combat/combat-response.js";
 import { FakeLibGoalAccount } from "../dispatcher/lib-fakes.js";
+import type { DeepPartial } from "../helpers/deep-partial.js";
 
-function statusResult(content: Partial<GetBattleStatusResponse>) {
+function statusResult(content: DeepPartial<GetBattleStatusResponse>) {
 	return {
 		result: "",
 		structuredContent: { battle_id: "b1", is_participant: true, ...content },

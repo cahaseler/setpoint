@@ -5,6 +5,31 @@ import {
 } from "../../src/accounts/server-notices.js";
 
 describe("classifyServerNotice", () => {
+	test("picks out a server_restart_warning and leads with the countdown", () => {
+		const notice = classifyServerNotice("server_restart_warning", {
+			message: "Server restarting for deploy",
+			seconds_until_restart: 30,
+			target_version: "v0.573.1",
+		});
+		expect(notice?.kind).toBe("server-lifecycle");
+		expect(notice?.type).toBe("server_restart_warning");
+		expect(notice?.summary).toBe("restart in 30s (\u2192 v0.573.1): Server restarting for deploy");
+	});
+
+	test("handles a server_restart_warning with no target_version", () => {
+		const notice = classifyServerNotice("server_restart_warning", {
+			message: "Server restarting",
+			seconds_until_restart: 10,
+		});
+		expect(notice?.summary).toBe("restart in 10s: Server restarting");
+	});
+
+	test("falls back to the raw payload if the restart warning has an unexpected shape", () => {
+		const notice = classifyServerNotice("server_restart_warning", { unexpected: true });
+		expect(notice?.kind).toBe("server-lifecycle");
+		expect(notice?.summary).toBe('{"unexpected":true}');
+	});
+
 	test("picks out a system-channel chat message", () => {
 		const notice = classifyServerNotice("chat_message", {
 			channel: "system",

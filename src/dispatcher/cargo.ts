@@ -7,8 +7,11 @@ export type CargoStack = RawCargoEntry & { item_id: string; quantity: number };
 
 /**
  * Narrows raw cargo entries to actionable stacks: a known item_id and a
- * positive quantity. The v2 spec marks every cargo field optional, so all
- * consumers must filter through here before acting on a stack.
+ * positive quantity. The positive-quantity check is the substantive one — the
+ * spec types every cargo field as required, but a zero-quantity stack is a
+ * normal thing for the server to report and acting on one is always a bug. The
+ * item_id guard is kept as a runtime backstop, since the types describe what
+ * the server promises rather than what it can actually put on the wire.
  */
 export function actionableStacks(cargo: readonly RawCargoEntry[] | undefined): CargoStack[] {
 	return (cargo ?? []).filter(
