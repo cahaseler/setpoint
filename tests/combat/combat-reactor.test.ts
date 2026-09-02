@@ -26,7 +26,7 @@ function battleEnded(battleId = "b1") {
 	return {
 		battle_id: battleId,
 		duration: 10,
-		reason: "resolved",
+		reason: "victory",
 		ships_destroyed: 0,
 		total_damage: 0,
 		winning_side: 1,
