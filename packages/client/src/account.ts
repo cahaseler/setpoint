@@ -15,6 +15,7 @@ import type {
 	LoopType,
 	MarketBookSnapshot,
 	ObservationSnapshot,
+	PirateRadioEnvelope,
 	V2GameState,
 } from "@setpoint/protocol";
 import type { GetSystemResponse } from "@spacemolt/lib";
@@ -340,6 +341,75 @@ export class AccountCombatApi {
 }
 
 /**
+ * Consumes a daemon SSE route as a typed async generator: connects, yields
+ * each `data:` frame parsed as `T`, and runs until the connection closes or
+ * `signal` aborts.
+ */
+async function* streamEvents<T>(
+	url: string,
+	opts?: { signal?: AbortSignal },
+): AsyncGenerator<T, void, void> {
+	const response = await fetch(url, opts?.signal ? { signal: opts.signal } : {});
+
+	if (!response.ok || !response.body) {
+		let body: { error?: string } = {};
+		try {
+			body = (await response.json()) as { error?: string };
+		} catch {
+			/* non-JSON error body */
+		}
+		throw new SetpointHttpError(response.status, body);
+	}
+
+	const reader = response.body.getReader();
+	const decoder = new TextDecoder();
+	let buffered = "";
+	try {
+		while (true) {
+			const { value, done } = await reader.read();
+			if (done) return;
+			buffered += decoder.decode(value, { stream: true });
+			let boundary = buffered.indexOf("\n\n");
+			while (boundary !== -1) {
+				const frame = buffered.slice(0, boundary);
+				buffered = buffered.slice(boundary + 2);
+				if (frame.startsWith("data: ")) {
+					yield JSON.parse(frame.slice("data: ".length)) as T;
+				}
+				boundary = buffered.indexOf("\n\n");
+			}
+		}
+	} finally {
+		await reader.cancel().catch(() => {});
+	}
+}
+
+/**
+ * Live pirate-radio API scoped to a single account. Mirrors the daemon's
+ * `GET /accounts/:id/pirate-radio/events` route (`handlePirateRadioEvents` in
+ * `src/server/handlers.ts`) — a Server-Sent Events stream of intercepted
+ * pirate transmissions, same shape/rationale as {@link AccountCraftingApi}.
+ */
+export class AccountPirateRadioApi {
+	constructor(
+		private readonly client: SetpointClient,
+		private readonly id: string,
+	) {}
+
+	/**
+	 * Streams `pirate_radio` pushes for this account: the daemon's buffered
+	 * backlog (last ~50 events) immediately, then each new push live as it
+	 * arrives. The generator runs until the connection closes or `signal`
+	 * aborts — consume with
+	 * `for await (const envelope of account.pirateRadio.events())`.
+	 */
+	events(opts?: { signal?: AbortSignal }): AsyncGenerator<PirateRadioEnvelope, void, void> {
+		const url = `${this.client.baseUrl}/accounts/${encodeURIComponent(this.id)}/pirate-radio/events`;
+		return streamEvents<PirateRadioEnvelope>(url, opts);
+	}
+}
+
+/**
  * Combat-response mode API scoped to a single account. Mirrors the daemon's
  * `GET|PATCH /accounts/:id/combat-mode` routes (`src/server/handlers.ts`).
  * `"flee"` (the default) is setpoint's built-in auto-flee response on combat
@@ -399,6 +469,9 @@ export class AccountApi {
 	/** Combat-response mode sub-API for this account (`sp.account(id).combatMode`). */
 	readonly combatMode: AccountCombatModeApi;
 
+	/** Live pirate-radio sub-API for this account (`sp.account(id).pirateRadio`). */
+	readonly pirateRadio: AccountPirateRadioApi;
+
 	constructor(
 		private readonly client: SetpointClient,
 		private readonly id: string,
@@ -411,6 +484,7 @@ export class AccountApi {
 		this.crafting = new AccountCraftingApi(client, id);
 		this.combat = new AccountCombatApi(client, id);
 		this.combatMode = new AccountCombatModeApi(client, id);
+		this.pirateRadio = new AccountPirateRadioApi(client, id);
 	}
 
 	/**

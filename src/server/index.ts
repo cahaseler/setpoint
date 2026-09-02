@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import type { CombatEnvelope } from "@setpoint/protocol";
+import type { CombatEnvelope, PirateRadioEnvelope } from "@setpoint/protocol";
 import type { SpacemoltClient } from "@spacemolt/lib";
 import type { LibAccountManager } from "../accounts/lib-manager.js";
 import type { CombatModeStore } from "../combat/combat-mode-store.js";
@@ -33,6 +33,7 @@ import {
 	handleHealth,
 	handleListAccounts,
 	handlePatchLoop,
+	handlePirateRadioEvents,
 	handleRawAction,
 	handleRefreshState,
 	handleRegisterAccount,
@@ -69,7 +70,7 @@ export function resolveBindHost(env: Record<string, string | undefined> = proces
 export function isUnboundedRequest(req: Request): boolean {
 	const { pathname } = new URL(req.url);
 	if (req.method === "GET") {
-		return /\/(crafting|combat)\/events$/.test(pathname);
+		return /\/(crafting|combat|pirate-radio)\/events$/.test(pathname);
 	}
 	if (req.method === "POST") {
 		return (
@@ -94,6 +95,7 @@ export interface ServerOptions {
 	configDir: string;
 	craftingEventsStore: CraftingEventsStore;
 	combatEventsStore: EventBuffer<CombatEnvelope>;
+	pirateRadioStore: EventBuffer<PirateRadioEnvelope>;
 	combatModeStore: CombatModeStore;
 	/**
 	 * Shared with the caller (rather than constructed privately here) so
@@ -288,6 +290,9 @@ export function buildRoutes(ctx: HandlerContext): RouteTable {
 		// Combat events (SSE) — no subscribe-first step; battle_*/player_died/
 		// player_kill notifications push automatically. See state/event-buffer.ts.
 		"/accounts/:playerId/combat/events": { GET: r(handleCombatEvents) },
+		// Also push-only with no subscribe step: the server sends pirate_radio
+		// to any account in range to intercept a transmission.
+		"/accounts/:playerId/pirate-radio/events": { GET: r(handlePirateRadioEvents) },
 	};
 }
 
@@ -315,6 +320,7 @@ export function startServer(options: ServerOptions): DispatcherServer {
 		claimedAccounts: options.claimedAccounts ?? new Set(),
 		craftingEventsStore: options.craftingEventsStore,
 		combatEventsStore: options.combatEventsStore,
+		pirateRadioStore: options.pirateRadioStore,
 		combatModeStore: options.combatModeStore,
 	};
 

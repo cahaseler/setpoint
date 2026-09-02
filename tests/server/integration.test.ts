@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, mock, test } from "bun:test";
-import type { CombatEnvelope } from "@setpoint/protocol";
+import type { CombatEnvelope, PirateRadioEnvelope } from "@setpoint/protocol";
 import type { GameState } from "@spacemolt/lib";
 import type { CombatModeStore } from "../../src/combat/combat-mode-store.js";
 import type { HandlerContext } from "../../src/server/handlers.js";
@@ -9,7 +9,7 @@ import { JobManager } from "../../src/server/job-manager.js";
 import { LoopManager } from "../../src/server/loop-manager.js";
 import { CraftingEventsStore } from "../../src/state/crafting-events-store.js";
 import { createMemoryDatabase } from "../../src/state/database.js";
-import { createEventBuffer } from "../../src/state/event-buffer.js";
+import { type EventBuffer, createEventBuffer } from "../../src/state/event-buffer.js";
 import type { StateStore } from "../../src/state/store.js";
 import type { StoredGameState } from "../../src/state/store.js";
 import { FakeLibManagedAccount, makeFakeLibManager } from "../dispatcher/lib-fakes.js";
@@ -64,6 +64,7 @@ function makeMockAccount(
 describe("Server integration", () => {
 	let server: ReturnType<typeof Bun.serve>;
 	let base: string;
+	let pirateRadioStore: EventBuffer<PirateRadioEnvelope>;
 	// Seed p1's push-fed cache with TEST_STATE so goal execution (which reads
 	// account.state) sees a fueled ship; read handlers get state from the store stub.
 	const accounts = [
@@ -88,6 +89,8 @@ describe("Server integration", () => {
 		const loopManager = new LoopManager();
 		const jobManager = new JobManager(createMemoryDatabase());
 
+		pirateRadioStore = createEventBuffer<PirateRadioEnvelope>();
+
 		const ctx: HandlerContext = {
 			manager,
 			store,
@@ -100,6 +103,7 @@ describe("Server integration", () => {
 			claimedAccounts: new Set(),
 			craftingEventsStore: new CraftingEventsStore(),
 			combatEventsStore: createEventBuffer<CombatEnvelope>(),
+			pirateRadioStore,
 			combatModeStore: { get: () => "flee" } as unknown as CombatModeStore,
 		};
 
@@ -251,6 +255,27 @@ describe("Server integration", () => {
 	});
 
 	// ── 404 ──────────────────────────────────────────────────────────
+
+	test("GET /accounts/:playerId/pirate-radio/events is served as an SSE stream", async () => {
+		// Proves the route is registered at the path the client and docs use —
+		// a handler wired at the wrong path would 404 here rather than in
+		// production.
+		// Seeded so the stream writes a frame — a stream that never flushes a
+		// byte leaves the response headers unsent.
+		pirateRadioStore.record("p1", {
+			receivedAt: new Date().toISOString(),
+			event: { message: "we ride at dawn", pirate_name: "Blackvane" },
+		});
+
+		const controller = new AbortController();
+		const res = await fetch(`${base}/accounts/p1/pirate-radio/events`, {
+			signal: controller.signal,
+		});
+
+		expect(res.status).toBe(200);
+		expect(res.headers.get("Content-Type")).toBe("text/event-stream");
+		controller.abort();
+	});
 
 	test("unknown routes return 404", async () => {
 		const res = await fetch(`${base}/nonexistent`);

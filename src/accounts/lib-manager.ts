@@ -2,6 +2,7 @@ import {
 	COMBAT_NOTIFICATION_TYPES,
 	type CombatNotificationType,
 	type CraftingUpdateEvent,
+	type PirateRadioEvent,
 } from "@setpoint/protocol";
 import {
 	type ClerkPlayer,
@@ -70,6 +71,13 @@ export interface LibAccountManagerOptions {
 		payload: NotificationPayloads[CombatNotificationType],
 		account: LibManagedAccount,
 	) => void;
+	/**
+	 * Called on every `pirate_radio` push for an account — an intercepted
+	 * pirate transmission. Like crafting and combat, this needs no explicit
+	 * subscribe call; the server sends it to any account in range to
+	 * intercept. Wired once per account in `indexAndWire`.
+	 */
+	onPirateRadio?: (playerId: string, event: PirateRadioEvent, account: LibManagedAccount) => void;
 }
 
 /**
@@ -211,6 +219,18 @@ export class LibAccountManager {
 					}
 				});
 			}
+		}
+		const onPirateRadio = this.opts.onPirateRadio;
+		if (onPirateRadio) {
+			// Same isolation rationale as the handlers above — a throwing
+			// handler must never escape back into the lib's frame routing.
+			account.on("pirate_radio", (event) => {
+				try {
+					onPirateRadio(playerId, event, account);
+				} catch (err) {
+					log.error(`[${playerId}] onPirateRadio handler threw: ${errorMessage(err)}`);
+				}
+			});
 		}
 		// Surface server-originated notices — above all the warning broadcast
 		// shortly before the game server restarts for a deploy. Without this,

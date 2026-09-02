@@ -4,6 +4,7 @@ import type {
 	CombatMode,
 	CraftingUpdateEnvelope,
 	CraftingUpdateEvent,
+	PirateRadioEnvelope,
 } from "@setpoint/protocol";
 import type { ClerkPlayer, GameState } from "@spacemolt/lib";
 import type { CombatModeStore } from "../../src/combat/combat-mode-store.js";
@@ -31,6 +32,7 @@ import {
 	handleHealth,
 	handleListAccounts,
 	handlePatchLoop,
+	handlePirateRadioEvents,
 	handleRawAction,
 	handleRegisterAccount,
 	handleSetCombatMode,
@@ -207,6 +209,7 @@ function makeContext(
 		claimedAccounts: new Set(),
 		craftingEventsStore: new CraftingEventsStore(),
 		combatEventsStore: createEventBuffer<CombatEnvelope>(),
+		pirateRadioStore: createEventBuffer<PirateRadioEnvelope>(),
 		combatModeStore: new FakeCombatModeStore() as unknown as CombatModeStore,
 	};
 }
@@ -3356,5 +3359,111 @@ describe("handleCombatEvents", () => {
 		const events = await readSseEvents(res, 1);
 		expect(events).toHaveLength(1);
 		expect((events[0]?.payload as { battleId: string }).battleId).toBe("mine");
+	});
+});
+
+// ── Pirate Radio Events ──────────────────────────────────────────────
+
+describe("handlePirateRadioEvents", () => {
+	function radioEvent(message: string): PirateRadioEnvelope {
+		return {
+			receivedAt: new Date().toISOString(),
+			event: { message, pirate_name: "Blackvane", source_system: "sol" },
+		};
+	}
+
+	async function readSseEvents(res: Response, count: number): Promise<PirateRadioEnvelope[]> {
+		const reader = res.body?.getReader();
+		if (!reader) throw new Error("Response has no body");
+		const decoder = new TextDecoder();
+		let buffered = "";
+		const events: PirateRadioEnvelope[] = [];
+		while (events.length < count) {
+			const { value, done } = await reader.read();
+			if (done) break;
+			buffered += decoder.decode(value, { stream: true });
+			let boundary = buffered.indexOf("\n\n");
+			while (boundary !== -1) {
+				const frame = buffered.slice(0, boundary);
+				buffered = buffered.slice(boundary + 2);
+				if (frame.startsWith("data: ")) {
+					events.push(JSON.parse(frame.slice("data: ".length)));
+				}
+				boundary = buffered.indexOf("\n\n");
+			}
+		}
+		await reader.cancel();
+		return events;
+	}
+
+	test("returns 404 for an unknown account", () => {
+		const ctx = makeContext({ accounts: [] });
+		const res = handlePirateRadioEvents(
+			new Request("http://localhost/accounts/nope/pirate-radio/events"),
+			{ playerId: "nope" },
+			ctx,
+		);
+		expect(res.status).toBe(404);
+	});
+
+	test("sets SSE headers", () => {
+		const account = makeAccount("p1");
+		const ctx = makeContext({ accounts: [account] });
+		const res = handlePirateRadioEvents(
+			new Request("http://localhost/accounts/p1/pirate-radio/events"),
+			{ playerId: "p1" },
+			ctx,
+		);
+		expect(res.headers.get("Content-Type")).toBe("text/event-stream");
+		expect(res.headers.get("Cache-Control")).toBe("no-cache");
+		expect(res.headers.get("Connection")).toBe("keep-alive");
+	});
+
+	test("streams the buffered backlog immediately on connect", async () => {
+		const account = makeAccount("p1");
+		const ctx = makeContext({ accounts: [account] });
+		ctx.pirateRadioStore.record("p1", radioEvent("first"));
+		ctx.pirateRadioStore.record("p1", radioEvent("second"));
+
+		const res = handlePirateRadioEvents(
+			new Request("http://localhost/accounts/p1/pirate-radio/events"),
+			{ playerId: "p1" },
+			ctx,
+		);
+
+		const events = await readSseEvents(res, 2);
+		expect(events.map((e) => e.event.message)).toEqual(["first", "second"]);
+	});
+
+	test("streams live events recorded after connecting", async () => {
+		const account = makeAccount("p1");
+		const ctx = makeContext({ accounts: [account] });
+
+		const res = handlePirateRadioEvents(
+			new Request("http://localhost/accounts/p1/pirate-radio/events"),
+			{ playerId: "p1" },
+			ctx,
+		);
+
+		ctx.pirateRadioStore.record("p1", radioEvent("live"));
+		const events = await readSseEvents(res, 1);
+		expect(events[0]?.event.message).toBe("live");
+	});
+
+	test("does not deliver another account's transmissions", async () => {
+		const account = makeAccount("p1");
+		const ctx = makeContext({ accounts: [account] });
+
+		const res = handlePirateRadioEvents(
+			new Request("http://localhost/accounts/p1/pirate-radio/events"),
+			{ playerId: "p1" },
+			ctx,
+		);
+		ctx.pirateRadioStore.record("p2", radioEvent("theirs"));
+		ctx.pirateRadioStore.record("p1", radioEvent("mine"));
+
+		const events = await readSseEvents(res, 1);
+		expect(events).toHaveLength(1);
+		expect(events[0]?.event.message).toBe("mine");
 	});
 });
