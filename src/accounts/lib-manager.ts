@@ -17,11 +17,15 @@ import { errorMessage } from "../util/errors.js";
 import { createLogger } from "../util/logger.js";
 import { type LibConfig, buildOwnedFilter } from "./lib-config.js";
 import type { AccountClientLike, LibManagedAccount } from "./lib-types.js";
+import { classifyServerNotice, createNoticeRateLimiter } from "./server-notices.js";
 
 const log = createLogger("lib-account-mgr");
 
 /** How long a `listOwned()` result is trusted before refreshing from Clerk. Keeps a polling dashboard from hammering Clerk's API on every GET /accounts request. */
 const OWNED_LIST_TTL_MS = 60_000;
+
+/** How long one server-notice `msg_type` stays suppressed after being logged. A broadcast reaches every account's socket at once, so without this a single announcement writes one line per connected account. */
+const NOTICE_LOG_WINDOW_MS = 60_000;
 
 export interface LibAccountManagerOptions {
 	/** Called on every account state change: (playerId, changed sections, the account). Phase 2 wires the SQLite projector here. */
@@ -80,6 +84,8 @@ export class LibAccountManager {
 	private readonly connecting = new Set<string>();
 	/** Cached `listOwned()` result and the time it was fetched, for the TTL below. */
 	private ownedListCache: { players: ClerkPlayer[]; fetchedAt: number } | undefined;
+	/** Shared across every account so one fleet-wide broadcast logs once, not once per socket. */
+	private readonly noticeLimiter = createNoticeRateLimiter({ windowMs: NOTICE_LOG_WINDOW_MS });
 
 	constructor(
 		private readonly client: AccountClientLike,
@@ -206,6 +212,26 @@ export class LibAccountManager {
 				});
 			}
 		}
+		// Surface server-originated notices — above all the warning broadcast
+		// shortly before the game server restarts for a deploy. Without this,
+		// every push type setpoint doesn't explicitly subscribe to is dropped
+		// silently, so a deploy shows up only as an unexplained burst of socket
+		// closures. Same try/catch isolation rationale as the handlers above.
+		account.onAny((frame) => {
+			try {
+				const notice = classifyServerNotice(frame.type, frame.payload);
+				if (!notice) return;
+				const suppressed = this.noticeLimiter.admit(notice.type, Date.now());
+				if (suppressed === null) return;
+				const alsoSeen =
+					suppressed > 0 ? ` (+${suppressed} duplicate(s) suppressed since the last line)` : "";
+				log.info(
+					`[${playerId}] server notice (${notice.kind}) '${notice.type}'${alsoSeen}: ${notice.summary}`,
+				);
+			} catch (err) {
+				log.error(`[${playerId}] server-notice handler threw: ${errorMessage(err)}`);
+			}
+		});
 		// The lib seeds state during connect() without firing onStateChange (no
 		// replay), so mark freshness explicitly here — otherwise a freshly-connected
 		// account would read as stale immediately.
