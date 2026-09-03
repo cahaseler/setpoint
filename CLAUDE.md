@@ -216,7 +216,24 @@ Every piece of new behavior needs a test written at the same time as the code �
 `tests/server/integration.test.ts` serves the real `buildRoutes()` table, so a handler registered at the wrong path fails a test rather than 404ing in production. Route paths still aren't guessable from handler names (`handleDashboardData` → `/dashboard/data`, not `/dashboard-data`), so read `buildRoutes()` in `src/server/index.ts` before referencing a route from the CLI — but you'll now get a test failure if you get it wrong.
 
 ### Before deleting an endpoint or feature
-The route wrapper logs every request at INFO, so the daemon's own logs are the evidence for whether anything still calls something: `grep "GET /path" logs/daemon.log* logs/stdout.log`. Check a known-live route (`/dashboard/data`) in the same window as a control — zero hits only means something if the log actually captures traffic. `logs/stdout.log` holds months; `daemon.log` rotates at 10MB and may only span hours.
+**Ask the other Claude sessions on this VPS.** They are the operators of the
+systems that call setpoint — the fleet brain, the route drivers, the various
+ops scripts — so they know directly what they depend on. `ListAgents` shows
+who is around; `SendMessage` them and ask. That is a definite answer about
+current consumers, which log archaeology can only approximate.
+
+The daemon's own log is a weak second source, not a substitute. The route
+wrapper does log every request at INFO, so `grep "GET /path" logs/daemon.log*`
+finds callers — but `daemon.log` rotates at 10MB, which on a live fleet is
+every 10-20 minutes, so four files cover well under an hour. A quiet hour
+proves nothing about a caller that runs daily. If you do use it, check a
+known-live route (`/dashboard/data`) in the same window as a control: zero
+hits only means something if the log captured traffic at all.
+
+There is deliberately no long-horizon log. An unrotated `stdout.log` reached
+7GB in three days for history nobody was reading — the consumers here monitor
+setpoint for restart pings, not for their own call records. Disk is finite;
+ask a peer instead.
 
 ### Error Handling
 - Game API rejections surface as `SpacemoltError` (from `@spacemolt/lib`), with a `.code` field goals match against (e.g. `already_docked`, `unknown_destination`) — see `src/dispatcher/lib-primitives/dock-at.ts` for the pattern
