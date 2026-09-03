@@ -91,6 +91,15 @@ describe("classifyServerNotice", () => {
 		}
 	});
 
+	test("ignores the per-action 'ok' acknowledgement", () => {
+		// The highest-volume untyped frame in production: the ack for a mutation
+		// this account asked for, not something the server is announcing.
+		expect(
+			classifyServerNotice("ok", { action: "jump", arrival_tick: 1, destination: "sol" }),
+		).toBeNull();
+		expect(classifyServerNotice("ok", { action: "dock", base: "Ironlight Crossroads" })).toBeNull();
+	});
+
 	test("reports an undocumented push type", () => {
 		// The shape a restart warning would take if it ships as its own
 		// msg_type rather than riding on chat.

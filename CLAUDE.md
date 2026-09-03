@@ -326,7 +326,7 @@ smctl log-level                           # Get current log level
 smctl log-level debug                     # Set log level (debug|info|warn|error)
 ```
 
-`smctl status` calls `GET /dashboard/data` and returns the raw JSON response. Each account entry includes: `player_id`, `username`, `state` (full game state), `loop` (loop status with `type`, `running`, `lastStep`), `hasRunningJob`, `hasExecutingGoal`, and `recentJobs` (5 most recent job records: `jobId`, `status`, `goalType`, `error`).
+`smctl status` calls `GET /dashboard/data` and returns the raw JSON response. Each account entry includes: `player_id`, `username`, `state` (full game state), `loop` (loop status with `type`, `running`, `lastStep`, and `consecutiveFailures`/`lastFailure` — a `running: true` loop with `consecutiveFailures > 0` is failing, not merely mid-first-cycle), `hasRunningJob`, `hasExecutingGoal`, and `recentJobs` (5 most recent job records: `jobId`, `status`, `goalType`, `error`).
 
 #### Account Management
 

@@ -69,6 +69,72 @@ describe("LoopManager start*Loop methods", () => {
 		expect(manager.isRunning("p1")).toBe(true);
 	});
 
+	test("a freshly started loop reports zero consecutive failures and no lastFailure", () => {
+		// The "hasn't finished its first cycle yet" state, which must stay
+		// distinguishable from a loop that is actually failing.
+		const options: MiningLoopApiOptions = {
+			miningSystemId: "sol",
+			beltPoiId: "belt-1",
+			sellSystemId: "sol",
+			sellStationPoiId: "sol-station",
+			sellBaseId: "sol-base",
+			maxIterations: 0,
+		};
+		manager.startMiningLoop("p1", options, () => account);
+		const status = manager.getStatus("p1");
+		expect(status?.running).toBe(true);
+		expect(status?.consecutiveFailures).toBe(0);
+		expect(status?.lastFailure).toBeUndefined();
+		expect(status?.lastStep).toBeUndefined();
+	});
+
+	test("a failing loop surfaces consecutiveFailures and lastFailure in its status", async () => {
+		// End-to-end: an iteration that fails must be distinguishable from one
+		// that simply has not finished, which is the whole point of the field.
+		// Seeded in-system so navigate-to-system is already satisfied and the
+		// run reaches travel, which throws a plain Error — go-to-poi rethrows
+		// anything that isn't a SpacemoltError, so this exercises runLibLoop's
+		// exception path, the one that previously reported nothing at all.
+		const failing = new FakeLibManagedAccount({
+			playerId: "p1",
+			username: "TestPlayer",
+			state: { location: { system_id: "sol", poi_id: "somewhere-else" } },
+			handlers: {
+				travel: () => {
+					throw new Error("boom");
+				},
+			},
+		});
+		const options: MiningLoopApiOptions = {
+			miningSystemId: "sol",
+			beltPoiId: "belt-1",
+			sellSystemId: "sol",
+			sellStationPoiId: "sol-station",
+			sellBaseId: "sol-base",
+			// maxIterations: 0 means zero iterations, not unlimited — the loop
+			// would finish instantly without running anything.
+			maxIterations: 3,
+		};
+		manager.startMiningLoop("p1", options, () => failing);
+
+		const deadline = Date.now() + 5000;
+		while (Date.now() < deadline) {
+			const s = manager.getStatus("p1");
+			if ((s?.consecutiveFailures ?? 0) > 0) {
+				expect(s?.running).toBe(true);
+				expect(s?.lastFailure).toBeDefined();
+				expect(s?.lastFailureAt).toBeDefined();
+				manager.abortLoop("p1");
+				manager.forceRemove("p1");
+				return;
+			}
+			await new Promise((r) => setTimeout(r, 20));
+		}
+		manager.abortLoop("p1");
+		manager.forceRemove("p1");
+		throw new Error("loop never reported a failure in its status");
+	});
+
 	test("startMiningLoop throws when loop already running", () => {
 		const options: MiningLoopApiOptions = {
 			miningSystemId: "sol",

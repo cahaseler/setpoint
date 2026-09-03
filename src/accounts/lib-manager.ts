@@ -245,9 +245,18 @@ export class LibAccountManager {
 				if (suppressed === null) return;
 				const alsoSeen =
 					suppressed > 0 ? ` (+${suppressed} duplicate(s) suppressed since the last line)` : "";
-				log.info(
-					`[${playerId}] server notice (${notice.kind}) '${notice.type}'${alsoSeen}: ${notice.summary}`,
-				);
+				const line = `[${playerId}] server notice (${notice.kind}) '${notice.type}'${alsoSeen}: ${notice.summary}`;
+				// Only the documented operational pushes earn INFO. The other two
+				// kinds are speculative nets for a notice the spec doesn't describe,
+				// and in practice they land on ordinary gameplay traffic — NPC customs
+				// chatter on the system channel, mission completions — at a volume
+				// that buries the thing worth reading. They stay classified and stay
+				// available at debug, rather than being dropped outright.
+				if (notice.kind === "server-lifecycle") {
+					log.info(line);
+				} else {
+					log.debug(line);
+				}
 			} catch (err) {
 				log.error(`[${playerId}] server-notice handler threw: ${errorMessage(err)}`);
 			}

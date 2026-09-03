@@ -32,6 +32,12 @@ const PROTOCOL_FRAME_TYPES: ReadonlySet<string> = new Set([
 	"logged_in",
 	"welcome",
 	"registered",
+	// `ok` carries the per-action acknowledgement for a completed mutation —
+	// `{"action":"jump","arrival_tick":…,"destination":…}` and the dock/travel
+	// equivalents. It has no published schema, so it would otherwise read as an
+	// undocumented push, but it is an envelope for work this account asked for
+	// rather than anything the server is announcing.
+	"ok",
 ]);
 
 /**
