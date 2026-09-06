@@ -12,6 +12,9 @@ import { type LibManagedAccount, playerId as playerIdOf } from "../accounts/lib-
 import type { CombatModeStore } from "../combat/combat-mode-store.js";
 import type { ProgressRef } from "../dispatcher/goals.js";
 import { makeLibGoalContext } from "../dispatcher/lib-goal-context.js";
+import { ensureFleet } from "../fleet/ensure-fleet.js";
+import type { FleetAccessDeps } from "../fleet/server-access.js";
+import { makeFleetAccess } from "../fleet/server-access.js";
 
 import type { CraftingEventsStore } from "../state/crafting-events-store.js";
 import type { EventBuffer } from "../state/event-buffer.js";
@@ -66,6 +69,12 @@ export interface HandlerContext {
 	 * account previously got recorded as busy.
 	 */
 	claimedAccounts: Set<string>;
+	/**
+	 * Whether an account is mid-battle. Supplied by the combat reactor; combat
+	 * strips an account of its loop and goals, so a fighting ship looks idle to
+	 * every other busy check here.
+	 */
+	isInCombat?: ((playerId: string) => boolean) | undefined;
 }
 
 /** Resolve an account by player_id or username (case-insensitive). */
@@ -1809,4 +1818,66 @@ export function handlePirateRadioEvents(
 	});
 
 	return new Response(stream, { headers: SSE_HEADERS });
+}
+
+// ── Fleet ───────────────────────────────────────────────────────────
+
+/**
+ * Reconcile the game fleet led by this account to an exact membership.
+ *
+ * Claims only the LEADER. Members are never claimed or released — a member
+ * already working is reported as busy in its own subject and left alone.
+ */
+export async function handleEnsureFleet(
+	req: Request,
+	params: RouteParams,
+	ctx: HandlerContext,
+): Promise<Response> {
+	const account = resolveAccount(ctx, params["playerId"] ?? "");
+	if (!account) {
+		return errorResponse(`Account not found: ${params["playerId"]}`, 404);
+	}
+	const leaderId = playerIdOf(account);
+
+	if (ctx.loopManager.isRunning(leaderId)) {
+		return errorResponse("A loop is running on the leader account. Stop it first.", 409);
+	}
+	if (ctx.jobManager.isRunning(leaderId)) {
+		return errorResponse("An async goal job is already running on the leader account.", 409);
+	}
+	if (ctx.executingGoals.has(leaderId)) {
+		return errorResponse("A goal is already executing on the leader account.", 409);
+	}
+	if (ctx.claimedAccounts.has(leaderId)) {
+		return errorResponse("Another request for the leader account is in flight.", 409);
+	}
+	// Claimed synchronously, before any await, for the same reason goal
+	// submission claims here: two concurrent requests must not both pass.
+	ctx.claimedAccounts.add(leaderId);
+
+	try {
+		let body: unknown;
+		try {
+			body = await req.json();
+		} catch {
+			return errorResponse("Invalid JSON body", 400);
+		}
+
+		const members = (body as { members?: unknown })?.members;
+		if (!Array.isArray(members) || members.some((m) => typeof m !== "string")) {
+			return errorResponse("members is required (array of player ids or usernames)", 400);
+		}
+
+		const result = await ensureFleet(
+			makeLibGoalContext(resolveLiveAccount(ctx, leaderId)),
+			makeFleetAccess(ctx as unknown as FleetAccessDeps),
+			{ members: members as string[] },
+		);
+		return jsonResponse(result);
+	} catch (err) {
+		log.error(`[${leaderId}] ensure-fleet failed: ${errorMessage(err)}`);
+		return errorResponse(`ensure-fleet failed: ${errorMessage(err)}`, 500);
+	} finally {
+		ctx.claimedAccounts.delete(leaderId);
+	}
 }

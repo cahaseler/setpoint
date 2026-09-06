@@ -18,6 +18,7 @@ import {
 	handleCraftingEvents,
 	handleDashboardData,
 	handleDeleteAccount,
+	handleEnsureFleet,
 	handleExecuteGoal,
 	handleExecuteGoalAsync,
 	handleGetAccount,
@@ -97,6 +98,8 @@ export interface ServerOptions {
 	combatEventsStore: EventBuffer<CombatEnvelope>;
 	pirateRadioStore: EventBuffer<PirateRadioEnvelope>;
 	combatModeStore: CombatModeStore;
+	/** Whether an account is mid-battle. Late-bound: the combat reactor is built after the server. */
+	isInCombat?: ((playerId: string) => boolean) | undefined;
 	/**
 	 * Shared with the caller (rather than constructed privately here) so
 	 * combat detection — wired into `LibAccountManager` before `startServer()`
@@ -266,6 +269,8 @@ export function buildRoutes(ctx: HandlerContext): RouteTable {
 			DELETE: r(handleStopLoop),
 		},
 
+		"/accounts/:playerId/fleet": { POST: r(handleEnsureFleet) },
+
 		"/accounts/:playerId/combat-mode": {
 			GET: r(handleGetCombatMode),
 			PATCH: r(handleSetCombatMode),
@@ -322,6 +327,7 @@ export function startServer(options: ServerOptions): DispatcherServer {
 		combatEventsStore: options.combatEventsStore,
 		pirateRadioStore: options.pirateRadioStore,
 		combatModeStore: options.combatModeStore,
+		isInCombat: options.isInCombat,
 	};
 
 	const server = Bun.serve({

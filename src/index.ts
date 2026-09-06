@@ -174,6 +174,9 @@ async function main(): Promise<void> {
 	// owned account under the auth rate limit, which for a large fleet can take
 	// many minutes — we must not hold the server down for that whole window.
 	const server = startServer({
+		// Late-bound through reactorRef: the reactor cannot exist until the
+		// server has produced the loop and job managers it depends on.
+		isInCombat: (playerId: string) => reactorRef.current?.isInCombat(playerId) ?? false,
 		port: API_PORT,
 		manager,
 		store,

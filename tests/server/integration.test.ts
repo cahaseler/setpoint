@@ -277,6 +277,36 @@ describe("Server integration", () => {
 		controller.abort();
 	});
 
+	test("POST /accounts/:playerId/fleet is wired to the ensure-fleet handler", async () => {
+		// Route paths are not guessable from handler names, so this asserts the
+		// path itself against the real route table rather than 404ing live.
+		const res = await fetch(`${base}/accounts/p1/fleet`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ members: [] }),
+		});
+		expect(res.status).not.toBe(404);
+	});
+
+	test("POST /accounts/:playerId/fleet rejects a body without members", async () => {
+		const res = await fetch(`${base}/accounts/p1/fleet`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({}),
+		});
+		expect(res.status).toBe(400);
+		expect(((await res.json()) as { error: string }).error).toContain("members");
+	});
+
+	test("POST /accounts/:playerId/fleet returns 404 for an unknown account", async () => {
+		const res = await fetch(`${base}/accounts/nope/fleet`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ members: [] }),
+		});
+		expect(res.status).toBe(404);
+	});
+
 	test("unknown routes return 404", async () => {
 		const res = await fetch(`${base}/nonexistent`);
 		expect(res.status).toBe(404);

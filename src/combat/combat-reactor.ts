@@ -106,6 +106,17 @@ export class CombatReactor {
 	}
 
 	/** Clears all pending timers and in-flight response controllers — call on daemon shutdown. */
+	/**
+	 * Whether this account is currently in a battle.
+	 *
+	 * Exposed so fleet operations can refuse to touch a ship mid-fight. Combat
+	 * releases an account from its loop and goals, so a fighting ship otherwise
+	 * looks idle to every other "is it busy" check in the daemon.
+	 */
+	isInCombat(playerId: string): boolean {
+		return this.tracked.get(playerId)?.state.activeBattleId !== undefined;
+	}
+
 	stop(): void {
 		for (const tracked of this.tracked.values()) {
 			if (tracked.timer) clearTimeout(tracked.timer);

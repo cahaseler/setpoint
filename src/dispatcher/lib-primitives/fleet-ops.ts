@@ -13,10 +13,22 @@ const log = createLogger("goal:fleet-ops");
  * callers are expected to know it.
  */
 
-/** Read the account's current fleet, or `undefined` when it is not in one. */
+/**
+ * Read the account's current fleet membership.
+ *
+ * Falls back to "not in a fleet" if the server answers without a body, rather
+ * than letting a missing field throw somewhere further up — a fleet query that
+ * comes back empty means there is nothing to reconcile against, which is a
+ * legitimate state, not a crash.
+ */
 export async function fleetStatus(ctx: LibGoalContext): Promise<FleetStatusResponse> {
 	const response = await ctx.account.commands.spacemolt_fleet.status();
-	return response.structuredContent as FleetStatusResponse;
+	return (
+		(response.structuredContent as FleetStatusResponse | undefined) ?? {
+			action: "status",
+			in_fleet: false,
+		}
+	);
 }
 
 /** Create a fleet with this account as leader. Returns the new fleet id. */
