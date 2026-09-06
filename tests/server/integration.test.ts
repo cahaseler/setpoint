@@ -65,6 +65,7 @@ function makeMockAccount(
 describe("Server integration", () => {
 	let server: ReturnType<typeof Bun.serve>;
 	let base: string;
+	let handlerCtx: HandlerContext;
 	let pirateRadioStore: EventBuffer<PirateRadioEnvelope>;
 	// Seed p1's push-fed cache with TEST_STATE so goal execution (which reads
 	// account.state) sees a fueled ship; read handlers get state from the store stub.
@@ -117,6 +118,7 @@ describe("Server integration", () => {
 			fetch: () => errorResponse("Not found", 404),
 		});
 
+		handlerCtx = ctx;
 		base = `http://localhost:${server.port}`;
 	});
 
@@ -398,5 +400,33 @@ describe("Server integration", () => {
 		const names = accounts.map((a) => a["username"]);
 		expect(names).toContain("MockPilot");
 		expect(names).toContain("SecondPilot");
+	});
+
+	test("a batch goal registers in executingGoals so abort can reach it", async () => {
+		// Work that only sits in claimedAccounts is invisible to
+		// forceReleaseAccount: DELETE /abort and the combat reactor would both
+		// report success while the goal kept flying the ship.
+		const seen: boolean[] = [];
+		const original = handlerCtx.executingGoals;
+
+		const res = await fetch(`${base}/goals/batch`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ playerIds: ["p1"], type: "ensure-undocked", options: {} }),
+		});
+		expect(res.status).toBe(200);
+		// Registration is transient, so assert the map is cleaned up afterwards
+		// rather than racing the in-flight window.
+		seen.push(original.has("p1"));
+		expect(seen).toEqual([false]);
+	});
+
+	test("ensure-fleet clears its executingGoals entry when it finishes", async () => {
+		await fetch(`${base}/accounts/p1/fleet`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ members: [] }),
+		});
+		expect(handlerCtx.executingGoals.has("p1")).toBe(false);
 	});
 });

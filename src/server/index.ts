@@ -83,7 +83,15 @@ export function isUnboundedRequest(req: Request): boolean {
 			/\/goal$/.test(pathname) ||
 			/\/raw$/.test(pathname) ||
 			pathname === "/accounts/register" ||
-			/\/loop$/.test(pathname)
+			/\/loop$/.test(pathname) ||
+			// Fleet operations and batch goals block on real game work for as long
+			// as it takes: fleet-move waits up to the full location budget PER
+			// member, and a batch runs a goal across dozens of accounts. Without
+			// this, Bun's 255s server idle timeout drops the caller while the work
+			// carries on server-side.
+			pathname === "/goals/batch" ||
+			/\/fleet$/.test(pathname) ||
+			/\/fleet\/move$/.test(pathname)
 		);
 	}
 	if (req.method === "DELETE") {

@@ -56,7 +56,12 @@ export async function fleetMove(
 	const memberIds = (status.members ?? []).filter((m) => !m.is_leader).map((m) => m.player_id);
 
 	const leaderResult = await moveLeader(leader, options);
-	const accounts: Record<string, GoalResult> = { leader: leaderResult };
+	// Keyed by player_id like every other entry: a caller diffing this map
+	// against its own roster must not find a row named "leader" matching nothing.
+	// Prefer our own account's player id: FleetStatusResponse.leader is a bare
+	// string that may be a username, and this map is documented as player-keyed.
+	const leaderId = leader.state.player?.id ?? status.leader ?? "leader";
+	const accounts: Record<string, GoalResult> = { [leaderId]: leaderResult };
 
 	if (!leaderResult.success) {
 		// Members are not asked to arrive somewhere the leader never reached.
@@ -110,6 +115,14 @@ async function settleMember(
 	const ctx = access.contextFor(playerId);
 	if (ctx === undefined) {
 		return failed("not_connected", 0);
+	}
+
+	// Same rule as ensure-fleet: report, never preempt. Docking and refuelling a
+	// member that is mid-loop or mid-combat would put two things in charge of
+	// one ship, which is exactly what the busy check exists to prevent.
+	const busy = access.busyReason(playerId);
+	if (busy !== undefined) {
+		return failed(busy, 0);
 	}
 
 	// The fleet move carries members along, so this waits for arrival rather

@@ -6,6 +6,7 @@ import type {
 	CombatModeStatus,
 	CraftingUpdateEnvelope,
 	Empire,
+	FleetOperationResult,
 	GoalOptionsMap,
 	GoalResult,
 	GoalType,
@@ -434,20 +435,6 @@ export class AccountCombatModeApi {
 	}
 
 	/**
-	 * Signals that an external combat driver is alive for this account.
-	 *
-	 * Call this every tick the driver is running, whether or not it issued a
-	 * command — holding position is a legitimate and common move, so silence on
-	 * the command channel is not evidence of a dead driver. If the daemon sees
-	 * no heartbeat for five ticks while the account is in a battle, it takes the
-	 * fight with its built-in flee response rather than leaving a ship that
-	 * neither fights nor flees.
-	 *
-	 * The account's configured mode is not changed when that happens: re-arming
-	 * the driver is the caller's business, and the next battle starts external
-	 * again.
-	 */
-	/**
 	 * Streams a battle's tick-by-tick log.
 	 *
 	 * `battle/status` reports other participants only as percentages and only
@@ -467,6 +454,20 @@ export class AccountCombatModeApi {
 		);
 	}
 
+	/**
+	 * Signals that an external combat driver is alive for this account.
+	 *
+	 * Call this every tick the driver is running, whether or not it issued a
+	 * command — holding position is a legitimate and common move, so silence on
+	 * the command channel is not evidence of a dead driver. If the daemon sees
+	 * no heartbeat for five ticks while the account is in a battle, it takes the
+	 * fight with its built-in flee response rather than leaving a ship that
+	 * neither fights nor flees.
+	 *
+	 * The account's configured mode is not changed when that happens: re-arming
+	 * the driver is the caller's business, and the next battle starts external
+	 * again.
+	 */
 	async heartbeat(): Promise<{ playerId: string; acknowledgedAt: string }> {
 		const result = await this.client.request(
 			"POST",
@@ -502,15 +503,6 @@ export class AccountFleetApi {
 	) {}
 
 	/**
-	 * Reconciles this account's fleet to exactly `members`, which may be player
-	 * ids or usernames. An empty list disbands the fleet — a leader cannot
-	 * simply leave one.
-	 *
-	 * Does not move ships: a member that is not already at the leader's POI
-	 * fails `not_at_poi` and reports where it actually is, so a caller can tell
-	 * an inbound ship from a stray one.
-	 */
-	/**
 	 * Moves the fleet by moving its leader, then brings every member to
 	 * readiness — fuel and repair do not cascade from the leader, so each pays
 	 * its own way on arrival.
@@ -535,6 +527,15 @@ export class AccountFleetApi {
 		return result as FleetOperationResult;
 	}
 
+	/**
+	 * Reconciles this account's fleet to exactly `members`, which may be player
+	 * ids or usernames. An empty list disbands the fleet — a leader cannot
+	 * simply leave one.
+	 *
+	 * Does not move ships: a member that is not already at the leader's POI
+	 * fails `not_at_poi` and reports where it actually is, so a caller can tell
+	 * an inbound ship from a stray one.
+	 */
 	async ensure(members: string[]): Promise<ReconcileResult> {
 		const result = await this.client.request(
 			"POST",

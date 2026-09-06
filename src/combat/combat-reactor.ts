@@ -353,23 +353,29 @@ export class CombatReactor {
 		heartbeats.beat(playerId);
 		this.clearWatchdog(tracked);
 
-		tracked.watchdog = setInterval(() => {
-			const current = this.tracked.get(playerId);
-			if (!current || current.state.activeBattleId === undefined) {
-				if (current) this.clearWatchdog(current);
-				heartbeats.clear(playerId);
-				return;
-			}
+		tracked.watchdog = setInterval(
+			() => {
+				const current = this.tracked.get(playerId);
+				if (!current || current.state.activeBattleId === undefined) {
+					if (current) this.clearWatchdog(current);
+					heartbeats.clear(playerId);
+					return;
+				}
 
-			const silence = heartbeats.sinceLast(playerId);
-			if (silence === undefined || silence < this.externalHeartbeatTimeoutMs) return;
+				const silence = heartbeats.sinceLast(playerId);
+				if (silence === undefined || silence < this.externalHeartbeatTimeoutMs) return;
 
-			log.warn(
-				`[${playerId}] external combat driver has not checked in for ${Math.round(silence / 1000)}s during battle ${battleId} — taking the fight with the built-in flee response. The account's combat mode is left as "external"; re-arm the driver when it is back.`,
-			);
-			this.clearWatchdog(current);
-			this.runStrategy(playerId, current, battleId);
-		}, this.externalHeartbeatTimeoutMs);
+				log.warn(
+					`[${playerId}] external combat driver has not checked in for ${Math.round(silence / 1000)}s during battle ${battleId} — taking the fight with the built-in flee response. The account's combat mode is left as "external"; re-arm the driver when it is back.`,
+				);
+				this.clearWatchdog(current);
+				this.runStrategy(playerId, current, battleId);
+				// Checked several times per window: polling AT the timeout means a beat
+				// landing just after a tick is not noticed for nearly two full windows,
+				// so a documented five-tick fallback would really take up to ten.
+			},
+			Math.max(1, Math.floor(this.externalHeartbeatTimeoutMs / 5)),
+		);
 	}
 
 	private checkTimeout(playerId: string): void {

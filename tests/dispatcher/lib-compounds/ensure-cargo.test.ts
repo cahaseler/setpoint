@@ -226,3 +226,24 @@ describe("LibEnsureCargo", () => {
 		expect(result.context?.["hold"]).toMatchObject({ capacity: 55, usedBefore: 10 });
 	});
 });
+
+describe("LibEnsureCargo unknown capacity", () => {
+	test("missing ship state reports capacity_unknown, not cargo_full", async () => {
+		// Both capacity() and cargoUsed() fall back to 0, so 0 >= 0 would read as
+		// a full hold and send the caller off to trim a bill that is fine.
+		const account = new FakeLibGoalAccount({ location: AT_STATION, cargo: [] } as never, {
+			withdraw: () => fakeMutationResult("withdraw"),
+		});
+
+		const result = await new LibEnsureCargo({
+			systemId: "sol",
+			poiId: "sol_station",
+			baseId: "sol_base",
+			items: [{ itemId: "slug", quantity: 5 }],
+		}).execute(makeLibGoalContext(account));
+
+		expect(result.success).toBe(false);
+		expect(result.subjects[0]?.message).toBe("capacity_unknown");
+		expect(account.calls.some((c) => c.action === "withdraw")).toBe(false);
+	});
+});

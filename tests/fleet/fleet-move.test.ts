@@ -23,7 +23,11 @@ const fleetOf = (memberIds: string[]) => () => ({
 
 function leaderAt(location: Record<string, unknown>, memberIds: string[]): FakeLibGoalAccount {
 	return new FakeLibGoalAccount(
-		{ location, ship: { fuel: 100, max_fuel: 100, hull: 50, max_hull: 50 } },
+		{
+			location,
+			ship: { fuel: 100, max_fuel: 100, hull: 50, max_hull: 50 },
+			player: { id: "leader-id" },
+		},
 		{
 			status: fleetOf(memberIds),
 			travel: () => fakeMutationResult("travel"),
@@ -108,5 +112,42 @@ describe("fleetMove", () => {
 		const leader = leaderAt(DEST, ["ghost"]);
 		const result = await fleetMove(makeLibGoalContext(leader), access({}), opts);
 		expect(result.accounts["ghost"]?.message).toBe("not_connected");
+	});
+});
+
+describe("fleetMove safety and keying", () => {
+	const busyAccess = (
+		members: Record<string, FakeLibGoalAccount>,
+		busy: Record<string, string>,
+	): FleetAccess => ({
+		resolve: (id) => id,
+		contextFor: (id) => {
+			const account = members[id];
+			return account === undefined ? undefined : makeLibGoalContext(account);
+		},
+		busyReason: (id) => busy[id],
+	});
+
+	test("does not command a member that is busy", async () => {
+		// Docking and refuelling a ship mid-loop would put two things in charge
+		// of one ship — the same rule ensure-fleet already honours.
+		const leader = leaderAt(DEST, ["miner"]);
+		const miner = memberAt(DEST);
+
+		const result = await fleetMove(
+			makeLibGoalContext(leader),
+			busyAccess({ miner }, { miner: "busy:loop:mining" }),
+			opts,
+		);
+
+		expect(result.success).toBe(false);
+		expect(result.accounts["miner"]?.message).toBe("busy:loop:mining");
+		expect(miner.calls).toHaveLength(0);
+	});
+
+	test("keys the leader's result by its player id, not the literal 'leader'", async () => {
+		const leader = leaderAt(DEST, []);
+		const result = await fleetMove(makeLibGoalContext(leader), access({}), opts);
+		expect(Object.keys(result.accounts)).toEqual(["leader-id"]);
 	});
 });

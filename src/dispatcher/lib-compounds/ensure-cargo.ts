@@ -181,7 +181,22 @@ export class LibEnsureCargo implements LibGoal {
 		// Short. Refuse before calling the game if there is physically no room —
 		// cargo_full and insufficient_storage need opposite responses from a
 		// caller (trim the bill vs restock the armoury), so they stay distinct.
-		if (this.cargoUsed(ctx) >= this.capacity(ctx)) {
+		const capacity = this.capacity(ctx);
+		if (capacity <= 0) {
+			// Both accessors fall back to 0, so an absent ship section would read as
+			// a full hold and send the caller off to trim a bill that is fine.
+			return {
+				ticks: 0,
+				subject: {
+					...base,
+					ok: false,
+					action: "none",
+					message: "capacity_unknown",
+					before: { inHold: have, ...this.hold(ctx) },
+				},
+			};
+		}
+		if (this.cargoUsed(ctx) >= capacity) {
 			return {
 				ticks: 0,
 				subject: {

@@ -142,3 +142,28 @@ describe("stopGracefully", () => {
 		expect(performance.now() - start).toBeLessThan(1_000);
 	});
 });
+
+describe("isUnboundedRequest — fleet and batch routes", () => {
+	const post = (path: string) =>
+		isUnboundedRequest(new Request(`http://x${path}`, { method: "POST" }));
+
+	test("fleet reconcile, fleet move and batch goals are unbounded", () => {
+		// Each blocks on real game work: fleet-move waits the full location
+		// budget PER member, and a batch runs one goal across dozens of accounts.
+		// Bun's 255s idle timeout would drop the caller mid-operation.
+		expect(post("/accounts/p1/fleet")).toBe(true);
+		expect(post("/accounts/p1/fleet/move")).toBe(true);
+		expect(post("/goals/batch")).toBe(true);
+	});
+
+	test("the battle-log stream is unbounded", () => {
+		expect(
+			isUnboundedRequest(new Request("http://x/accounts/p1/battle-log/events", { method: "GET" })),
+		).toBe(true);
+	});
+
+	test("ordinary reads stay bounded", () => {
+		expect(isUnboundedRequest(new Request("http://x/accounts/p1", { method: "GET" }))).toBe(false);
+		expect(post("/accounts/p1/combat-heartbeat")).toBe(false);
+	});
+});

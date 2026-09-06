@@ -1826,6 +1826,48 @@ export function handlePirateRadioEvents(
 	return new Response(stream, { headers: SSE_HEADERS });
 }
 
+/**
+ * Run a unit of work for an account as cancellable, registered work.
+ *
+ * Anything long-running MUST go through here rather than just claiming the
+ * account. `forceReleaseAccount` — used by `DELETE /accounts/:id/abort` and by
+ * the combat reactor on combat entry — cancels through `executingGoals`; work
+ * that only sits in `claimedAccounts` is invisible to it, so an abort reports
+ * success while the goal keeps flying the ship. It is also what makes
+ * `hasExecutingGoal` true on the dashboard.
+ */
+async function runCancellable<T>(
+	ctx: HandlerContext,
+	playerId: string,
+	goalType: string,
+	goalOptions: Record<string, unknown>,
+	run: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+	const controller = new AbortController();
+	const progress: ProgressRef = {
+		goalType,
+		goalOptions,
+		completedSteps: [],
+		remainingSteps: [],
+	};
+	const promise = run(controller.signal);
+
+	ctx.executingGoals.set(playerId, {
+		goalType,
+		goalOptions,
+		startedAt: new Date().toISOString(),
+		controller,
+		progress,
+		promise,
+	});
+
+	try {
+		return await promise;
+	} finally {
+		ctx.executingGoals.delete(playerId);
+	}
+}
+
 /** How often the battle-log tail asks for new ticks. One game tick. */
 const BATTLE_LOG_POLL_MS = 10_000;
 
@@ -1870,11 +1912,25 @@ export function handleBattleLogEvents(
 				controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
 			};
 
+			/**
+			 * End the tail for real. Without this, a battle that finished kept the
+			 * poll interval alive, so a client that stopped reading without closing
+			 * its EventSource drew an extra battle.status/battle.log game query
+			 * every ten seconds forever.
+			 */
+			const finish = (payload: unknown): void => {
+				send(payload);
+				closed = true;
+				if (timer) clearInterval(timer);
+				timer = undefined;
+				controller.close();
+			};
+
 			const poll = async (): Promise<void> => {
 				try {
 					const live = ctx.manager.getByPlayerId(actualId);
 					if (!live) {
-						send({ type: "ended", reason: "account_disconnected" });
+						finish({ type: "ended", reason: "account_disconnected" });
 						return;
 					}
 
@@ -1901,13 +1957,14 @@ export function handleBattleLogEvents(
 					}
 
 					if (body?.status === "completed") {
-						send({ type: "ended", reason: "battle_completed", battleId });
+						finish({ type: "ended", reason: "battle_completed", battleId });
 					}
 				} catch (err) {
 					// A battle that has ended, or an account no longer in one, answers
-					// with an error here. That is a normal end to the tail, not a fault
-					// worth tearing the stream down over without saying why.
-					send({ type: "error", message: errorMessage(err) });
+					// with an error here. That is a normal end to the tail: say why,
+					// then actually stop, rather than re-querying the game every tick
+					// on behalf of a fight that is over.
+					finish({ type: "error", message: errorMessage(err) });
 				}
 			};
 
@@ -1978,10 +2035,12 @@ export async function handleEnsureFleet(
 			return errorResponse("members is required (array of player ids or usernames)", 400);
 		}
 
-		const result = await ensureFleet(
-			makeLibGoalContext(resolveLiveAccount(ctx, leaderId)),
-			makeFleetAccess(ctx as unknown as FleetAccessDeps),
-			{ members: members as string[] },
+		const result = await runCancellable(ctx, leaderId, "ensure-fleet", { members }, (signal) =>
+			ensureFleet(
+				makeLibGoalContext(resolveLiveAccount(ctx, leaderId), signal),
+				makeFleetAccess(ctx as unknown as FleetAccessDeps),
+				{ members: members as string[] },
+			),
 		);
 		return jsonResponse(result);
 	} catch (err) {
@@ -2036,17 +2095,20 @@ export async function handleFleetMove(
 			return errorResponse("systemId and poiId are required (strings)", 400);
 		}
 
-		const result = await fleetMove(
-			makeLibGoalContext(resolveLiveAccount(ctx, leaderId)),
-			makeFleetAccess(ctx as unknown as FleetAccessDeps),
-			{
-				systemId,
-				poiId,
-				...(typeof baseId === "string" ? { baseId } : {}),
-				...(typeof refuel === "boolean" ? { refuel } : {}),
-				...(typeof repair === "boolean" ? { repair } : {}),
-				...(typeof maxWaitMs === "number" ? { maxWaitMs } : {}),
-			},
+		const moveOptions = {
+			systemId,
+			poiId,
+			...(typeof baseId === "string" ? { baseId } : {}),
+			...(typeof refuel === "boolean" ? { refuel } : {}),
+			...(typeof repair === "boolean" ? { repair } : {}),
+			...(typeof maxWaitMs === "number" ? { maxWaitMs } : {}),
+		};
+		const result = await runCancellable(ctx, leaderId, "fleet-move", moveOptions, (signal) =>
+			fleetMove(
+				makeLibGoalContext(resolveLiveAccount(ctx, leaderId), signal),
+				makeFleetAccess(ctx as unknown as FleetAccessDeps),
+				moveOptions,
+			),
 		);
 		return jsonResponse(result);
 	} catch (err) {
@@ -2148,8 +2210,11 @@ export async function handleBatchGoal(
 		claimed.push(playerId);
 
 		try {
-			const goal = createGoal(type, (options ?? {}) as Record<string, unknown>);
-			const result = await goal.execute(makeLibGoalContext(resolveLiveAccount(ctx, playerId)));
+			const goalOptions = (options ?? {}) as Record<string, unknown>;
+			const goal = createGoal(type, goalOptions);
+			const result = await runCancellable(ctx, playerId, type, goalOptions, (signal) =>
+				goal.execute(makeLibGoalContext(resolveLiveAccount(ctx, playerId), signal)),
+			);
 			return [playerId, result];
 		} catch (err) {
 			log.error(`[${playerId}] batch goal ${type} failed: ${errorMessage(err)}`);

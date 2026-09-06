@@ -224,3 +224,79 @@ describe("ensureFleet", () => {
 		expect(leader.calls.some((c) => c.action === "invite")).toBe(false);
 	});
 });
+
+describe("ensureFleet correctness guards", () => {
+	test("refusing someone else's fleet is a FAILURE, not an empty success", async () => {
+		// An empty subject list would derive success:true — a caller would read
+		// "fleet reconciled" for an account that is somebody else's follower.
+		const leader = leaderAccount({
+			in_fleet: true,
+			is_leader: false,
+			leader: "someone-else",
+			fleet_id: "f-9",
+		});
+		const alpha = memberAccount();
+
+		const result = await ensureFleet(makeLibGoalContext(leader), access({ alpha }), {
+			members: ["alpha"],
+		});
+
+		expect(result.success).toBe(false);
+		expect(result.alreadySatisfied).toBe(false);
+		expect(result.subjects[0]?.message).toBe("not_leader");
+	});
+
+	test("refusing to disband someone else's fleet is also a failure", async () => {
+		const leader = leaderAccount({ in_fleet: true, is_leader: false, leader: "someone-else" });
+		const result = await ensureFleet(makeLibGoalContext(leader), access({}), { members: [] });
+		expect(result.success).toBe(false);
+		expect(result.subjects[0]?.message).toBe("not_leader");
+	});
+
+	test("kicks run before admits, so a full fleet still admits the replacements", async () => {
+		// max_size 3 holds the leader plus 2. Two unwanted members occupy both
+		// slots; admitting first would report fleet_full for both replacements.
+		const leader = leaderAccount({
+			in_fleet: true,
+			is_leader: true,
+			fleet_id: "f-1",
+			max_size: 3,
+			members: [
+				{ player_id: "leader", username: "L", is_leader: true },
+				{ player_id: "old-1", username: "O1", is_leader: false },
+				{ player_id: "old-2", username: "O2", is_leader: false },
+			],
+		});
+		const newA = memberAccount();
+		const newB = memberAccount();
+
+		const result = await ensureFleet(makeLibGoalContext(leader), access({ newA, newB }), {
+			members: ["newA", "newB"],
+		});
+
+		expect(result.success).toBe(true);
+		expect(result.subjects.filter((s) => s.action === "removed")).toHaveLength(2);
+		expect(result.subjects.filter((s) => s.action === "created")).toHaveLength(2);
+	});
+
+	test("sizeAfter accounts for kicked members", async () => {
+		const leader = leaderAccount({
+			in_fleet: true,
+			is_leader: true,
+			fleet_id: "f-1",
+			members: [
+				{ player_id: "leader", username: "L", is_leader: true },
+				{ player_id: "keep", username: "K", is_leader: false },
+				{ player_id: "drop-1", username: "D1", is_leader: false },
+				{ player_id: "drop-2", username: "D2", is_leader: false },
+			],
+		});
+
+		const result = await ensureFleet(makeLibGoalContext(leader), access({}), {
+			members: ["keep"],
+		});
+
+		// Leader + the one kept member.
+		expect((result.context?.["fleet"] as { sizeAfter: number }).sizeAfter).toBe(2);
+	});
+});

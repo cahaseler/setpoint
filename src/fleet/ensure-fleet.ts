@@ -68,10 +68,10 @@ export async function ensureFleet(
 	}
 
 	if (status.in_fleet && status.is_leader === false) {
-		return reconciled([], 0, {
-			message: "not_leader: this account is in a fleet it does not lead",
-			context: { fleet: { id: status.fleet_id, leader: status.leader, sizeBefore } },
-		});
+		// A refusal is not a reconciliation. Returning an empty subject list here
+		// would derive success:true — a caller would read "fleet reconciled" for
+		// an account that is somebody else's follower.
+		return notLeader(status, sizeBefore, "cannot reconcile a fleet this account does not lead");
 	}
 
 	let ticksUsed = 0;
@@ -87,25 +87,16 @@ export async function ensureFleet(
 	const subjects: ReconcileSubject[] = [];
 	// The leader occupies a slot, so a fleet of max_size holds max_size-1 others.
 	const capacity = status.max_size === undefined ? undefined : status.max_size - 1;
-	let admitted = currentMembers.length;
+	let occupied = currentMembers.length;
 
-	for (const playerId of desired) {
-		if (currentMembers.includes(playerId)) {
-			subjects.push({ id: playerId, kind: "member", ok: true, action: "none" });
-			continue;
-		}
-		const outcome = await admitMember(leader, access, playerId, leaderPosition, {
-			full: capacity !== undefined && admitted >= capacity,
-		});
-		ticksUsed += outcome.ticksUsed;
-		if (outcome.subject.ok) admitted++;
-		subjects.push(outcome.subject);
-	}
-
+	// Kick first. Unwanted members hold slots the desired ones may need, so
+	// admitting first would report fleet_full for members that are about to have
+	// room made for them, and spend the ticks anyway.
 	for (const playerId of currentMembers.filter((m) => !desired.includes(m))) {
 		try {
 			await kickFromFleet(leader, playerId);
 			ticksUsed++;
+			occupied--;
 			subjects.push({ id: playerId, kind: "member", ok: true, action: "removed" });
 		} catch (err) {
 			subjects.push({
@@ -119,18 +110,58 @@ export async function ensureFleet(
 		}
 	}
 
+	for (const playerId of desired) {
+		if (currentMembers.includes(playerId)) {
+			subjects.push({ id: playerId, kind: "member", ok: true, action: "none" });
+			continue;
+		}
+		const outcome = await admitMember(leader, access, playerId, leaderPosition, {
+			full: capacity !== undefined && occupied >= capacity,
+		});
+		ticksUsed += outcome.ticksUsed;
+		if (outcome.subject.ok) occupied++;
+		subjects.push(outcome.subject);
+	}
+
 	return reconciled(subjects, ticksUsed, {
 		context: {
 			fleet: {
 				id: fleetId,
 				leader: status.leader ?? leader.state.player?.id,
 				sizeBefore,
-				sizeAfter: admitted + 1,
+				// Derived from what actually happened, kicks included — a caller
+				// diffing two runs against context relies on this being real.
+				sizeAfter: occupied + 1,
 				created,
 				disbanded: false,
 			},
 		},
 	});
+}
+
+/** A refusal to touch someone else's fleet, reported as a failure rather than an empty success. */
+function notLeader(
+	status: FleetStatusResponse,
+	sizeBefore: number,
+	detail: string,
+): ReconcileResult {
+	return reconciled(
+		[
+			{
+				id: status.fleet_id ?? "fleet",
+				kind: "fleet",
+				ok: false,
+				action: "none",
+				message: "not_leader",
+				before: { inFleet: true, leader: status.leader, isLeader: false },
+			},
+		],
+		0,
+		{
+			message: `not_leader: ${detail}`,
+			context: { fleet: { id: status.fleet_id, leader: status.leader, sizeBefore } },
+		},
+	);
 }
 
 async function disbandIfNeeded(
@@ -143,10 +174,7 @@ async function disbandIfNeeded(
 		return reconciled([], 0, { message: "Not in a fleet; nothing to disband" });
 	}
 	if (status.is_leader === false) {
-		return reconciled([], 0, {
-			message: "not_leader: cannot disband a fleet this account does not lead",
-			context: { fleet: { id: status.fleet_id, leader: status.leader, sizeBefore } },
-		});
+		return notLeader(status, sizeBefore, "cannot disband a fleet this account does not lead");
 	}
 	// A leader cannot `leave` — disbanding is the only way out.
 	await disbandFleet(leader);
