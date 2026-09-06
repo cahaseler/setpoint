@@ -54,7 +54,9 @@ export class LibFuelRouteGuard implements LibGoal {
 
 		let ticksUsed = 0;
 		if (state.location?.docked_at) {
-			const refuelResult = await new LibEnsureFueled().execute(ctx);
+			const refuelResult = await new LibEnsureFueled(undefined, { requireFull: false }).execute(
+				ctx,
+			);
 			ticksUsed += refuelResult.ticksUsed;
 			const refueledAmount = ctx.state.ship?.fuel ?? currentFuel;
 			if (refueledAmount >= fuelNeeded) {

@@ -12,6 +12,21 @@ const SUPPLY_RETRY_DELAY_MS = 60_000;
 /** Maximum number of retries when the station fuel supply is limited (60 = ~1 hour). */
 const MAX_SUPPLY_RETRIES = 60;
 
+export interface EnsureFueledOptions {
+	supplyRetryDelayMs?: number;
+	/**
+	 * Whether falling short of the target is a failure. Defaults to `true`: a
+	 * goal named "ensure fueled" that reports success having added no fuel is
+	 * lying to its caller, and a fleet-wide refuel where every account was short
+	 * of credits used to come back clean.
+	 *
+	 * Set `false` where a top-up is opportunistic and the caller has its own
+	 * safety net — `navigate-to-system` refuses to depart on insufficient fuel
+	 * regardless, so a loop that merely tops up between runs can keep going.
+	 */
+	requireFull?: boolean;
+}
+
 /**
  * Ensure the ship has at least the target amount of fuel.
  *
@@ -26,10 +41,12 @@ export class LibEnsureFueled implements LibGoal {
 	readonly name = "ensure-fueled";
 	private readonly targetFuel: number | undefined;
 	private readonly supplyRetryDelayMs: number;
+	private readonly requireFull: boolean;
 
-	constructor(targetFuel?: number, supplyRetryDelayMs = SUPPLY_RETRY_DELAY_MS) {
+	constructor(targetFuel?: number, options: EnsureFueledOptions = {}) {
 		this.targetFuel = targetFuel;
-		this.supplyRetryDelayMs = supplyRetryDelayMs;
+		this.supplyRetryDelayMs = options.supplyRetryDelayMs ?? SUPPLY_RETRY_DELAY_MS;
+		this.requireFull = options.requireFull ?? true;
 	}
 
 	async execute(ctx: LibGoalContext): Promise<GoalResult> {
@@ -84,10 +101,10 @@ export class LibEnsureFueled implements LibGoal {
 					log.warn(
 						`Refuel skipped (${err.code}: ${err.message}); continuing with ${actualFuel}/${maxFuel} fuel`,
 					);
-					return succeeded(
-						`Refuel skipped (${err.code}: ${err.message}); current fuel ${actualFuel}/${maxFuel}`,
-						ticksUsed,
-					);
+					const skipped = `Refuel skipped (${err.code}: ${err.message}); current fuel ${actualFuel}/${maxFuel} (target ${target})`;
+					// Most often insufficient credits. Reporting success here is how a
+					// whole-fleet refuel could come back clean having filled nothing.
+					return this.requireFull ? failed(skipped, ticksUsed) : succeeded(skipped, ticksUsed);
 				}
 				throw err;
 			}
@@ -128,9 +145,7 @@ export class LibEnsureFueled implements LibGoal {
 		}
 
 		log.warn(`Partial refuel: station supply limited, got ${actualFuel}/${target}`);
-		return succeeded(
-			`Partial refuel (station supply limited): ${actualFuel}/${maxFuel}`,
-			ticksUsed,
-		);
+		const partial = `Partial refuel (station supply limited): ${actualFuel}/${maxFuel} (target ${target})`;
+		return this.requireFull ? failed(partial, ticksUsed) : succeeded(partial, ticksUsed);
 	}
 }

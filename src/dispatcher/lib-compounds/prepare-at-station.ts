@@ -22,6 +22,11 @@ export interface PrepareAtStationOptions {
 	baseId: string;
 	/** Whether to refuel after docking. Defaults to true. */
 	refuel?: boolean;
+	/**
+	 * Treat a tank that could not be filled as a failure rather than flying on
+	 * with a partial fill. Defaults to `false`.
+	 */
+	requireFullFuel?: boolean;
 	/** Whether to repair after docking. Defaults to true. */
 	repair?: boolean;
 	/** When set to "faction", withdraws credits from the faction treasury if credits are low before refueling. */
@@ -93,7 +98,15 @@ export class LibPrepareAtStation implements LibGoal {
 						: undefined;
 				steps.push(new LibEnsureCreditsFromFaction(creditsOpts));
 			}
-			steps.push(new LibEnsureFueled());
+			// Tolerant by default: the mining/trading/salvage loops that reach here
+			// treat a dry station as something to fly on from, and
+			// `navigate-to-system` refuses to depart on insufficient fuel anyway.
+			// A caller that needs a genuinely full tank asks for it.
+			steps.push(
+				new LibEnsureFueled(undefined, {
+					requireFull: this.options.requireFullFuel ?? false,
+				}),
+			);
 		}
 
 		if (this.options.repair !== false) {

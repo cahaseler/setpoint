@@ -80,7 +80,12 @@ const registry: ReadonlyMap<string, GoalFactory> = new Map<string, GoalFactory>(
 	["ensure-undocked", () => new LibEnsureUndocked()],
 	[
 		"ensure-fueled",
-		(opts) => new LibEnsureFueled(goalSchemas["ensure-fueled"].parse(opts).targetFuel),
+		(opts) => {
+			const validated = goalSchemas["ensure-fueled"].parse(opts);
+			return new LibEnsureFueled(validated.targetFuel, {
+				...(validated.requireFull !== undefined ? { requireFull: validated.requireFull } : {}),
+			});
+		},
 	],
 	["ensure-repaired", () => new LibEnsureRepaired()],
 	[
@@ -239,6 +244,9 @@ const registry: ReadonlyMap<string, GoalFactory> = new Map<string, GoalFactory>(
 				poiId: validated.poiId,
 				baseId: validated.baseId,
 				...(validated.refuel !== undefined ? { refuel: validated.refuel } : {}),
+				...(validated.requireFullFuel !== undefined
+					? { requireFullFuel: validated.requireFullFuel }
+					: {}),
 				...(validated.repair !== undefined ? { repair: validated.repair } : {}),
 				...(validated.cashSource !== undefined ? { cashSource: validated.cashSource } : {}),
 				...(validated.minCredits !== undefined ? { minCredits: validated.minCredits } : {}),

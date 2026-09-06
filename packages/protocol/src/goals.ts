@@ -20,7 +20,11 @@ export const goalSchemas = {
 	"go-to-poi": z.object({ targetPoiId: z.string() }),
 	"dock-at": z.object({ targetBaseId: z.string() }),
 	"ensure-undocked": z.object({}),
-	"ensure-fueled": z.object({ targetFuel: z.number().optional() }),
+	"ensure-fueled": z.object({
+		targetFuel: z.number().optional(),
+		/** Treat a tank that could not be filled as a failure. Defaults to true. */
+		requireFull: z.boolean().optional(),
+	}),
 	"ensure-repaired": z.object({}),
 	"sell-or-deposit-cargo": z.object({
 		depositTarget: z.enum(["personal", "faction"]).optional(),
@@ -107,6 +111,8 @@ export const goalSchemas = {
 		poiId: z.string(),
 		baseId: z.string(),
 		refuel: z.boolean().optional(),
+		/** Treat a tank that could not be filled as a failure. Defaults to false here. */
+		requireFullFuel: z.boolean().optional(),
 		repair: z.boolean().optional(),
 		cashSource: z.literal("faction").optional(),
 		minCredits: z.number().optional(),
