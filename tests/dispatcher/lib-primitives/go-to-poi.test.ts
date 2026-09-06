@@ -221,3 +221,52 @@ describe("LibGoToPoi", () => {
 		expect(refreshCalls).toBeGreaterThanOrEqual(2);
 	});
 });
+
+describe("LibGoToPoi stale-cache guard", () => {
+	test("does not skip travel when the cache wrongly claims the ship is already there", async () => {
+		// location.poi_id is a documented gap in the lib's push coverage. A loop
+		// that keeps returning to one station leaves it in the cache after
+		// departing, so go-to-poi would see its own target and no-op — leaving the
+		// ship in the right system at the wrong POI.
+		const ref: { current?: FakeLibGoalAccount } = {};
+		const account = new FakeLibGoalAccount(
+			{ location: { system_id: "sol", poi_id: "sol_station", in_transit: false } },
+			{
+				travel: () => {
+					// Arrives back at the station, as the game would.
+					const target = ref.current;
+					if (target !== undefined) {
+						target.refreshReturns = {
+							location: { system_id: "sol", poi_id: "sol_station", in_transit: false },
+						};
+					}
+					return fakeMutationResult("travel");
+				},
+			},
+		);
+		ref.current = account;
+		// The live read tells the truth: the ship actually left for the belt.
+		account.refreshReturns = {
+			location: { system_id: "sol", poi_id: "belt-1", in_transit: false },
+		};
+
+		const result = await new LibGoToPoi("sol_station").execute(makeLibGoalContext(account));
+
+		expect(account.calls.some((c) => c.action === "travel")).toBe(true);
+		expect(result.alreadySatisfied).toBe(false);
+	});
+
+	test("still short-circuits when the live read agrees the ship is there", async () => {
+		const account = new FakeLibGoalAccount({
+			location: { system_id: "sol", poi_id: "sol_station", in_transit: false },
+		});
+		account.refreshReturns = {
+			location: { system_id: "sol", poi_id: "sol_station", in_transit: false },
+		};
+
+		const result = await new LibGoToPoi("sol_station").execute(makeLibGoalContext(account));
+
+		expect(result.alreadySatisfied).toBe(true);
+		expect(account.calls.some((c) => c.action === "travel")).toBe(false);
+	});
+});

@@ -28,7 +28,22 @@ export class LibGoToPoi implements LibGoal {
 		const currentPoiId = ctx.state.location?.poi_id;
 
 		if (currentPoiId === this.targetPoiId && !ctx.state.location?.in_transit) {
-			return alreadySatisfied(`Already at POI ${this.targetPoiId}`);
+			// Confirm against a live read before skipping the travel entirely.
+			// `location.poi_id` is a documented gap in the lib's push coverage —
+			// the drift logger records the cache disagreeing with a live refresh on
+			// exactly this field — and the stale value is the POI the ship most
+			// recently sat at. A loop that keeps returning to one station leaves
+			// that station in the cache after departing, so the next run's
+			// go-to-poi sees its own target and no-ops, the ship never travels, and
+			// the sequence ends with it in the right system at the wrong POI.
+			// A forced refresh is a query: no tick, no rate limit.
+			const confirmed = await ctx.refreshState({ force: true });
+			if (confirmed.location?.poi_id === this.targetPoiId && !confirmed.location?.in_transit) {
+				return alreadySatisfied(`Already at POI ${this.targetPoiId}`);
+			}
+			log.info(
+				`Cache reported POI ${this.targetPoiId} but a live read says ${confirmed.location?.poi_id ?? "unknown"} — traveling`,
+			);
 		}
 
 		// If location is unknown or mid-transit, force a live read — the cache may
