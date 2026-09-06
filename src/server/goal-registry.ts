@@ -3,6 +3,7 @@ import {
 	LibBuyAtStation,
 	LibEnhancedMiningRun,
 	LibEnsureLoadout,
+	LibEnsureMagazines,
 	LibEnsureMarketbook,
 	LibFuelRescue,
 	LibLoadAtStation,
@@ -40,6 +41,7 @@ import {
 	LibLoadFromStorage,
 	LibNavigateToSystem,
 	LibNavigateViaRoute,
+	LibReloadWeapon,
 	LibScan,
 	LibSellOrDepositCargo,
 	LibTransferStorage,
@@ -388,10 +390,30 @@ const registry: ReadonlyMap<string, GoalFactory> = new Map<string, GoalFactory>(
 				poiId: validated.poiId,
 				baseId: validated.baseId,
 				modules: validated.modules,
-				...(validated.ammo !== undefined ? { ammo: validated.ammo } : {}),
 				...(validated.uninstalledStorage !== undefined
 					? { uninstalledStorage: validated.uninstalledStorage }
 					: {}),
+				...(validated.phase !== undefined ? { phase: validated.phase } : {}),
+			});
+		},
+	],
+	[
+		"ensure-magazines",
+		(opts) => {
+			const validated = goalSchemas["ensure-magazines"].parse(opts);
+			return new LibEnsureMagazines({
+				...(validated.policy !== undefined ? { policy: validated.policy } : {}),
+				...(validated.ammo !== undefined ? { ammo: validated.ammo } : {}),
+			});
+		},
+	],
+	[
+		"reload-weapon",
+		(opts) => {
+			const validated = goalSchemas["reload-weapon"].parse(opts);
+			return new LibReloadWeapon({
+				moduleId: validated.moduleId,
+				...(validated.ammoItemId !== undefined ? { ammoItemId: validated.ammoItemId } : {}),
 			});
 		},
 	],

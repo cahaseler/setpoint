@@ -57,6 +57,14 @@ export function enableFileLogging(path?: string): void {
 	logFileEnabled = true;
 }
 
+/**
+ * Whether log lines are being appended to a file. Importing a module must never
+ * turn this on — only the daemon entry point, when actually run, should.
+ */
+export function isFileLoggingEnabled(): boolean {
+	return logFileEnabled;
+}
+
 function rotateIfNeeded(): void {
 	if (!logFilePath || !logFileEnabled) return;
 	try {

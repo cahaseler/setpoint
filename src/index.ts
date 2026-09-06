@@ -43,11 +43,7 @@ if (envLogLevel && VALID_LOG_LEVELS.has(envLogLevel)) {
 	setLogLevel(envLogLevel as LogLevel);
 }
 
-// Enable file logging — writes to logs/daemon.log alongside stdout
-enableFileLogging();
-
 const log = createLogger("main");
-installCrashSafetyHandlers(log);
 
 const CONFIG_DIR = join(import.meta.dir, "..", "config");
 const DB_PATH = join(import.meta.dir, "..", "data", "dispatcher.db");
@@ -429,7 +425,16 @@ export function resumeLoopConfig(
 	}
 }
 
+// Side effects that belong to RUNNING the daemon, not to importing this module.
+// `connectAccounts`/`resumeLoopConfig` are imported from here by tests; before
+// this guard, that import turned on file logging for the whole test process and
+// every subsequent test line was appended to the live logs/daemon.log that the
+// operational sessions grep — fabricated goal activity in the real log.
 if (import.meta.main) {
+	// Writes to logs/daemon.log alongside stdout.
+	enableFileLogging();
+	installCrashSafetyHandlers(log);
+
 	main().catch((err) => {
 		log.error(`Fatal error: ${errorMessage(err)}`);
 		process.exit(1);

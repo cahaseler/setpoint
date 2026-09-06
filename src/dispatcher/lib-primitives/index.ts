@@ -35,6 +35,8 @@ export { LibLoadFromFactionStorage } from "./load-from-faction-storage.js";
 export { LibLoadFromStorage } from "./load-from-storage.js";
 export { LibNavigateToSystem } from "./navigate-to-system.js";
 export { LibNavigateViaRoute } from "./navigate-via-route.js";
+export { LibReloadWeapon, reloadWeapon } from "./reload-weapon.js";
+export type { ReloadOutcome } from "./reload-weapon.js";
 export { LibScan } from "./scan.js";
 export { LibSellOrDepositCargo } from "./sell-or-deposit-cargo.js";
 export type { SellOrDepositCargoOptions } from "./sell-or-deposit-cargo.js";

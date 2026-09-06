@@ -207,8 +207,23 @@ export const goalSchemas = {
 		poiId: z.string(),
 		baseId: z.string(),
 		modules: z.array(z.string()),
-		ammo: z.record(z.string(), z.string()).optional(),
 		uninstalledStorage: z.enum(["personal", "faction", "cargo"]).optional(),
+		/**
+		 * `"strip"` removes unwanted modules and stops; `"fit"` installs the
+		 * desired ones. Splitting them lets a caller strip a whole squad before
+		 * fitting any of it, which is the only way to move a module from one
+		 * hull to another — a per-ship strip-then-fit deadlocks when the second
+		 * hull needs a module still bolted to the first.
+		 */
+		phase: z.enum(["strip", "fit", "both"]).optional(),
+	}),
+	"ensure-magazines": z.object({
+		policy: z.enum(["always", "half"]).optional(),
+		ammo: z.record(z.string(), z.string()).optional(),
+	}),
+	"reload-weapon": z.object({
+		moduleId: z.string(),
+		ammoItemId: z.string().optional(),
 	}),
 	"ensure-marketbook": z.object({
 		targetOrders: z

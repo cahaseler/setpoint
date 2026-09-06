@@ -6,6 +6,8 @@ export { LibEnhancedMiningRun } from "./enhanced-mining-run.js";
 export type { EnhancedMiningRunOptions } from "./enhanced-mining-run.js";
 export { LibEnsureLoadout } from "./ensure-loadout.js";
 export type { EnsureLoadoutOptions } from "./ensure-loadout.js";
+export { LibEnsureMagazines } from "./ensure-magazines.js";
+export type { EnsureMagazinesOptions } from "./ensure-magazines.js";
 export { LibEnsureMarketbook } from "./ensure-marketbook.js";
 export type { EnsureMarketbookOptions, TargetOrder } from "./ensure-marketbook.js";
 export { LibFuelRescue } from "./fuel-rescue.js";
