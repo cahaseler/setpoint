@@ -223,6 +223,19 @@ export const goalSchemas = {
 		 */
 		phase: z.enum(["strip", "fit", "both"]).optional(),
 	}),
+	"ensure-hull": z.object({
+		systemId: z.string(),
+		poiId: z.string(),
+		baseId: z.string(),
+		shipId: z.string().optional(),
+		shipClass: z.string().optional(),
+		source: z.enum(["personal", "garage"]).optional(),
+	}),
+	"open-battle": z.object({
+		mode: z.enum(["attack", "engage"]),
+		targetId: z.string().optional(),
+		sideId: z.number().optional(),
+	}),
 	"ensure-magazines": z.object({
 		policy: z.enum(["always", "half"]).optional(),
 		ammo: z.record(z.string(), z.string()).optional(),

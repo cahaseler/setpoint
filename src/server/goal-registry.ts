@@ -2,6 +2,7 @@ import { deprecatedGoalMessage, goalSchemas } from "@setpoint/protocol";
 import {
 	LibBuyAtStation,
 	LibEnhancedMiningRun,
+	LibEnsureHull,
 	LibEnsureLoadout,
 	LibEnsureMagazines,
 	LibEnsureMarketbook,
@@ -41,6 +42,7 @@ import {
 	LibLoadFromStorage,
 	LibNavigateToSystem,
 	LibNavigateViaRoute,
+	LibOpenBattle,
 	LibReloadWeapon,
 	LibScan,
 	LibSellOrDepositCargo,
@@ -402,6 +404,31 @@ const registry: ReadonlyMap<string, GoalFactory> = new Map<string, GoalFactory>(
 					? { uninstalledStorage: validated.uninstalledStorage }
 					: {}),
 				...(validated.phase !== undefined ? { phase: validated.phase } : {}),
+			});
+		},
+	],
+	[
+		"ensure-hull",
+		(opts) => {
+			const validated = goalSchemas["ensure-hull"].parse(opts);
+			return new LibEnsureHull({
+				systemId: validated.systemId,
+				poiId: validated.poiId,
+				baseId: validated.baseId,
+				...(validated.shipId !== undefined ? { shipId: validated.shipId } : {}),
+				...(validated.shipClass !== undefined ? { shipClass: validated.shipClass } : {}),
+				...(validated.source !== undefined ? { source: validated.source } : {}),
+			});
+		},
+	],
+	[
+		"open-battle",
+		(opts) => {
+			const validated = goalSchemas["open-battle"].parse(opts);
+			return new LibOpenBattle({
+				mode: validated.mode,
+				...(validated.targetId !== undefined ? { targetId: validated.targetId } : {}),
+				...(validated.sideId !== undefined ? { sideId: validated.sideId } : {}),
 			});
 		},
 	],
