@@ -14,6 +14,7 @@ import {
 	type HandlerContext,
 	handleAbortAccount,
 	handleAddAccount,
+	handleBatchGoal,
 	handleCombatEvents,
 	handleCraftingEvents,
 	handleDashboardData,
@@ -21,6 +22,7 @@ import {
 	handleEnsureFleet,
 	handleExecuteGoal,
 	handleExecuteGoalAsync,
+	handleFleetMove,
 	handleGetAccount,
 	handleGetCombatMode,
 	handleGetJob,
@@ -270,6 +272,8 @@ export function buildRoutes(ctx: HandlerContext): RouteTable {
 		},
 
 		"/accounts/:playerId/fleet": { POST: r(handleEnsureFleet) },
+		"/accounts/:playerId/fleet/move": { POST: r(handleFleetMove) },
+		"/goals/batch": { POST: r(handleBatchGoal) },
 
 		"/accounts/:playerId/combat-mode": {
 			GET: r(handleGetCombatMode),

@@ -103,3 +103,71 @@ describe("AccountApi.fleet", () => {
 		expect(fetchCalls[0]?.url).toContain("/accounts/ILC%20Voyager/fleet");
 	});
 });
+
+describe("fleet move and batch goals", () => {
+	const originalFetch = globalThis.fetch;
+	let calls: Array<{ url: string; method: string | undefined; body: unknown }>;
+
+	function mock(body: unknown): void {
+		calls = [];
+		globalThis.fetch = ((url: string | URL | Request, init?: RequestInit) => {
+			calls.push({
+				url: url.toString(),
+				method: init?.method,
+				body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
+			});
+			return Promise.resolve(
+				new Response(JSON.stringify(body), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				}),
+			);
+		}) as typeof fetch;
+	}
+
+	afterEach(() => {
+		globalThis.fetch = originalFetch;
+	});
+
+	const fleetResult = {
+		success: true,
+		message: "All 2 account(s) succeeded",
+		alreadySatisfied: false,
+		ticksUsed: 4,
+		accounts: {
+			leader: { success: true, message: "ok", alreadySatisfied: false, ticksUsed: 3 },
+			alpha: { success: true, message: "Arrived", alreadySatisfied: false, ticksUsed: 1 },
+		},
+		summary: { total: 2, succeeded: 2, failed: 0 },
+	};
+
+	test("move() POSTs the destination to /accounts/:id/fleet/move", async () => {
+		mock(fleetResult);
+		const sp = new SetpointClient({ baseUrl: "http://localhost:7580" });
+
+		const got = await sp
+			.account("leader")
+			.fleet.move({ systemId: "keelbreak", poiId: "arena", baseId: "arena_base" });
+
+		expect(calls[0]?.url).toBe("http://localhost:7580/accounts/leader/fleet/move");
+		expect(calls[0]?.body).toMatchObject({ systemId: "keelbreak", poiId: "arena" });
+		expect(got.summary.succeeded).toBe(2);
+	});
+
+	test("batchGoal() POSTs one request for many accounts and keys results by player id", async () => {
+		mock(fleetResult);
+		const sp = new SetpointClient({ baseUrl: "http://localhost:7580" });
+
+		const got = await sp.batchGoal(["leader", "alpha"], "ensure-magazines", { policy: "half" });
+
+		expect(calls).toHaveLength(1);
+		expect(calls[0]?.url).toBe("http://localhost:7580/goals/batch");
+		expect(calls[0]?.body).toEqual({
+			playerIds: ["leader", "alpha"],
+			type: "ensure-magazines",
+			options: { policy: "half" },
+		});
+		// Per-account ticksUsed shows which account paced the batch.
+		expect(got.accounts["leader"]?.ticksUsed).toBe(3);
+	});
+});

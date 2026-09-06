@@ -308,6 +308,42 @@ describe("Server integration", () => {
 		expect(res.status).toBe(404);
 	});
 
+	test("POST /goals/batch is wired and keys results by player id", async () => {
+		const res = await fetch(`${base}/goals/batch`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ playerIds: ["p1"], type: "ensure-undocked", options: {} }),
+		});
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as {
+			accounts: Record<string, unknown>;
+			summary: { total: number };
+		};
+		expect(body.summary.total).toBe(1);
+		expect(Object.keys(body.accounts)).toEqual(["p1"]);
+	});
+
+	test("POST /goals/batch reports an unknown account rather than failing the batch", async () => {
+		const res = await fetch(`${base}/goals/batch`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ playerIds: ["p1", "ghost"], type: "ensure-undocked", options: {} }),
+		});
+		const body = (await res.json()) as { accounts: Record<string, { message: string }> };
+		expect(body.accounts["ghost"]?.message).toBe("not_connected");
+		expect(body.accounts["p1"]).toBeDefined();
+	});
+
+	test("POST /goals/batch rejects a missing playerIds", async () => {
+		const res = await fetch(`${base}/goals/batch`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ type: "ensure-undocked" }),
+		});
+		expect(res.status).toBe(400);
+		expect(((await res.json()) as { error: string }).error).toContain("playerIds");
+	});
+
 	test("unknown routes return 404", async () => {
 		const res = await fetch(`${base}/nonexistent`);
 		expect(res.status).toBe(404);

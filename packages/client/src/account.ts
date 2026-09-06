@@ -468,6 +468,31 @@ export class AccountFleetApi {
 	 * fails `not_at_poi` and reports where it actually is, so a caller can tell
 	 * an inbound ship from a stray one.
 	 */
+	/**
+	 * Moves the fleet by moving its leader, then brings every member to
+	 * readiness — fuel and repair do not cascade from the leader, so each pays
+	 * its own way on arrival.
+	 *
+	 * Waits for a leader that is mid-jump rather than refusing: mid-transit the
+	 * leader reports no POI, so members measured against it would all look like
+	 * strays.
+	 */
+	async move(options: {
+		systemId: string;
+		poiId: string;
+		baseId?: string;
+		refuel?: boolean;
+		repair?: boolean;
+		maxWaitMs?: number;
+	}): Promise<FleetOperationResult> {
+		const result = await this.client.request(
+			"POST",
+			`/accounts/${encodeURIComponent(this.id)}/fleet/move`,
+			{ body: options },
+		);
+		return result as FleetOperationResult;
+	}
+
 	async ensure(members: string[]): Promise<ReconcileResult> {
 		const result = await this.client.request(
 			"POST",

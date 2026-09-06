@@ -11,8 +11,11 @@ import type { LibAccountManager } from "../accounts/lib-manager.js";
 import { type LibManagedAccount, playerId as playerIdOf } from "../accounts/lib-types.js";
 import type { CombatModeStore } from "../combat/combat-mode-store.js";
 import type { ProgressRef } from "../dispatcher/goals.js";
+import type { GoalResult } from "../dispatcher/goals.js";
+import { fleetOperation } from "../dispatcher/goals.js";
 import { makeLibGoalContext } from "../dispatcher/lib-goal-context.js";
 import { ensureFleet } from "../fleet/ensure-fleet.js";
+import { fleetMove } from "../fleet/fleet-move.js";
 import type { FleetAccessDeps } from "../fleet/server-access.js";
 import { makeFleetAccess } from "../fleet/server-access.js";
 
@@ -1880,4 +1883,165 @@ export async function handleEnsureFleet(
 	} finally {
 		ctx.claimedAccounts.delete(leaderId);
 	}
+}
+
+/**
+ * Move the fleet this account leads, then bring every member to readiness.
+ *
+ * Claims only the leader, like ensure-fleet: members are carried by the game's
+ * own fleet movement, not commanded individually.
+ */
+export async function handleFleetMove(
+	req: Request,
+	params: RouteParams,
+	ctx: HandlerContext,
+): Promise<Response> {
+	const account = resolveAccount(ctx, params["playerId"] ?? "");
+	if (!account) {
+		return errorResponse(`Account not found: ${params["playerId"]}`, 404);
+	}
+	const leaderId = playerIdOf(account);
+
+	if (ctx.loopManager.isRunning(leaderId)) {
+		return errorResponse("A loop is running on the leader account. Stop it first.", 409);
+	}
+	if (ctx.jobManager.isRunning(leaderId) || ctx.executingGoals.has(leaderId)) {
+		return errorResponse("Work is already running on the leader account.", 409);
+	}
+	if (ctx.claimedAccounts.has(leaderId)) {
+		return errorResponse("Another request for the leader account is in flight.", 409);
+	}
+	ctx.claimedAccounts.add(leaderId);
+
+	try {
+		let body: unknown;
+		try {
+			body = await req.json();
+		} catch {
+			return errorResponse("Invalid JSON body", 400);
+		}
+
+		const { systemId, poiId, baseId, refuel, repair, maxWaitMs } = (body ?? {}) as Record<
+			string,
+			unknown
+		>;
+		if (typeof systemId !== "string" || typeof poiId !== "string") {
+			return errorResponse("systemId and poiId are required (strings)", 400);
+		}
+
+		const result = await fleetMove(
+			makeLibGoalContext(resolveLiveAccount(ctx, leaderId)),
+			makeFleetAccess(ctx as unknown as FleetAccessDeps),
+			{
+				systemId,
+				poiId,
+				...(typeof baseId === "string" ? { baseId } : {}),
+				...(typeof refuel === "boolean" ? { refuel } : {}),
+				...(typeof repair === "boolean" ? { repair } : {}),
+				...(typeof maxWaitMs === "number" ? { maxWaitMs } : {}),
+			},
+		);
+		return jsonResponse(result);
+	} catch (err) {
+		log.error(`[${leaderId}] fleet-move failed: ${errorMessage(err)}`);
+		return errorResponse(`fleet-move failed: ${errorMessage(err)}`, 500);
+	} finally {
+		ctx.claimedAccounts.delete(leaderId);
+	}
+}
+
+// ── Batch goals ─────────────────────────────────────────────────────
+
+/**
+ * Run one goal across several accounts and answer once, keyed by player id.
+ *
+ * Accounts are independent and `@spacemolt/lib` serialises mutations per
+ * account, so these run concurrently rather than one round trip at a time —
+ * which is the entire point for a caller driving dozens of ships.
+ *
+ * An account already busy is reported and skipped, never preempted, matching
+ * the rest of the fleet surface. Each account's result carries its own
+ * ticksUsed, so a caller can see which one paced the batch.
+ */
+export async function handleBatchGoal(
+	req: Request,
+	_params: RouteParams,
+	ctx: HandlerContext,
+): Promise<Response> {
+	let body: unknown;
+	try {
+		body = await req.json();
+	} catch {
+		return errorResponse("Invalid JSON body", 400);
+	}
+
+	const { playerIds, type, options } = (body ?? {}) as {
+		playerIds?: unknown;
+		type?: unknown;
+		options?: unknown;
+	};
+
+	if (
+		!Array.isArray(playerIds) ||
+		playerIds.length === 0 ||
+		playerIds.some((p) => typeof p !== "string")
+	) {
+		return errorResponse("playerIds is required (non-empty array of player ids or usernames)", 400);
+	}
+	if (typeof type !== "string") {
+		return errorResponse("type is required (goal type)", 400);
+	}
+
+	const accounts: Record<string, GoalResult> = {};
+	const claimed: string[] = [];
+
+	const runOne = async (idOrName: string): Promise<[string, GoalResult]> => {
+		const account = resolveAccount(ctx, idOrName);
+		if (!account) {
+			return [
+				idOrName,
+				{ success: false, message: "not_connected", alreadySatisfied: false, ticksUsed: 0 },
+			];
+		}
+		const playerId = playerIdOf(account);
+
+		const busy = makeFleetAccess(ctx as unknown as FleetAccessDeps).busyReason(playerId);
+		if (busy !== undefined) {
+			return [playerId, { success: false, message: busy, alreadySatisfied: false, ticksUsed: 0 }];
+		}
+		if (ctx.claimedAccounts.has(playerId)) {
+			return [
+				playerId,
+				{ success: false, message: "busy:claimed", alreadySatisfied: false, ticksUsed: 0 },
+			];
+		}
+		ctx.claimedAccounts.add(playerId);
+		claimed.push(playerId);
+
+		try {
+			const goal = createGoal(type, (options ?? {}) as Record<string, unknown>);
+			const result = await goal.execute(makeLibGoalContext(resolveLiveAccount(ctx, playerId)));
+			return [playerId, result];
+		} catch (err) {
+			log.error(`[${playerId}] batch goal ${type} failed: ${errorMessage(err)}`);
+			return [
+				playerId,
+				{ success: false, message: errorMessage(err), alreadySatisfied: false, ticksUsed: 0 },
+			];
+		}
+	};
+
+	try {
+		const settled = await Promise.all((playerIds as string[]).map(runOne));
+		for (const [id, result] of settled) {
+			accounts[id] = result;
+		}
+	} finally {
+		for (const id of claimed) {
+			ctx.claimedAccounts.delete(id);
+		}
+	}
+
+	const ticks = Object.values(accounts).reduce((sum, r) => sum + r.ticksUsed, 0);
+	return jsonResponse(fleetOperation(accounts, ticks));
 }
