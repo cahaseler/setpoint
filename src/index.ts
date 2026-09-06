@@ -16,6 +16,7 @@ import {
 import { parseLibConfig } from "./accounts/lib-config.js";
 import { LibAccountManager } from "./accounts/lib-manager.js";
 import { type LibManagedAccount, playerId as playerIdOf } from "./accounts/lib-types.js";
+import { CombatHeartbeatStore } from "./combat/combat-heartbeat.js";
 import { CombatModeStore } from "./combat/combat-mode-store.js";
 import { CombatReactor } from "./combat/combat-reactor.js";
 import { makeLibGoalContext } from "./dispatcher/lib-goal-context.js";
@@ -110,6 +111,9 @@ async function main(): Promise<void> {
 	// Per-account combat-response override (flee vs. externally-driven combat
 	// logic) — loaded before the reactor and server both need it.
 	const combatModeStore = await CombatModeStore.load(CONFIG_DIR);
+	// In memory only: a heartbeat asserts a driver process is alive right now,
+	// so a value surviving a restart would be a lie about one that isn't.
+	const combatHeartbeats = new CombatHeartbeatStore();
 
 	// Combat detection (src/combat/) needs executingGoals/claimedAccounts —
 	// otherwise built privately inside startServer() — and loopManager/
@@ -174,6 +178,7 @@ async function main(): Promise<void> {
 	// owned account under the auth rate limit, which for a large fleet can take
 	// many minutes — we must not hold the server down for that whole window.
 	const server = startServer({
+		combatHeartbeats,
 		// Late-bound through reactorRef: the reactor cannot exist until the
 		// server has produced the loop and job managers it depends on.
 		isInCombat: (playerId: string) => reactorRef.current?.isInCombat(playerId) ?? false,
@@ -200,6 +205,7 @@ async function main(): Promise<void> {
 		configDir: CONFIG_DIR,
 		combatEventsStore,
 		combatModeStore,
+		heartbeats: combatHeartbeats,
 	});
 
 	// Connect all owned accounts in the background (the lib staggers connections

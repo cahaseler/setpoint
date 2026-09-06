@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import type { CombatEnvelope, PirateRadioEnvelope } from "@setpoint/protocol";
 import type { SpacemoltClient } from "@spacemolt/lib";
 import type { LibAccountManager } from "../accounts/lib-manager.js";
+import type { CombatHeartbeatStore } from "../combat/combat-heartbeat.js";
 import type { CombatModeStore } from "../combat/combat-mode-store.js";
 
 import type { CraftingEventsStore } from "../state/crafting-events-store.js";
@@ -16,6 +17,7 @@ import {
 	handleAddAccount,
 	handleBatchGoal,
 	handleCombatEvents,
+	handleCombatHeartbeat,
 	handleCraftingEvents,
 	handleDashboardData,
 	handleDeleteAccount,
@@ -100,6 +102,7 @@ export interface ServerOptions {
 	combatEventsStore: EventBuffer<CombatEnvelope>;
 	pirateRadioStore: EventBuffer<PirateRadioEnvelope>;
 	combatModeStore: CombatModeStore;
+	combatHeartbeats?: CombatHeartbeatStore | undefined;
 	/** Whether an account is mid-battle. Late-bound: the combat reactor is built after the server. */
 	isInCombat?: ((playerId: string) => boolean) | undefined;
 	/**
@@ -273,6 +276,7 @@ export function buildRoutes(ctx: HandlerContext): RouteTable {
 
 		"/accounts/:playerId/fleet": { POST: r(handleEnsureFleet) },
 		"/accounts/:playerId/fleet/move": { POST: r(handleFleetMove) },
+		"/accounts/:playerId/combat-heartbeat": { POST: r(handleCombatHeartbeat) },
 		"/goals/batch": { POST: r(handleBatchGoal) },
 
 		"/accounts/:playerId/combat-mode": {
@@ -331,6 +335,7 @@ export function startServer(options: ServerOptions): DispatcherServer {
 		combatEventsStore: options.combatEventsStore,
 		pirateRadioStore: options.pirateRadioStore,
 		combatModeStore: options.combatModeStore,
+		combatHeartbeats: options.combatHeartbeats,
 		isInCombat: options.isInCombat,
 	};
 

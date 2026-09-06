@@ -344,6 +344,12 @@ describe("Server integration", () => {
 		expect(((await res.json()) as { error: string }).error).toContain("playerIds");
 	});
 
+	test("POST /accounts/:playerId/combat-heartbeat is wired and acknowledges", async () => {
+		const res = await fetch(`${base}/accounts/p1/combat-heartbeat`, { method: "POST" });
+		expect(res.status).toBe(200);
+		expect(((await res.json()) as { playerId: string }).playerId).toBe("p1");
+	});
+
 	test("unknown routes return 404", async () => {
 		const res = await fetch(`${base}/nonexistent`);
 		expect(res.status).toBe(404);

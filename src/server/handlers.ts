@@ -9,6 +9,7 @@ import type { MarketBook, ObservationView, SpacemoltClient } from "@spacemolt/li
 import { loadRegistrationConfig } from "../accounts/config.js";
 import type { LibAccountManager } from "../accounts/lib-manager.js";
 import { type LibManagedAccount, playerId as playerIdOf } from "../accounts/lib-types.js";
+import type { CombatHeartbeatStore } from "../combat/combat-heartbeat.js";
 import type { CombatModeStore } from "../combat/combat-mode-store.js";
 import type { ProgressRef } from "../dispatcher/goals.js";
 import type { GoalResult } from "../dispatcher/goals.js";
@@ -78,6 +79,8 @@ export interface HandlerContext {
 	 * every other busy check here.
 	 */
 	isInCombat?: ((playerId: string) => boolean) | undefined;
+	/** Liveness signals from external combat drivers. */
+	combatHeartbeats?: CombatHeartbeatStore | undefined;
 }
 
 /** Resolve an account by player_id or username (case-insensitive). */
@@ -1948,6 +1951,28 @@ export async function handleFleetMove(
 	} finally {
 		ctx.claimedAccounts.delete(leaderId);
 	}
+}
+
+/**
+ * Record that an external combat driver is alive for this account.
+ *
+ * Deliberately a heartbeat rather than a command count: the most common tick in
+ * a well-fought battle is one where the driver holds and lets auto-fire
+ * resolve, so "sent no command" is not evidence of a dead driver. A driver
+ * pings this every tick it is alive, whether or not it acted.
+ */
+export function handleCombatHeartbeat(
+	_req: Request,
+	params: RouteParams,
+	ctx: HandlerContext,
+): Response {
+	const account = resolveAccount(ctx, params["playerId"] ?? "");
+	if (!account) {
+		return errorResponse(`Account not found: ${params["playerId"]}`, 404);
+	}
+	const playerId = playerIdOf(account);
+	ctx.combatHeartbeats?.beat(playerId);
+	return jsonResponse({ playerId, acknowledgedAt: new Date().toISOString() });
 }
 
 // ── Batch goals ─────────────────────────────────────────────────────

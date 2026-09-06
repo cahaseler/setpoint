@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { CombatEnvelope, CombatMode } from "@setpoint/protocol";
 import type { LibAccountManager } from "../../src/accounts/lib-manager.js";
+import { CombatHeartbeatStore } from "../../src/combat/combat-heartbeat.js";
 import type { CombatModeStore } from "../../src/combat/combat-mode-store.js";
 import { CombatReactor } from "../../src/combat/combat-reactor.js";
 import type {
@@ -49,6 +50,8 @@ function makeHarness(options: {
 	loopStatus?: { type: string; running: boolean; options: Record<string, unknown> } | undefined;
 	account?: FakeAccount | undefined;
 	combatMode?: CombatMode | undefined;
+	heartbeats?: CombatHeartbeatStore | undefined;
+	externalHeartbeatTimeoutMs?: number | undefined;
 }) {
 	const forceRemoveCalls: string[] = [];
 	const deleteConfigCalls: string[] = [];
@@ -86,9 +89,20 @@ function makeHarness(options: {
 		combatEventsStore,
 		combatModeStore,
 		strategy,
+		...(options.heartbeats !== undefined ? { heartbeats: options.heartbeats } : {}),
+		...(options.externalHeartbeatTimeoutMs !== undefined
+			? { externalHeartbeatTimeoutMs: options.externalHeartbeatTimeoutMs }
+			: {}),
 	});
 
-	return { reactor, combatEventsStore, forceRemoveCalls, deleteConfigCalls, strategy };
+	return {
+		reactor,
+		combatEventsStore,
+		forceRemoveCalls,
+		deleteConfigCalls,
+		strategy,
+		combatModeStore,
+	};
 }
 
 async function flush(): Promise<void> {
@@ -242,5 +256,102 @@ describe("CombatReactor", () => {
 		const types = combatEventsStore.recent("p1").map((e) => e.type);
 		expect(types).toEqual(["player_died"]);
 		expect(types).not.toContain("combat_recovery_started");
+	});
+});
+
+describe("external combat driver watchdog", () => {
+	test("takes the fight when the driver stops checking in mid-battle", async () => {
+		// The state that has cost real hulls: "external" with no live driver
+		// neither fights nor flees.
+		const account = new FakeAccount("p1", "acc-1");
+		const heartbeats = new CombatHeartbeatStore();
+		const { reactor, strategy } = makeHarness({
+			account,
+			combatMode: "external",
+			heartbeats,
+			externalHeartbeatTimeoutMs: 15,
+		});
+
+		reactor.handle("p1", "battle_started", battleStarted("p1"));
+		expect(strategy.calls).toHaveLength(0);
+
+		await new Promise((resolve) => setTimeout(resolve, 60));
+
+		expect(strategy.calls.length).toBeGreaterThan(0);
+		reactor.stop();
+	});
+
+	test("a driver that keeps breathing is left alone", async () => {
+		const account = new FakeAccount("p1", "acc-1");
+		const heartbeats = new CombatHeartbeatStore();
+		const { reactor, strategy } = makeHarness({
+			account,
+			combatMode: "external",
+			heartbeats,
+			externalHeartbeatTimeoutMs: 30,
+		});
+
+		reactor.handle("p1", "battle_started", battleStarted("p1"));
+
+		// Ping faster than the timeout, the way a live driver would each tick.
+		const pinger = setInterval(() => heartbeats.beat("p1"), 5);
+		await new Promise((resolve) => setTimeout(resolve, 90));
+		clearInterval(pinger);
+
+		expect(strategy.calls).toHaveLength(0);
+		reactor.stop();
+	});
+
+	test("the account's configured mode is never rewritten by the watchdog", async () => {
+		// A setting the daemon silently changed on a timer becomes a mystery to
+		// whoever debugs it later. Re-arming is the driver's business.
+		const account = new FakeAccount("p1", "acc-1");
+		const heartbeats = new CombatHeartbeatStore();
+		const { reactor, combatModeStore } = makeHarness({
+			account,
+			combatMode: "external",
+			heartbeats,
+			externalHeartbeatTimeoutMs: 15,
+		});
+
+		reactor.handle("p1", "battle_started", battleStarted("p1"));
+		await new Promise((resolve) => setTimeout(resolve, 60));
+
+		expect(combatModeStore.get("p1")).toBe("external");
+		reactor.stop();
+	});
+
+	test("no watchdog is armed without a heartbeat store", async () => {
+		const account = new FakeAccount("p1", "acc-1");
+		const { reactor, strategy } = makeHarness({
+			account,
+			combatMode: "external",
+			externalHeartbeatTimeoutMs: 15,
+		});
+
+		reactor.handle("p1", "battle_started", battleStarted("p1"));
+		await new Promise((resolve) => setTimeout(resolve, 60));
+
+		expect(strategy.calls).toHaveLength(0);
+		reactor.stop();
+	});
+});
+
+describe("reactor shutdown", () => {
+	test("stop() clears an armed watchdog so it cannot fire after shutdown", async () => {
+		const account = new FakeAccount("p1", "acc-1");
+		const heartbeats = new CombatHeartbeatStore();
+		const { reactor, strategy } = makeHarness({
+			account,
+			combatMode: "external",
+			heartbeats,
+			externalHeartbeatTimeoutMs: 15,
+		});
+
+		reactor.handle("p1", "battle_started", battleStarted("p1"));
+		reactor.stop();
+
+		await new Promise((resolve) => setTimeout(resolve, 60));
+		expect(strategy.calls).toHaveLength(0);
 	});
 });

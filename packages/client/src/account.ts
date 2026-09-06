@@ -433,6 +433,28 @@ export class AccountCombatModeApi {
 		return result as CombatModeStatus;
 	}
 
+	/**
+	 * Signals that an external combat driver is alive for this account.
+	 *
+	 * Call this every tick the driver is running, whether or not it issued a
+	 * command — holding position is a legitimate and common move, so silence on
+	 * the command channel is not evidence of a dead driver. If the daemon sees
+	 * no heartbeat for five ticks while the account is in a battle, it takes the
+	 * fight with its built-in flee response rather than leaving a ship that
+	 * neither fights nor flees.
+	 *
+	 * The account's configured mode is not changed when that happens: re-arming
+	 * the driver is the caller's business, and the next battle starts external
+	 * again.
+	 */
+	async heartbeat(): Promise<{ playerId: string; acknowledgedAt: string }> {
+		const result = await this.client.request(
+			"POST",
+			`/accounts/${encodeURIComponent(this.id)}/combat-heartbeat`,
+		);
+		return result as { playerId: string; acknowledgedAt: string };
+	}
+
 	/** Sets and persists the account's combat-mode setting — takes effect on the next combat entry, no restart needed. */
 	async set(mode: CombatMode): Promise<CombatModeStatus> {
 		const result = await this.client.request(
