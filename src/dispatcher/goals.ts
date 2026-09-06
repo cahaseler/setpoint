@@ -23,6 +23,8 @@ export type {
 	ReconcileAction,
 	ReconcileResult,
 	ReconcileSubject,
+	ReconcileSubjectFailed,
+	ReconcileSubjectOk,
 	StepResult,
 } from "@setpoint/protocol";
 

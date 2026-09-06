@@ -53,32 +53,58 @@ export interface LoopResult extends GoalResult {
  */
 export type ReconcileAction = "none" | "created" | "updated" | "removed";
 
-/**
- * One thing a reconciling goal acted on: a weapon, a fleet member, an item
- * stack, a hull, a module slot.
- *
- * `id` is whatever addresses that subject in the game — a `module_id`, a
- * `player_id`, an `item_id`, a ship uuid. It is stable enough for a caller to
- * diff two runs against each other.
- */
-export interface ReconcileSubject {
+/** Fields common to every reconciled subject, whether it succeeded or not. */
+interface ReconcileSubjectBase {
+	/**
+	 * Whatever addresses this subject in the game — a `module_id`, a
+	 * `player_id`, an `item_id`, a ship uuid. Stable enough to diff two runs.
+	 */
 	id: string;
 	/** What sort of thing this is, so a generic consumer can render it. */
 	kind: string;
-	/** Whether THIS subject reached the desired state. */
-	ok: boolean;
 	action: ReconcileAction;
-	/**
-	 * Why this subject failed, or why nothing was done to it. Failure reasons
-	 * are prefixed, machine-readable tokens (`cargo_full`, `not_at_poi`,
-	 * `busy:mining-loop`) so a caller can branch without parsing prose.
-	 */
-	message?: string;
-	/** What was asked for. Recorded so a stored result stays diagnosable without the original request. */
+	/** What was asked for. Keeps a stored result diagnosable without the original request. */
 	desired?: Record<string, unknown>;
-	before?: Record<string, unknown>;
 	after?: Record<string, unknown>;
 }
+
+/** A subject that reached the desired state (or was already there). */
+export interface ReconcileSubjectOk extends ReconcileSubjectBase {
+	ok: true;
+	/** Why nothing was done, when `action` is `"none"` — e.g. "above half, reload would discard 4". */
+	message?: string;
+	before?: Record<string, unknown>;
+}
+
+/**
+ * A subject that did NOT reach the desired state.
+ *
+ * `message` and `before` are both required, deliberately. A caller submitting a
+ * reconcile request is usually working from its own model of the fleet, and the
+ * likeliest reason a subject fails is that the model is wrong — the ship is
+ * mid-transit, or is not where the caller believed it was. Returning a bare
+ * reason code invites the caller to treat the failure as intentional and move
+ * on; returning the state we actually observed forces the discrepancy into the
+ * open and makes the caller reconcile against reality.
+ *
+ * So `before` carries what the ship/member/hold actually looked like at the
+ * moment of failure (position, in-transit flag, docked base, current holder),
+ * not merely the field that was wrong.
+ */
+export interface ReconcileSubjectFailed extends ReconcileSubjectBase {
+	ok: false;
+	/**
+	 * A prefixed, machine-readable reason token (`cargo_full`, `not_at_poi`,
+	 * `busy:mining-loop`, `ambiguous_ammo`) so a caller can branch without
+	 * parsing prose.
+	 */
+	message: string;
+	/** The state actually observed. Required — see above. */
+	before: Record<string, unknown>;
+}
+
+/** One thing a reconciling goal acted on: a weapon, a fleet member, an item stack, a hull, a module slot. */
+export type ReconcileSubject = ReconcileSubjectOk | ReconcileSubjectFailed;
 
 /**
  * Result of a goal that reconciles many subjects toward a desired state.

@@ -1,13 +1,31 @@
 import { describe, expect, test } from "bun:test";
 import { fleetOperation, reconciled } from "../../src/dispatcher/goals.js";
-import type { GoalResult, ReconcileSubject } from "../../src/dispatcher/goals.js";
+import type {
+	GoalResult,
+	ReconcileSubjectFailed,
+	ReconcileSubjectOk,
+} from "../../src/dispatcher/goals.js";
 
-const subject = (over: Partial<ReconcileSubject> = {}): ReconcileSubject => ({
+const subject = (over: Partial<ReconcileSubjectOk> = {}): ReconcileSubjectOk => ({
 	id: "mod-1",
 	kind: "weapon",
 	ok: true,
 	action: "updated",
 	...over,
+});
+
+/**
+ * A failed subject must carry both a reason and the state actually observed —
+ * the type enforces it, so this helper cannot omit `before`.
+ */
+const failedSubject = (
+	over: Partial<ReconcileSubjectFailed> & { message: string; before: Record<string, unknown> },
+): ReconcileSubjectFailed => ({
+	id: "mod-1",
+	kind: "weapon",
+	action: "none",
+	...over,
+	ok: false,
 });
 
 describe("reconciled", () => {
@@ -25,7 +43,11 @@ describe("reconciled", () => {
 			subject({ id: "gun-2" }),
 			subject({ id: "gun-3" }),
 			subject({ id: "gun-4" }),
-			subject({ id: "gun-5", ok: false, action: "none", message: "insufficient_cargo: slug_case" }),
+			failedSubject({
+				id: "gun-5",
+				message: "insufficient_cargo: slug_case",
+				before: { ammo: 0, capacity: 7, ammoType: "tungsten_slug_case" },
+			}),
 		];
 		const result = reconciled(subjects, 4);
 		expect(result.success).toBe(false);
@@ -45,7 +67,10 @@ describe("reconciled", () => {
 	});
 
 	test("is not alreadySatisfied when a subject failed without changing anything", () => {
-		const result = reconciled([subject({ action: "none", ok: false, message: "in_combat" })], 0);
+		const result = reconciled(
+			[failedSubject({ message: "in_combat", before: { inCombat: true, battleId: "b-1" } })],
+			0,
+		);
 		expect(result.alreadySatisfied).toBe(false);
 		expect(result.success).toBe(false);
 	});
@@ -57,6 +82,33 @@ describe("reconciled", () => {
 		expect(result.summary.total).toBe(0);
 	});
 
+	test("a failed subject reports the state actually observed, not just a reason", () => {
+		// Craig's rule: the likeliest cause of a failure is that the caller's
+		// model of the ship is wrong, so the result must surface reality and
+		// force a reconcile rather than let the caller assume it was intentional.
+		const result = reconciled(
+			[
+				failedSubject({
+					id: "ILC-Tephra",
+					kind: "member",
+					message: "not_at_poi",
+					desired: { poiId: "arena" },
+					before: { systemId: "keelbreak", poiId: null, inTransit: true, arrivalTick: 84212 },
+				}),
+			],
+			0,
+		);
+		const [only] = result.subjects;
+		expect(only?.ok).toBe(false);
+		expect(only?.before).toEqual({
+			systemId: "keelbreak",
+			poiId: null,
+			inTransit: true,
+			arrivalTick: 84212,
+		});
+		expect(only?.desired).toEqual({ poiId: "arena" });
+	});
+
 	test("carries ship-level facts in context, not in a subject", () => {
 		const result = reconciled([subject()], 1, {
 			context: { hold: { capacity: 55, usedBefore: 10, usedAfter: 20 } },
@@ -65,9 +117,16 @@ describe("reconciled", () => {
 	});
 
 	test("an explicit message overrides the derived one but not the verdict", () => {
-		const result = reconciled([subject({ ok: false, message: "not_at_poi" })], 0, {
-			message: "custom",
-		});
+		const result = reconciled(
+			[
+				failedSubject({
+					message: "not_at_poi",
+					before: { systemId: "sol", poiId: undefined, inTransit: true },
+				}),
+			],
+			0,
+			{ message: "custom" },
+		);
 		expect(result.message).toBe("custom");
 		expect(result.success).toBe(false);
 	});
