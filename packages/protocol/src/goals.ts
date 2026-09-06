@@ -242,9 +242,10 @@ export const goalSchemas = {
 		source: z.enum(["personal", "garage"]).optional(),
 	}),
 	"open-battle": z.object({
-		mode: z.enum(["attack", "engage"]),
+		mode: z.enum(["arena", "attack", "engage"]),
 		targetId: z.string().optional(),
 		sideId: z.number().optional(),
+		challengeId: z.string().optional(),
 	}),
 	"ensure-magazines": z.object({
 		policy: z.enum(["always", "half"]).optional(),

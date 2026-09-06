@@ -445,6 +445,7 @@ const registry: ReadonlyMap<string, GoalFactory> = new Map<string, GoalFactory>(
 				mode: validated.mode,
 				...(validated.targetId !== undefined ? { targetId: validated.targetId } : {}),
 				...(validated.sideId !== undefined ? { sideId: validated.sideId } : {}),
+				...(validated.challengeId !== undefined ? { challengeId: validated.challengeId } : {}),
 			});
 		},
 	],

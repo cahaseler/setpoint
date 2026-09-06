@@ -101,3 +101,53 @@ describe("LibOpenBattle", () => {
 		expect(result.message).toContain("battle id not yet reported");
 	});
 });
+
+describe("LibOpenBattle arena mode", () => {
+	test("opens an arena challenge and reports the battle id it returns", async () => {
+		const account = new FakeLibGoalAccount(
+			{},
+			{
+				fight: () => ({
+					command: "fight",
+					tick: 0,
+					delta: {
+						details: { action: "fight", battle_id: "arena-b-1", challenge_id: "ch-9" },
+					},
+				}),
+			},
+		);
+
+		const result = await new LibOpenBattle({ mode: "arena", challengeId: "ch-9" }).execute(
+			makeLibGoalContext(account),
+		);
+
+		expect(result.success).toBe(true);
+		expect(result.message).toContain("arena-b-1");
+		expect(account.calls[0]).toEqual({ action: "fight", params: { id: "ch-9" } });
+	});
+
+	test("arena without a challengeId fails before calling the game", async () => {
+		const account = new FakeLibGoalAccount({}, {});
+		const result = await new LibOpenBattle({ mode: "arena" }).execute(makeLibGoalContext(account));
+		expect(result.success).toBe(false);
+		expect(result.message).toContain("challengeId is required");
+		expect(account.calls).toHaveLength(0);
+	});
+
+	test("a locked challenge fails with the game's own code", async () => {
+		// challenge_locked is a precondition the caller must clear, not a retry.
+		const account = new FakeLibGoalAccount(
+			{},
+			{
+				fight: () => {
+					throw new SpacemoltError("challenge_locked", "Challenge is locked");
+				},
+			},
+		);
+		const result = await new LibOpenBattle({ mode: "arena", challengeId: "ch-9" }).execute(
+			makeLibGoalContext(account),
+		);
+		expect(result.success).toBe(false);
+		expect(result.message).toContain("challenge_locked");
+	});
+});

@@ -13,6 +13,7 @@ import { type EventBuffer, createEventBuffer } from "../../src/state/event-buffe
 import type { StateStore } from "../../src/state/store.js";
 import type { StoredGameState } from "../../src/state/store.js";
 import { FakeLibManagedAccount, makeFakeLibManager } from "../dispatcher/lib-fakes.js";
+import { makePirateRadioEvent } from "../helpers/pirate-radio.js";
 
 // ── Test Data ────────────────────────────────────────────────────────
 
@@ -264,7 +265,7 @@ describe("Server integration", () => {
 		// byte leaves the response headers unsent.
 		pirateRadioStore.record("p1", {
 			receivedAt: new Date().toISOString(),
-			event: { message: "we ride at dawn", pirate_name: "Blackvane" },
+			event: makePirateRadioEvent(),
 		});
 
 		const controller = new AbortController();

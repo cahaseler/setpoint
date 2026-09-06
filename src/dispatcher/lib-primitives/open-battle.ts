@@ -1,4 +1,4 @@
-import type { BattleResponse, GetBattleStatusResponse } from "@spacemolt/lib";
+import type { ArenaFightResponse, BattleResponse, GetBattleStatusResponse } from "@spacemolt/lib";
 import { SpacemoltError } from "@spacemolt/lib";
 import { createLogger } from "../../util/logger.js";
 import type { GoalResult } from "../goals.js";
@@ -9,19 +9,17 @@ const log = createLogger("goal:open-battle");
 
 export interface OpenBattleOptions {
 	/**
-	 * `"attack"` opens on a named target; `"engage"` joins an existing battle on
-	 * a given side.
-	 *
-	 * The arena's own `fight` entry point is deliberately absent: it is not in
-	 * the command surface `@spacemolt/lib` generates from the server spec, so
-	 * there is no typed call to make. Reach it through the raw passthrough until
-	 * a lib version exposes it, rather than hand-writing the wire shape here.
+	 * The three ways a fight starts: `"arena"` opens a consequence-free arena
+	 * challenge, `"attack"` opens on a named target, `"engage"` joins an
+	 * existing battle on a given side.
 	 */
-	mode: "attack" | "engage";
+	mode: "arena" | "attack" | "engage";
 	/** Target id, for `mode: "attack"`. */
 	targetId?: string;
 	/** Side to join, for `mode: "engage"`. */
 	sideId?: number;
+	/** Challenge to open, for `mode: "arena"`. */
+	challengeId?: string;
 }
 
 /**
@@ -37,10 +35,40 @@ export class LibOpenBattle implements LibGoal {
 	constructor(private readonly options: OpenBattleOptions) {}
 
 	async execute(ctx: LibGoalContext): Promise<GoalResult> {
+		if (this.options.mode === "arena") {
+			return this.arena(ctx);
+		}
 		if (this.options.mode === "attack") {
 			return this.attack(ctx);
 		}
 		return this.engage(ctx);
+	}
+
+	/**
+	 * Open an arena challenge. Unlike the other two, this reports its battle id
+	 * directly, and a locked challenge is a precondition failure rather than
+	 * something to retry — the caller has to unlock it first.
+	 */
+	private async arena(ctx: LibGoalContext): Promise<GoalResult> {
+		const challengeId = this.options.challengeId;
+		if (challengeId === undefined) {
+			return failed("open-battle: challengeId is required for mode 'arena'", 0);
+		}
+
+		log.info(`Opening arena challenge ${challengeId}`);
+		try {
+			const response = await ctx.account.commands.spacemolt_arena.fight({ id: challengeId });
+			const details = response.delta.details as ArenaFightResponse | undefined;
+			return succeeded(
+				`Opened arena challenge ${challengeId}, battle ${details?.battle_id ?? "unknown"}`,
+				1,
+			);
+		} catch (err) {
+			if (err instanceof SpacemoltError) {
+				return failed(`arena_fight_failed (${err.code}): ${err.message}`, 0);
+			}
+			throw err;
+		}
 	}
 
 	private async attack(ctx: LibGoalContext): Promise<GoalResult> {
