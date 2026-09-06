@@ -46,8 +46,13 @@ export async function waitForLocation(
 
 	let state = await ctx.refreshState({ force: true });
 	while (!predicate(state) && !ctx.signal?.aborted && Date.now() < deadline) {
-		log.info(`Location unresolved, waiting ${pollIntervalMs / 1000}s before re-checking`);
-		await new Promise<void>((resolve) => setTimeout(resolve, pollIntervalMs));
+		// Never sleep past the deadline. A full poll interval with only
+		// milliseconds of budget left overshoots maxWaitMs by orders of
+		// magnitude, which makes a caller's timeout meaningless.
+		const wait = Math.min(pollIntervalMs, deadline - Date.now());
+		if (wait <= 0) break;
+		log.info(`Location unresolved, waiting ${wait / 1000}s before re-checking`);
+		await new Promise<void>((resolve) => setTimeout(resolve, wait));
 		state = await ctx.refreshState({ force: true });
 	}
 	return state;

@@ -59,3 +59,73 @@ describe("runGuardLoop", () => {
 		expect(result.message).toContain("consecutive failure");
 	});
 });
+
+describe("guard-loop engagement handoff", () => {
+	const pirateAccount = () =>
+		new FakeLibGoalAccount(
+			{
+				location: { system_id: "sol", poi_id: "guard_poi" },
+				ship: { fuel: 100, max_fuel: 100, hull: 50, max_hull: 50 },
+			},
+			{
+				// Always a pirate present: "auto" would attack forever.
+				get_nearby: () => ({
+					result: "",
+					structuredContent: { pirates: [{ pirate_id: "pirate-1" }] },
+				}),
+			},
+		);
+
+	const base = {
+		homeSystemId: "sol",
+		homeStationPoiId: "sol_station",
+		homeBaseId: "sol_base",
+		guardSystemId: "sol",
+		guardPoiId: "guard_poi",
+	};
+
+	test('engagement "external" opens the battle with one attack and hands off', async () => {
+		// Combat entry releases the account from the loop anyway, so continuing
+		// to attack would mean setpoint and the external driver flying one ship.
+		const account = pirateAccount();
+
+		await runGuardLoop(
+			{ ...base, engagement: "external", loopOptions: { maxIterations: 1, retryDelayMs: 1 } },
+			makeLibGoalContext(account),
+		);
+
+		expect(account.calls.filter((c) => c.action === "attack")).toHaveLength(1);
+	});
+
+	test('engagement "auto" keeps attacking until the area is clear', async () => {
+		// Bounded on purpose: the pirate disappears after two attacks, so this
+		// asserts the contrast with the handoff without running the unbounded
+		// path for real.
+		let remaining = 2;
+		const account = new FakeLibGoalAccount(
+			{
+				location: { system_id: "sol", poi_id: "guard_poi" },
+				ship: { fuel: 100, max_fuel: 100, hull: 50, max_hull: 50 },
+			},
+			{
+				get_nearby: () => ({
+					result: "",
+					structuredContent: {
+						pirates: remaining > 0 ? [{ pirate_id: "pirate-1" }] : [],
+					},
+				}),
+				attack: () => {
+					remaining--;
+					return { command: "attack", tick: 0, delta: {} };
+				},
+			},
+		);
+
+		await runGuardLoop(
+			{ ...base, loopOptions: { maxIterations: 1, retryDelayMs: 1 } },
+			makeLibGoalContext(account),
+		);
+
+		expect(account.calls.filter((c) => c.action === "attack")).toHaveLength(2);
+	});
+});

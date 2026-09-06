@@ -24,6 +24,17 @@ export interface GuardLoopOptions {
 	guardSystemId: string;
 	/** POI ID to guard. */
 	guardPoiId: string;
+	/**
+	 * How the fight itself is flown once pirates are found.
+	 *
+	 * `"auto"` (the default) repeats `attack` until the area is clear.
+	 * `"external"` opens the battle and stops, leaving it to combat logic
+	 * running outside setpoint — pair it with combat mode `"external"` so the
+	 * built-in flee response does not take the ship back. Combat entry releases
+	 * the account from this loop either way, so continuing to attack would mean
+	 * two things flying one ship.
+	 */
+	engagement?: "auto" | "external";
 	/** When set to "faction", withdraws credits from the faction treasury if credits are low before refueling. */
 	cashSource?: "faction";
 	/** Minimum credit balance before withdrawing from storage. */
@@ -55,6 +66,8 @@ export interface GuardLoopOptions {
  */
 class LibClearPirates implements LibGoal {
 	readonly name = "clear-pirates";
+
+	constructor(private readonly engagement: "auto" | "external" = "auto") {}
 
 	async execute(ctx: LibGoalContext): Promise<GoalResult> {
 		let ticksUsed = 0;
@@ -90,6 +103,17 @@ class LibClearPirates implements LibGoal {
 			log.info(`Attacking pirate ${target.pirate_id}`);
 			await ctx.account.commands.spacemolt.attack({ id: target.pirate_id });
 			ticksUsed++;
+
+			if (this.engagement === "external") {
+				// Hand the fight over: the opening attack starts the battle, and
+				// combat entry releases this account from the loop anyway, so
+				// carrying on would just be setpoint and the external driver both
+				// flying the same ship. Whoever is driving takes it from here.
+				return succeeded(
+					`Opened combat with ${target.pirate_id} and handed off to the external driver`,
+					ticksUsed,
+				);
+			}
 		}
 	}
 }
@@ -146,7 +170,7 @@ export async function runGuardLoop(
 		steps.push(new LibEnsureUndocked());
 		steps.push(new LibNavigateToSystem(options.guardSystemId));
 		steps.push(new LibGoToPoi(options.guardPoiId));
-		steps.push(new LibClearPirates());
+		steps.push(new LibClearPirates(options.engagement ?? "auto"));
 
 		return {
 			name: "guard-sweep",

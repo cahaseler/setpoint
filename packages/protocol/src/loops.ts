@@ -200,6 +200,7 @@ export const loopSchemas = {
 	}),
 
 	guard: z.object({
+		engagement: z.enum(["auto", "external"]).optional(),
 		homeSystemId: z.string(),
 		homeStationPoiId: z.string(),
 		homeBaseId: z.string(),
