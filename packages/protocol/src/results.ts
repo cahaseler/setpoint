@@ -178,6 +178,16 @@ export interface CombatModeStatus {
 
 export type JobStatus = "pending" | "running" | "completed" | "failed";
 
+/**
+ * The terminal verdict on a job, absent while it is still pending or running.
+ *
+ * `status` answers "did the job finish", not "did the thing happen": a goal
+ * that ran to conclusion and failed its own preconditions is
+ * `status: "completed"` with `result.success: false`, which reads as success at
+ * a glance and repeatedly has. `outcome` is the field to branch on.
+ */
+export type JobOutcome = "succeeded" | "failed" | "aborted";
+
 /** A record of an async goal job, as tracked by the daemon's job manager. */
 export interface JobRecord {
 	jobId: string;
@@ -186,6 +196,8 @@ export interface JobRecord {
 	goalOptions?: unknown;
 	submittedAt: string;
 	status: JobStatus;
+	/** Terminal verdict — set once the job reaches a terminal state. */
+	outcome?: JobOutcome;
 	completedAt?: string;
 	result?: GoalResult;
 	error?: string;

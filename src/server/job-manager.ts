@@ -1,18 +1,16 @@
 import type { Database } from "bun:sqlite";
 import { randomBytes } from "node:crypto";
+import type { JobOutcome, JobRecord } from "@setpoint/protocol";
 import type { GoalResult, ProgressRef } from "../dispatcher/goals.js";
 
-export interface JobRecord {
-	jobId: string;
-	accountId: string;
-	goalType?: string;
-	goalOptions?: unknown;
-	submittedAt: string;
-	status: "pending" | "running" | "completed" | "failed";
-	completedAt?: string;
-	result?: GoalResult;
-	error?: string;
-}
+export type { JobRecord };
+
+/**
+ * Error recorded on a job cancelled by `forceReleaseAccount`. A named constant
+ * because `outcome` distinguishes an aborted job from a failed one by matching
+ * it exactly, rather than sniffing the message text.
+ */
+export const ABORTED_BY_USER = "Aborted by user";
 
 interface JobRow {
 	job_id: string;
@@ -24,6 +22,21 @@ interface JobRow {
 	completed_at: string | null;
 	result: string | null;
 	error: string | null;
+}
+
+/**
+ * The verdict a caller should branch on. Derived rather than stored, so it can
+ * never disagree with the result it summarises.
+ */
+function outcomeOf(
+	status: string,
+	result: GoalResult | undefined,
+	error: string | null,
+): JobOutcome | undefined {
+	if (status === "pending" || status === "running") return undefined;
+	if (error === ABORTED_BY_USER) return "aborted";
+	if (status === "failed") return "failed";
+	return result?.success === false ? "failed" : "succeeded";
 }
 
 function rowToRecord(row: JobRow): JobRecord {
@@ -38,6 +51,8 @@ function rowToRecord(row: JobRow): JobRecord {
 	if (row.completed_at !== null) record.completedAt = row.completed_at;
 	if (row.result !== null) record.result = JSON.parse(row.result) as GoalResult;
 	if (row.error !== null) record.error = row.error;
+	const outcome = outcomeOf(row.status, record.result, row.error);
+	if (outcome !== undefined) record.outcome = outcome;
 	return record;
 }
 
@@ -191,7 +206,7 @@ export class JobManager {
 			if (aid === accountId) toFail.push(jobId);
 		}
 		for (const jobId of toFail) {
-			this.fail(jobId, "Aborted by user");
+			this.fail(jobId, ABORTED_BY_USER);
 		}
 		return toFail.length;
 	}

@@ -156,3 +156,49 @@ describe("JobManager.requeue", () => {
 		expect(jm2.isRunning("p1")).toBe(true);
 	});
 });
+
+describe("job outcome", () => {
+	test("a goal that ran to conclusion but failed its preconditions is outcome failed", () => {
+		// The trap: status "completed" means the job finished, not that the thing
+		// happened. A travel goal that fails its fuel check completes instantly
+		// and the ship never moves.
+		const jm = makeJobManager();
+		const { jobId } = jm.create("acct-1", "navigate-to-system", {});
+		jm.complete(jobId, {
+			success: false,
+			message: "insufficient fuel",
+			alreadySatisfied: false,
+			ticksUsed: 0,
+		});
+		const record = jm.get(jobId);
+		expect(record?.status).toBe("completed");
+		expect(record?.outcome).toBe("failed");
+	});
+
+	test("a goal that did the thing is outcome succeeded", () => {
+		const jm = makeJobManager();
+		const { jobId } = jm.create("acct-1", "dock-at", {});
+		jm.complete(jobId, {
+			success: true,
+			message: "docked",
+			alreadySatisfied: false,
+			ticksUsed: 1,
+		});
+		expect(jm.get(jobId)?.outcome).toBe("succeeded");
+	});
+
+	test("a job cancelled by force-release is outcome aborted, not failed", () => {
+		const jm = makeJobManager();
+		const { jobId } = jm.create("acct-1", "mine-until-full", {});
+		jm.failAllRunning("acct-1");
+		const record = jm.get(jobId);
+		expect(record?.status).toBe("failed");
+		expect(record?.outcome).toBe("aborted");
+	});
+
+	test("outcome is absent while a job is still running", () => {
+		const jm = makeJobManager();
+		const { jobId } = jm.create("acct-1", "mine-until-full", {});
+		expect(jm.get(jobId)?.outcome).toBeUndefined();
+	});
+});
