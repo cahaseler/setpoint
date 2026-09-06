@@ -65,7 +65,14 @@ export async function runLibSequence(
 			progressRef.remainingSteps = stepNames.slice(i + 1);
 		}
 
-		const stepCtx = makeLibGoalContext(ctx.account, ctx.signal);
+		// Pass the RESOLVER, not `ctx.account`. Reading `ctx.account` here would
+		// evaluate the getter once and pin the step to that Account instance for
+		// its whole duration — and a step can run for minutes (go-to-poi polls
+		// for arrival for up to 600s). A reconnect during the step replaces the
+		// underlying Account, leaving the pinned one sending on a dead socket:
+		// the step then fails, the sequence stops, and the ship is left wherever
+		// it got to — in the right system but short of the station.
+		const stepCtx = makeLibGoalContext(() => ctx.account, ctx.signal);
 
 		log.info(`Running step: ${step.name}`);
 		const result = await step.execute(stepCtx);

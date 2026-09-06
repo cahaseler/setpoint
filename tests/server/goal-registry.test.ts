@@ -443,39 +443,73 @@ describe("goal-registry", () => {
 		expect(goal.name).toBe("ensure-loadout");
 	});
 
-	test("creates ensure-loadout with optional ammo map", () => {
-		const goal = createGoal("ensure-loadout", {
-			systemId: "sol",
-			poiId: "sol_station",
-			baseId: "sol_base",
-			modules: ["laser_mod"],
-			ammo: { laser_type_1: "laser_ammo_a" },
-		});
-		expect(goal.name).toBe("ensure-loadout");
-	});
-
-	test("ensure-loadout throws when ammo is an array", () => {
+	test("ensure-loadout REJECTS ammo loudly instead of silently dropping it", () => {
+		// Silently stripping the key would return "loadout configured" over empty
+		// guns — the exact failure ensure-magazines replaced. ensure-loadout could
+		// only ever address one gun per weapon TYPE.
 		expect(() =>
 			createGoal("ensure-loadout", {
 				systemId: "sol",
 				poiId: "sol_station",
 				baseId: "sol_base",
 				modules: ["laser_mod"],
-				ammo: ["laser_ammo_a"],
+				ammo: { laser_type_1: "laser_ammo_a" },
 			}),
-		).toThrow("options.ammo: Expected object, received array");
+		).toThrow("ensure-magazines");
 	});
 
-	test("ensure-loadout throws when ammo value is not a string", () => {
+	test("creates ensure-loadout with each phase value", () => {
+		for (const phase of ["strip", "fit", "both"] as const) {
+			expect(
+				createGoal("ensure-loadout", {
+					systemId: "sol",
+					poiId: "sol_station",
+					baseId: "sol_base",
+					modules: ["laser_mod"],
+					phase,
+				}).name,
+			).toBe("ensure-loadout");
+		}
+	});
+
+	test("ensure-loadout rejects an unknown phase", () => {
 		expect(() =>
 			createGoal("ensure-loadout", {
 				systemId: "sol",
 				poiId: "sol_station",
 				baseId: "sol_base",
 				modules: ["laser_mod"],
-				ammo: { laser_type_1: 42 },
+				phase: "refit",
 			}),
-		).toThrow("options.ammo.laser_type_1: Expected string, received number");
+		).toThrow("options.phase");
+	});
+
+	test("ensure-magazines throws when ammo is an array", () => {
+		expect(() => createGoal("ensure-magazines", { ammo: ["laser_ammo_a"] })).toThrow(
+			"options.ammo: Expected object, received array",
+		);
+	});
+
+	test("ensure-magazines throws when ammo value is not a string", () => {
+		expect(() => createGoal("ensure-magazines", { ammo: { laser_type_1: 42 } })).toThrow(
+			"options.ammo.laser_type_1: Expected string, received number",
+		);
+	});
+
+	test("ensure-magazines rejects an unknown policy", () => {
+		expect(() => createGoal("ensure-magazines", { policy: "topup" })).toThrow("options.policy");
+	});
+
+	test("creates ensure-magazines with no options at all", () => {
+		expect(createGoal("ensure-magazines", {}).name).toBe("ensure-magazines");
+	});
+
+	test("reload-weapon requires a moduleId", () => {
+		expect(() => createGoal("reload-weapon", {})).toThrow("options.moduleId");
+	});
+
+	test("creates reload-weapon addressed by module_id", () => {
+		expect(createGoal("reload-weapon", { moduleId: "mod-1" }).name).toBe("reload-weapon");
 	});
 
 	test("creates ensure-loadout with valid uninstalledStorage values", () => {

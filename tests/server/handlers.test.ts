@@ -53,6 +53,7 @@ import {
 	makeFakeLibManager,
 } from "../dispatcher/lib-fakes.js";
 import type { DeepPartial } from "../helpers/deep-partial.js";
+import { makePirateRadioEvent } from "../helpers/pirate-radio.js";
 
 // ── Mock Factories ───────────────────────────────────────────────────
 
@@ -3368,7 +3369,7 @@ describe("handlePirateRadioEvents", () => {
 	function radioEvent(message: string): PirateRadioEnvelope {
 		return {
 			receivedAt: new Date().toISOString(),
-			event: { message, pirate_name: "Blackvane", source_system: "sol" },
+			event: makePirateRadioEvent({ message }),
 		};
 	}
 

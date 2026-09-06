@@ -63,7 +63,7 @@ export class LibProcessTowedWreck implements LibGoal {
 			new LibNavigateToSystem(yardSystemId),
 			new LibGoToPoi(yardPoiId),
 			new LibDockAt(yardBaseId),
-			new LibEnsureFueled(),
+			new LibEnsureFueled(undefined, { requireFull: false }),
 			new LibDrainTowedWreck({
 				wreckId,
 				...(storageTarget !== undefined ? { storageTarget } : {}),

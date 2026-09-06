@@ -72,3 +72,19 @@ describe("waitForLocation", () => {
 		expect(calls).toBe(2);
 	});
 });
+
+describe("waitForLocation deadline", () => {
+	test("does not sleep past maxWaitMs", async () => {
+		// A full poll interval with milliseconds of budget left would overshoot
+		// the caller's timeout by orders of magnitude.
+		const account = new FakeLibGoalAccount({ location: { system_id: "sol", in_transit: true } });
+		const started = Date.now();
+
+		await waitForLocation(makeLibGoalContext(account), () => false, {
+			maxWaitMs: 30,
+			pollIntervalMs: 5_000,
+		});
+
+		expect(Date.now() - started).toBeLessThan(1_000);
+	});
+});

@@ -57,8 +57,8 @@ describe("LibEnsureFueled", () => {
 		expect(result.alreadySatisfied).toBe(true);
 	});
 
-	test("soft-fails (succeeds with warning) on non-bug SpacemoltError e.g. insufficient credits", async () => {
-		const account = new FakeLibGoalAccount(
+	const brokeAccount = () =>
+		new FakeLibGoalAccount(
 			{ ship: { fuel: 10, max_fuel: 100 }, location: { docked_at: "s" } },
 			{
 				refuel: () => {
@@ -66,9 +66,35 @@ describe("LibEnsureFueled", () => {
 				},
 			},
 		);
-		const result = await new LibEnsureFueled().execute(makeLibGoalContext(account));
+
+	test("a refuel that added nothing is a FAILURE by default", async () => {
+		// Reporting success here is how a fleet-wide refuel with every account
+		// short of credits came back clean having filled nothing.
+		const result = await new LibEnsureFueled().execute(makeLibGoalContext(brokeAccount()));
+		expect(result.success).toBe(false);
+		expect(result.message).toContain("Refuel skipped");
+		expect(result.message).toContain("10/100");
+	});
+
+	test("requireFull: false keeps the tolerant behaviour for opportunistic top-ups", async () => {
+		const result = await new LibEnsureFueled(undefined, { requireFull: false }).execute(
+			makeLibGoalContext(brokeAccount()),
+		);
 		expect(result.success).toBe(true);
 		expect(result.message).toContain("Refuel skipped");
+	});
+
+	test("a partial fill fails by default and reports how far it got", async () => {
+		const account = new FakeLibGoalAccount(
+			{ ship: { fuel: 10, max_fuel: 100 }, location: { docked_at: "s" } },
+			{ refuel: () => fakeMutationResult("refuel") },
+		);
+		const result = await new LibEnsureFueled(50, { supplyRetryDelayMs: 1 }).execute(
+			makeLibGoalContext(account),
+		);
+		expect(result.success).toBe(false);
+		expect(result.message).toContain("Partial refuel");
+		expect(result.message).toContain("target 50");
 	});
 
 	test("rethrows bug-class SpacemoltError (invalid_params)", async () => {
@@ -95,7 +121,9 @@ describe("LibEnsureFueled", () => {
 				},
 			},
 		);
-		const result = await new LibEnsureFueled(undefined, 1).execute(makeLibGoalContext(account));
+		const result = await new LibEnsureFueled(undefined, { supplyRetryDelayMs: 1 }).execute(
+			makeLibGoalContext(account),
+		);
 		expect(result.success).toBe(true);
 		expect(calls).toBe(2);
 		expect(result.ticksUsed).toBe(2);

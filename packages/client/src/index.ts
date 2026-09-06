@@ -1,6 +1,7 @@
 export {
 	AccountApi,
 	AccountCraftingApi,
+	AccountFleetApi,
 	AccountMarketApi,
 	AccountObservationApi,
 	AccountPirateRadioApi,

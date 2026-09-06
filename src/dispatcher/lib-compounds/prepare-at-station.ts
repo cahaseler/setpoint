@@ -22,6 +22,11 @@ export interface PrepareAtStationOptions {
 	baseId: string;
 	/** Whether to refuel after docking. Defaults to true. */
 	refuel?: boolean;
+	/**
+	 * Treat a tank that could not be filled as a failure rather than flying on
+	 * with a partial fill. Defaults to `false`.
+	 */
+	requireFullFuel?: boolean;
 	/** Whether to repair after docking. Defaults to true. */
 	repair?: boolean;
 	/** When set to "faction", withdraws credits from the faction treasury if credits are low before refueling. */
@@ -93,7 +98,15 @@ export class LibPrepareAtStation implements LibGoal {
 						: undefined;
 				steps.push(new LibEnsureCreditsFromFaction(creditsOpts));
 			}
-			steps.push(new LibEnsureFueled());
+			// Tolerant by default: the mining/trading/salvage loops that reach here
+			// treat a dry station as something to fly on from, and
+			// `navigate-to-system` refuses to depart on insufficient fuel anyway.
+			// A caller that needs a genuinely full tank asks for it.
+			steps.push(
+				new LibEnsureFueled(undefined, {
+					requireFull: this.options.requireFullFuel ?? false,
+				}),
+			);
 		}
 
 		if (this.options.repair !== false) {
@@ -104,6 +117,45 @@ export class LibPrepareAtStation implements LibGoal {
 			`Preparing at station: system=${this.options.systemId}, poi=${this.options.poiId}, base=${this.options.baseId}`,
 		);
 
-		return runLibSequence(steps, ctx);
+		const result = await runLibSequence(steps, ctx);
+		this.logOutcome(ctx, result);
+		return result;
+	}
+
+	/**
+	 * Record where the ship actually ended up against where it was asked to go.
+	 *
+	 * The recurring failure this exists for is a ship left in the right system
+	 * at the wrong POI, undocked. From the sequence's own log that reads as an
+	 * ordinary step failure; the one line that identifies it is target versus
+	 * actual, side by side, tagged so it can be grepped out of a busy log.
+	 */
+	private logOutcome(ctx: LibGoalContext, result: CompoundGoalResult): void {
+		const location = ctx.state.location;
+		const actual = {
+			system: location?.system_id ?? null,
+			poi: location?.poi_id ?? null,
+			docked: location?.docked_at ?? null,
+			inTransit: location?.in_transit === true,
+		};
+		const wanted = {
+			system: this.options.systemId,
+			poi: this.options.poiId,
+			docked: this.options.baseId,
+		};
+		const arrived =
+			actual.system === wanted.system && actual.poi === wanted.poi && actual.docked !== null;
+
+		const line =
+			`[prepare-outcome] ${result.success ? "ok" : "FAILED"} arrived=${arrived} ` +
+			`want=${wanted.system}/${wanted.poi}/${wanted.docked} ` +
+			`got=${actual.system}/${actual.poi}/${actual.docked ?? "undocked"}` +
+			`${actual.inTransit ? " (in transit)" : ""} — ${result.message}`;
+
+		if (result.success && arrived) {
+			log.info(line);
+		} else {
+			log.warn(line);
+		}
 	}
 }

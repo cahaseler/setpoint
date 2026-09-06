@@ -45,6 +45,95 @@ export interface LoopResult extends GoalResult {
 	iterationCount: number;
 }
 
+/**
+ * What a reconciling goal did to one subject it was asked to bring into line.
+ *
+ * `"none"` covers both "already correct" and "deliberately skipped" — the two
+ * are distinguished by `ok` plus `message`, not by a separate action.
+ */
+export type ReconcileAction = "none" | "created" | "updated" | "removed";
+
+/** Fields common to every reconciled subject, whether it succeeded or not. */
+interface ReconcileSubjectBase {
+	/**
+	 * Whatever addresses this subject in the game — a `module_id`, a
+	 * `player_id`, an `item_id`, a ship uuid. Stable enough to diff two runs.
+	 */
+	id: string;
+	/** What sort of thing this is, so a generic consumer can render it. */
+	kind: string;
+	action: ReconcileAction;
+	/** What was asked for. Keeps a stored result diagnosable without the original request. */
+	desired?: Record<string, unknown>;
+	after?: Record<string, unknown>;
+}
+
+/** A subject that reached the desired state (or was already there). */
+export interface ReconcileSubjectOk extends ReconcileSubjectBase {
+	ok: true;
+	/** Why nothing was done, when `action` is `"none"` — e.g. "above half, reload would discard 4". */
+	message?: string;
+	before?: Record<string, unknown>;
+}
+
+/**
+ * A subject that did NOT reach the desired state.
+ *
+ * `message` and `before` are both required, deliberately. A caller submitting a
+ * reconcile request is usually working from its own model of the fleet, and the
+ * likeliest reason a subject fails is that the model is wrong — the ship is
+ * mid-transit, or is not where the caller believed it was. Returning a bare
+ * reason code invites the caller to treat the failure as intentional and move
+ * on; returning the state we actually observed forces the discrepancy into the
+ * open and makes the caller reconcile against reality.
+ *
+ * So `before` carries what the ship/member/hold actually looked like at the
+ * moment of failure (position, in-transit flag, docked base, current holder),
+ * not merely the field that was wrong.
+ */
+export interface ReconcileSubjectFailed extends ReconcileSubjectBase {
+	ok: false;
+	/**
+	 * A prefixed, machine-readable reason token (`cargo_full`, `not_at_poi`,
+	 * `busy:mining-loop`, `ambiguous_ammo`) so a caller can branch without
+	 * parsing prose.
+	 */
+	message: string;
+	/** The state actually observed. Required — see above. */
+	before: Record<string, unknown>;
+}
+
+/** One thing a reconciling goal acted on: a weapon, a fleet member, an item stack, a hull, a module slot. */
+export type ReconcileSubject = ReconcileSubjectOk | ReconcileSubjectFailed;
+
+/**
+ * Result of a goal that reconciles many subjects toward a desired state.
+ *
+ * The invariant that matters: `success` is true only when EVERY subject is
+ * `ok`, and `alreadySatisfied` only when every action is `"none"`. A goal that
+ * fixed four of five guns cannot report success — which is the structural fix
+ * for a partial reload reporting a clean result.
+ *
+ * Facts about the ship or fleet as a whole rather than any one subject (hold
+ * capacity, the fleet's id, the hull left parked behind) go in `context`, not
+ * smuggled into an unrelated subject.
+ */
+export interface ReconcileResult extends GoalResult {
+	subjects: ReconcileSubject[];
+	summary: { total: number; changed: number; unchanged: number; failed: number };
+	context?: Record<string, unknown>;
+}
+
+/**
+ * Result of an operation spanning several accounts — a fleet goal driven from
+ * a leader, or one goal submitted across a batch. Keyed by `player_id`, so a
+ * caller diffs it against the set it asked for.
+ */
+export interface FleetOperationResult extends GoalResult {
+	accounts: Record<string, GoalResult | ReconcileResult>;
+	summary: { total: number; succeeded: number; failed: number };
+}
+
 /** Status of a running (or previously run) loop, as exposed by the daemon's loop manager. */
 export interface LoopStatus {
 	type: string;
@@ -89,6 +178,16 @@ export interface CombatModeStatus {
 
 export type JobStatus = "pending" | "running" | "completed" | "failed";
 
+/**
+ * The terminal verdict on a job, absent while it is still pending or running.
+ *
+ * `status` answers "did the job finish", not "did the thing happen": a goal
+ * that ran to conclusion and failed its own preconditions is
+ * `status: "completed"` with `result.success: false`, which reads as success at
+ * a glance and repeatedly has. `outcome` is the field to branch on.
+ */
+export type JobOutcome = "succeeded" | "failed" | "aborted";
+
 /** A record of an async goal job, as tracked by the daemon's job manager. */
 export interface JobRecord {
 	jobId: string;
@@ -97,6 +196,8 @@ export interface JobRecord {
 	goalOptions?: unknown;
 	submittedAt: string;
 	status: JobStatus;
+	/** Terminal verdict — set once the job reaches a terminal state. */
+	outcome?: JobOutcome;
 	completedAt?: string;
 	result?: GoalResult;
 	error?: string;

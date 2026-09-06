@@ -18,10 +18,22 @@ export interface EnsureLoadoutOptions {
 	baseId: string;
 	/** Module type_ids to have installed. */
 	modules: string[];
-	/** Map of weapon type_id to ammo item_id. */
-	ammo?: Record<string, string>;
-	/** Where removed modules go. Defaults to "personal". */
+	/**
+	 * Where removed modules go. Defaults to "faction" — a module left in
+	 * personal storage is invisible to the next pilot's refit, so faction is
+	 * the only default under which a squad can pass hardware between hulls.
+	 */
 	uninstalledStorage?: "personal" | "faction" | "cargo";
+	/**
+	 * Which half of the refit to run. Defaults to `"both"`.
+	 *
+	 * A module can only be on one hull at a time, so fitting hull B with a gun
+	 * still bolted to hull A is impossible. Running `"strip"` across a whole
+	 * squad and then `"fit"` across the same squad puts every module in storage
+	 * before anything claims one, which is the only ordering that lets a squad
+	 * swap hardware between ships.
+	 */
+	phase?: "strip" | "fit" | "both";
 }
 
 /** Module record from the game state modules array. */
@@ -39,8 +51,11 @@ type StorageViewResult = Extract<StorageResponse, { items: unknown }>;
  * 3. Analyze current loadout vs desired
  * 4. Uninstall unwanted modules
  * 5. Source and install each desired module
- * 6. Source and load ammo
- * 7. Cleanup — deposit remaining cargo to personal storage
+ * 6. Cleanup — deposit remaining cargo to storage
+ *
+ * Ammo is deliberately NOT this goal's job: `ensure-magazines` owns magazine
+ * loading. Two goals filling magazines with different semantics is how a
+ * loadout could report success with four of five guns empty.
  */
 export class LibEnsureLoadout implements LibGoal {
 	readonly name = "ensure-loadout";
@@ -127,9 +142,11 @@ export class LibEnsureLoadout implements LibGoal {
 			}
 		}
 
-		// Check if already satisfied (no ammo changes needed either)
-		const ammoEntries = Object.entries(this.options.ammo ?? {});
-		if (toUninstall.length === 0 && toInstall.length === 0 && ammoEntries.length === 0) {
+		const phase = this.options.phase ?? "both";
+		const willUninstall = phase === "fit" ? [] : toUninstall;
+		const willInstall = phase === "strip" ? [] : toInstall;
+
+		if (willUninstall.length === 0 && willInstall.length === 0) {
 			const satisfiedResult = alreadySatisfied("Loadout already matches desired configuration");
 			stepResults.push({ goalName: "analyze-loadout", result: satisfiedResult });
 			return this.buildResult(
@@ -142,15 +159,15 @@ export class LibEnsureLoadout implements LibGoal {
 		}
 
 		const analyzeResult = succeeded(
-			`Loadout analysis: ${toUninstall.length} to remove, ${toInstall.length} to install, ${ammoEntries.length} ammo to load`,
+			`Loadout analysis (phase ${phase}): ${willUninstall.length} to remove, ${willInstall.length} to install`,
 			0,
 		);
 		stepResults.push({ goalName: "analyze-loadout", result: analyzeResult });
 
 		// Step 4: Uninstall unwanted modules
-		if (toUninstall.length > 0) {
-			log.info(`Step 4: Uninstalling ${toUninstall.length} unwanted module(s)`);
-			const uninstallResult = await this.uninstallModules(ctx, toUninstall);
+		if (willUninstall.length > 0) {
+			log.info(`Step 4: Uninstalling ${willUninstall.length} unwanted module(s)`);
+			const uninstallResult = await this.uninstallModules(ctx, willUninstall);
 			stepResults.push({ goalName: "uninstall-unwanted", result: uninstallResult });
 			totalTicks += uninstallResult.ticksUsed;
 			if (!uninstallResult.success) {
@@ -167,9 +184,9 @@ export class LibEnsureLoadout implements LibGoal {
 		}
 
 		// Step 5: Source and install each desired module
-		if (toInstall.length > 0) {
-			log.info(`Step 5: Sourcing and installing ${toInstall.length} module(s)`);
-			const installResult = await this.sourceAndInstallModules(ctx, toInstall);
+		if (willInstall.length > 0) {
+			log.info(`Step 5: Sourcing and installing ${willInstall.length} module(s)`);
+			const installResult = await this.sourceAndInstallModules(ctx, willInstall);
 			stepResults.push({ goalName: "source-and-install", result: installResult });
 			totalTicks += installResult.ticksUsed;
 			if (!installResult.success) {
@@ -185,27 +202,8 @@ export class LibEnsureLoadout implements LibGoal {
 			}
 		}
 
-		// Step 6: Source and load ammo
-		if (ammoEntries.length > 0) {
-			log.info(`Step 6: Loading ammo for ${ammoEntries.length} weapon(s)`);
-			const ammoResult = await this.sourceAndLoadAmmo(ctx, ammoEntries);
-			stepResults.push({ goalName: "load-ammo", result: ammoResult });
-			totalTicks += ammoResult.ticksUsed;
-			if (!ammoResult.success) {
-				return this.buildResult(
-					false,
-					`Failed at ammo loading: ${ammoResult.message}`,
-					totalTicks,
-					stepResults,
-				);
-			}
-			if (ammoResult.ticksUsed > 0) {
-				await ctx.refreshState();
-			}
-		}
-
-		// Step 7: Cleanup — deposit remaining cargo
-		log.info("Step 7: Cleanup — depositing remaining cargo");
+		// Step 6: Cleanup — deposit remaining cargo
+		log.info("Step 6: Cleanup — depositing remaining cargo");
 		const cleanupGoal = new LibEnsureEmptyCargo();
 		const cleanupResult = await cleanupGoal.execute(ctx);
 		stepResults.push({ goalName: "cleanup-cargo", result: cleanupResult });
@@ -213,10 +211,34 @@ export class LibEnsureLoadout implements LibGoal {
 
 		return this.buildResult(
 			true,
-			`Loadout configured: ${toUninstall.length} removed, ${toInstall.length} installed, ${ammoEntries.length} ammo loaded (${totalTicks} ticks)`,
+			`Loadout configured (phase ${phase}): ${willUninstall.length} removed, ${willInstall.length} installed (${totalTicks} ticks). Magazines are not loaded — run ensure-magazines.`,
 			totalTicks,
 			stepResults,
 		);
+	}
+
+	/**
+	 * Where uninstalled modules go.
+	 *
+	 * Defaults to faction storage: a module parked in personal storage is
+	 * invisible to the next pilot's refit, so faction is the only default under
+	 * which a squad can pass hardware between hulls. An account with no faction
+	 * has nowhere to deposit, though, and would fail at the deposit where it
+	 * used to succeed — so the default (and only the default) falls back to
+	 * personal. An explicit `uninstalledStorage: "faction"` is still honoured
+	 * and still fails loudly, because the caller asked for it by name.
+	 */
+	private resolveStorage(ctx: LibGoalContext): "personal" | "faction" | "cargo" {
+		const requested = this.options.uninstalledStorage;
+		if (requested !== undefined) return requested;
+
+		const hasFaction =
+			typeof (ctx.state.player as { faction_id?: string } | undefined)?.faction_id === "string";
+		if (!hasFaction) {
+			log.info("Account has no faction — depositing uninstalled modules to personal storage");
+			return "personal";
+		}
+		return "faction";
 	}
 
 	private getModules(ctx: LibGoalContext): ModuleRecord[] {
@@ -229,7 +251,7 @@ export class LibEnsureLoadout implements LibGoal {
 	): Promise<GoalResult> {
 		let ticksUsed = 0;
 		const messages: string[] = [];
-		const storage = this.options.uninstalledStorage ?? "personal";
+		const storage = this.resolveStorage(ctx);
 
 		for (const mod of modules) {
 			// Check for external cancellation between modules — a loadout change can
@@ -314,60 +336,6 @@ export class LibEnsureLoadout implements LibGoal {
 		}
 
 		return succeeded(`Installed ${typeIds.length} module(s): ${messages.join("; ")}`, ticksUsed);
-	}
-
-	private async sourceAndLoadAmmo(
-		ctx: LibGoalContext,
-		ammoEntries: [string, string][],
-	): Promise<GoalResult> {
-		let ticksUsed = 0;
-		const messages: string[] = [];
-
-		for (const [weaponTypeId, ammoItemId] of ammoEntries) {
-			// Check for external cancellation between weapons — a loadout change can
-			// touch many weapons, and a force abort must not wait for them all.
-			if (ctx.signal?.aborted) {
-				return failed(`Ammo loading aborted after ${ticksUsed} tick(s)`, ticksUsed);
-			}
-
-			// Find the installed weapon by type_id
-			const modules = this.getModules(ctx);
-			const weapon = modules.find((m) => (m["type_id"] as string) === weaponTypeId);
-
-			if (!weapon) {
-				return failed(`Cannot load ammo: weapon type ${weaponTypeId} is not installed`, ticksUsed);
-			}
-
-			const weaponModuleId = weapon["module_id"] as string;
-
-			// Source ammo into cargo
-			const sourceResult = await this.sourceItem(ctx, ammoItemId);
-			ticksUsed += sourceResult.ticksUsed;
-
-			if (!sourceResult.success) {
-				return failed(sourceResult.message, ticksUsed);
-			}
-
-			if (sourceResult.ticksUsed > 0) {
-				await ctx.refreshState();
-			}
-
-			// Reload the weapon
-			log.info(`Reloading weapon ${weaponTypeId} (${weaponModuleId}) with ${ammoItemId}`);
-			await ctx.account.commands.spacemolt_battle.reload({
-				id: weaponModuleId,
-				target: ammoItemId,
-			});
-			ticksUsed++;
-			await ctx.refreshState();
-
-			messages.push(`${weaponTypeId} ← ${ammoItemId}`);
-		}
-
-		return succeeded(
-			`Loaded ammo for ${ammoEntries.length} weapon(s): ${messages.join("; ")}`,
-			ticksUsed,
-		);
 	}
 
 	/**

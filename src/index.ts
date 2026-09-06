@@ -16,6 +16,7 @@ import {
 import { parseLibConfig } from "./accounts/lib-config.js";
 import { LibAccountManager } from "./accounts/lib-manager.js";
 import { type LibManagedAccount, playerId as playerIdOf } from "./accounts/lib-types.js";
+import { CombatHeartbeatStore } from "./combat/combat-heartbeat.js";
 import { CombatModeStore } from "./combat/combat-mode-store.js";
 import { CombatReactor } from "./combat/combat-reactor.js";
 import { makeLibGoalContext } from "./dispatcher/lib-goal-context.js";
@@ -43,11 +44,7 @@ if (envLogLevel && VALID_LOG_LEVELS.has(envLogLevel)) {
 	setLogLevel(envLogLevel as LogLevel);
 }
 
-// Enable file logging — writes to logs/daemon.log alongside stdout
-enableFileLogging();
-
 const log = createLogger("main");
-installCrashSafetyHandlers(log);
 
 const CONFIG_DIR = join(import.meta.dir, "..", "config");
 const DB_PATH = join(import.meta.dir, "..", "data", "dispatcher.db");
@@ -114,6 +111,9 @@ async function main(): Promise<void> {
 	// Per-account combat-response override (flee vs. externally-driven combat
 	// logic) — loaded before the reactor and server both need it.
 	const combatModeStore = await CombatModeStore.load(CONFIG_DIR);
+	// In memory only: a heartbeat asserts a driver process is alive right now,
+	// so a value surviving a restart would be a lie about one that isn't.
+	const combatHeartbeats = new CombatHeartbeatStore();
 
 	// Combat detection (src/combat/) needs executingGoals/claimedAccounts —
 	// otherwise built privately inside startServer() — and loopManager/
@@ -178,6 +178,10 @@ async function main(): Promise<void> {
 	// owned account under the auth rate limit, which for a large fleet can take
 	// many minutes — we must not hold the server down for that whole window.
 	const server = startServer({
+		combatHeartbeats,
+		// Late-bound through reactorRef: the reactor cannot exist until the
+		// server has produced the loop and job managers it depends on.
+		isInCombat: (playerId: string) => reactorRef.current?.isInCombat(playerId) ?? false,
 		port: API_PORT,
 		manager,
 		store,
@@ -201,6 +205,7 @@ async function main(): Promise<void> {
 		configDir: CONFIG_DIR,
 		combatEventsStore,
 		combatModeStore,
+		heartbeats: combatHeartbeats,
 	});
 
 	// Connect all owned accounts in the background (the lib staggers connections
@@ -429,7 +434,16 @@ export function resumeLoopConfig(
 	}
 }
 
+// Side effects that belong to RUNNING the daemon, not to importing this module.
+// `connectAccounts`/`resumeLoopConfig` are imported from here by tests; before
+// this guard, that import turned on file logging for the whole test process and
+// every subsequent test line was appended to the live logs/daemon.log that the
+// operational sessions grep — fabricated goal activity in the real log.
 if (import.meta.main) {
+	// Writes to logs/daemon.log alongside stdout.
+	enableFileLogging();
+	installCrashSafetyHandlers(log);
+
 	main().catch((err) => {
 		log.error(`Fatal error: ${errorMessage(err)}`);
 		process.exit(1);

@@ -9,9 +9,16 @@ import type { MarketBook, ObservationView, SpacemoltClient } from "@spacemolt/li
 import { loadRegistrationConfig } from "../accounts/config.js";
 import type { LibAccountManager } from "../accounts/lib-manager.js";
 import { type LibManagedAccount, playerId as playerIdOf } from "../accounts/lib-types.js";
+import type { CombatHeartbeatStore } from "../combat/combat-heartbeat.js";
 import type { CombatModeStore } from "../combat/combat-mode-store.js";
 import type { ProgressRef } from "../dispatcher/goals.js";
+import type { GoalResult } from "../dispatcher/goals.js";
+import { fleetOperation } from "../dispatcher/goals.js";
 import { makeLibGoalContext } from "../dispatcher/lib-goal-context.js";
+import { ensureFleet } from "../fleet/ensure-fleet.js";
+import { fleetMove } from "../fleet/fleet-move.js";
+import type { FleetAccessDeps } from "../fleet/server-access.js";
+import { makeFleetAccess } from "../fleet/server-access.js";
 
 import type { CraftingEventsStore } from "../state/crafting-events-store.js";
 import type { EventBuffer } from "../state/event-buffer.js";
@@ -66,6 +73,14 @@ export interface HandlerContext {
 	 * account previously got recorded as busy.
 	 */
 	claimedAccounts: Set<string>;
+	/**
+	 * Whether an account is mid-battle. Supplied by the combat reactor; combat
+	 * strips an account of its loop and goals, so a fighting ship looks idle to
+	 * every other busy check here.
+	 */
+	isInCombat?: ((playerId: string) => boolean) | undefined;
+	/** Liveness signals from external combat drivers. */
+	combatHeartbeats?: CombatHeartbeatStore | undefined;
 }
 
 /** Resolve an account by player_id or username (case-insensitive). */
@@ -1809,4 +1824,418 @@ export function handlePirateRadioEvents(
 	});
 
 	return new Response(stream, { headers: SSE_HEADERS });
+}
+
+/**
+ * Run a unit of work for an account as cancellable, registered work.
+ *
+ * Anything long-running MUST go through here rather than just claiming the
+ * account. `forceReleaseAccount` — used by `DELETE /accounts/:id/abort` and by
+ * the combat reactor on combat entry — cancels through `executingGoals`; work
+ * that only sits in `claimedAccounts` is invisible to it, so an abort reports
+ * success while the goal keeps flying the ship. It is also what makes
+ * `hasExecutingGoal` true on the dashboard.
+ */
+async function runCancellable<T>(
+	ctx: HandlerContext,
+	playerId: string,
+	goalType: string,
+	goalOptions: Record<string, unknown>,
+	run: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+	const controller = new AbortController();
+	const progress: ProgressRef = {
+		goalType,
+		goalOptions,
+		completedSteps: [],
+		remainingSteps: [],
+	};
+	const promise = run(controller.signal);
+
+	ctx.executingGoals.set(playerId, {
+		goalType,
+		goalOptions,
+		startedAt: new Date().toISOString(),
+		controller,
+		progress,
+		promise,
+	});
+
+	try {
+		return await promise;
+	} finally {
+		ctx.executingGoals.delete(playerId);
+	}
+}
+
+/** How often the battle-log tail asks for new ticks. One game tick. */
+const BATTLE_LOG_POLL_MS = 10_000;
+
+/**
+ * Stream a battle's tick-by-tick log as Server-Sent Events.
+ *
+ * `battle/status` only reports other participants as percentages and only
+ * answers for the asking account, so following a fight with N pilots means N
+ * polls per tick. The battle log carries absolute hull, shield, zone, stance
+ * and target for EVERY participant plus per-weapon attack rows, so one tail
+ * describes the whole fight.
+ *
+ * Polled on demand rather than tailed in the background: it costs nothing when
+ * nobody is watching, and a client that cares is by definition connected. The
+ * cursor advances by tick, so a reconnecting client resumes with `sinceTick`
+ * instead of replaying the fight.
+ */
+export function handleBattleLogEvents(
+	req: Request,
+	params: RouteParams,
+	ctx: HandlerContext,
+): Response {
+	const account = resolveAccount(ctx, params["playerId"] ?? "");
+	if (!account) {
+		return errorResponse("Account not found", 404);
+	}
+	const actualId = playerIdOf(account);
+
+	const url = new URL(req.url);
+	const battleIdParam = url.searchParams.get("battleId") ?? undefined;
+	const sinceTickParam = Number(url.searchParams.get("sinceTick"));
+	let cursor = Number.isFinite(sinceTickParam) ? sinceTickParam : 0;
+
+	const encoder = new TextEncoder();
+	let timer: ReturnType<typeof setInterval> | undefined;
+	let closed = false;
+
+	const stream = new ReadableStream<Uint8Array>({
+		start(controller): void {
+			const send = (payload: unknown): void => {
+				if (closed) return;
+				controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
+			};
+
+			/**
+			 * End the tail for real. Without this, a battle that finished kept the
+			 * poll interval alive, so a client that stopped reading without closing
+			 * its EventSource drew an extra battle.status/battle.log game query
+			 * every ten seconds forever.
+			 */
+			const finish = (payload: unknown): void => {
+				send(payload);
+				closed = true;
+				if (timer) clearInterval(timer);
+				timer = undefined;
+				controller.close();
+			};
+
+			const poll = async (): Promise<void> => {
+				try {
+					const live = ctx.manager.getByPlayerId(actualId);
+					if (!live) {
+						finish({ type: "ended", reason: "account_disconnected" });
+						return;
+					}
+
+					let battleId = battleIdParam;
+					if (battleId === undefined) {
+						const status = await live.commands.spacemolt_battle.status();
+						battleId = (status.structuredContent as { battle_id?: string } | undefined)?.battle_id;
+						if (battleId === undefined) return;
+					}
+
+					const response = await live.commands.spacemolt_battle.log({
+						id: battleId,
+						tick_start: cursor,
+					});
+					const body = response.structuredContent as
+						| { entries?: Array<{ tick?: number }>; status?: string }
+						| undefined;
+
+					for (const entry of body?.entries ?? []) {
+						send({ type: "tick", battleId, entry });
+						if (typeof entry.tick === "number" && entry.tick >= cursor) {
+							cursor = entry.tick + 1;
+						}
+					}
+
+					if (body?.status === "completed") {
+						finish({ type: "ended", reason: "battle_completed", battleId });
+					}
+				} catch (err) {
+					// A battle that has ended, or an account no longer in one, answers
+					// with an error here. That is a normal end to the tail: say why,
+					// then actually stop, rather than re-querying the game every tick
+					// on behalf of a fight that is over.
+					finish({ type: "error", message: errorMessage(err) });
+				}
+			};
+
+			// Flush a frame immediately. A stream that writes no bytes leaves the
+			// response headers unsent, so a client waits on a connection that
+			// looks dead until the first tick happens to produce output.
+			send({ type: "open", battleId: battleIdParam ?? null, sinceTick: cursor });
+
+			void poll();
+			timer = setInterval(() => {
+				void poll();
+			}, BATTLE_LOG_POLL_MS);
+		},
+		cancel(): void {
+			closed = true;
+			if (timer) clearInterval(timer);
+		},
+	});
+
+	return new Response(stream, { headers: SSE_HEADERS });
+}
+
+// ── Fleet ───────────────────────────────────────────────────────────
+
+/**
+ * Reconcile the game fleet led by this account to an exact membership.
+ *
+ * Claims only the LEADER. Members are never claimed or released — a member
+ * already working is reported as busy in its own subject and left alone.
+ */
+export async function handleEnsureFleet(
+	req: Request,
+	params: RouteParams,
+	ctx: HandlerContext,
+): Promise<Response> {
+	const account = resolveAccount(ctx, params["playerId"] ?? "");
+	if (!account) {
+		return errorResponse(`Account not found: ${params["playerId"]}`, 404);
+	}
+	const leaderId = playerIdOf(account);
+
+	if (ctx.loopManager.isRunning(leaderId)) {
+		return errorResponse("A loop is running on the leader account. Stop it first.", 409);
+	}
+	if (ctx.jobManager.isRunning(leaderId)) {
+		return errorResponse("An async goal job is already running on the leader account.", 409);
+	}
+	if (ctx.executingGoals.has(leaderId)) {
+		return errorResponse("A goal is already executing on the leader account.", 409);
+	}
+	if (ctx.claimedAccounts.has(leaderId)) {
+		return errorResponse("Another request for the leader account is in flight.", 409);
+	}
+	// Claimed synchronously, before any await, for the same reason goal
+	// submission claims here: two concurrent requests must not both pass.
+	ctx.claimedAccounts.add(leaderId);
+
+	try {
+		let body: unknown;
+		try {
+			body = await req.json();
+		} catch {
+			return errorResponse("Invalid JSON body", 400);
+		}
+
+		const members = (body as { members?: unknown })?.members;
+		if (!Array.isArray(members) || members.some((m) => typeof m !== "string")) {
+			return errorResponse("members is required (array of player ids or usernames)", 400);
+		}
+
+		const result = await runCancellable(ctx, leaderId, "ensure-fleet", { members }, (signal) =>
+			ensureFleet(
+				makeLibGoalContext(resolveLiveAccount(ctx, leaderId), signal),
+				makeFleetAccess(ctx as unknown as FleetAccessDeps),
+				{ members: members as string[] },
+			),
+		);
+		return jsonResponse(result);
+	} catch (err) {
+		log.error(`[${leaderId}] ensure-fleet failed: ${errorMessage(err)}`);
+		return errorResponse(`ensure-fleet failed: ${errorMessage(err)}`, 500);
+	} finally {
+		ctx.claimedAccounts.delete(leaderId);
+	}
+}
+
+/**
+ * Move the fleet this account leads, then bring every member to readiness.
+ *
+ * Claims only the leader, like ensure-fleet: members are carried by the game's
+ * own fleet movement, not commanded individually.
+ */
+export async function handleFleetMove(
+	req: Request,
+	params: RouteParams,
+	ctx: HandlerContext,
+): Promise<Response> {
+	const account = resolveAccount(ctx, params["playerId"] ?? "");
+	if (!account) {
+		return errorResponse(`Account not found: ${params["playerId"]}`, 404);
+	}
+	const leaderId = playerIdOf(account);
+
+	if (ctx.loopManager.isRunning(leaderId)) {
+		return errorResponse("A loop is running on the leader account. Stop it first.", 409);
+	}
+	if (ctx.jobManager.isRunning(leaderId) || ctx.executingGoals.has(leaderId)) {
+		return errorResponse("Work is already running on the leader account.", 409);
+	}
+	if (ctx.claimedAccounts.has(leaderId)) {
+		return errorResponse("Another request for the leader account is in flight.", 409);
+	}
+	ctx.claimedAccounts.add(leaderId);
+
+	try {
+		let body: unknown;
+		try {
+			body = await req.json();
+		} catch {
+			return errorResponse("Invalid JSON body", 400);
+		}
+
+		const { systemId, poiId, baseId, refuel, repair, maxWaitMs } = (body ?? {}) as Record<
+			string,
+			unknown
+		>;
+		if (typeof systemId !== "string" || typeof poiId !== "string") {
+			return errorResponse("systemId and poiId are required (strings)", 400);
+		}
+
+		const moveOptions = {
+			systemId,
+			poiId,
+			...(typeof baseId === "string" ? { baseId } : {}),
+			...(typeof refuel === "boolean" ? { refuel } : {}),
+			...(typeof repair === "boolean" ? { repair } : {}),
+			...(typeof maxWaitMs === "number" ? { maxWaitMs } : {}),
+		};
+		const result = await runCancellable(ctx, leaderId, "fleet-move", moveOptions, (signal) =>
+			fleetMove(
+				makeLibGoalContext(resolveLiveAccount(ctx, leaderId), signal),
+				makeFleetAccess(ctx as unknown as FleetAccessDeps),
+				moveOptions,
+			),
+		);
+		return jsonResponse(result);
+	} catch (err) {
+		log.error(`[${leaderId}] fleet-move failed: ${errorMessage(err)}`);
+		return errorResponse(`fleet-move failed: ${errorMessage(err)}`, 500);
+	} finally {
+		ctx.claimedAccounts.delete(leaderId);
+	}
+}
+
+/**
+ * Record that an external combat driver is alive for this account.
+ *
+ * Deliberately a heartbeat rather than a command count: the most common tick in
+ * a well-fought battle is one where the driver holds and lets auto-fire
+ * resolve, so "sent no command" is not evidence of a dead driver. A driver
+ * pings this every tick it is alive, whether or not it acted.
+ */
+export function handleCombatHeartbeat(
+	_req: Request,
+	params: RouteParams,
+	ctx: HandlerContext,
+): Response {
+	const account = resolveAccount(ctx, params["playerId"] ?? "");
+	if (!account) {
+		return errorResponse(`Account not found: ${params["playerId"]}`, 404);
+	}
+	const playerId = playerIdOf(account);
+	ctx.combatHeartbeats?.beat(playerId);
+	return jsonResponse({ playerId, acknowledgedAt: new Date().toISOString() });
+}
+
+// ── Batch goals ─────────────────────────────────────────────────────
+
+/**
+ * Run one goal across several accounts and answer once, keyed by player id.
+ *
+ * Accounts are independent and `@spacemolt/lib` serialises mutations per
+ * account, so these run concurrently rather than one round trip at a time —
+ * which is the entire point for a caller driving dozens of ships.
+ *
+ * An account already busy is reported and skipped, never preempted, matching
+ * the rest of the fleet surface. Each account's result carries its own
+ * ticksUsed, so a caller can see which one paced the batch.
+ */
+export async function handleBatchGoal(
+	req: Request,
+	_params: RouteParams,
+	ctx: HandlerContext,
+): Promise<Response> {
+	let body: unknown;
+	try {
+		body = await req.json();
+	} catch {
+		return errorResponse("Invalid JSON body", 400);
+	}
+
+	const { playerIds, type, options } = (body ?? {}) as {
+		playerIds?: unknown;
+		type?: unknown;
+		options?: unknown;
+	};
+
+	if (
+		!Array.isArray(playerIds) ||
+		playerIds.length === 0 ||
+		playerIds.some((p) => typeof p !== "string")
+	) {
+		return errorResponse("playerIds is required (non-empty array of player ids or usernames)", 400);
+	}
+	if (typeof type !== "string") {
+		return errorResponse("type is required (goal type)", 400);
+	}
+
+	const accounts: Record<string, GoalResult> = {};
+	const claimed: string[] = [];
+
+	const runOne = async (idOrName: string): Promise<[string, GoalResult]> => {
+		const account = resolveAccount(ctx, idOrName);
+		if (!account) {
+			return [
+				idOrName,
+				{ success: false, message: "not_connected", alreadySatisfied: false, ticksUsed: 0 },
+			];
+		}
+		const playerId = playerIdOf(account);
+
+		const busy = makeFleetAccess(ctx as unknown as FleetAccessDeps).busyReason(playerId);
+		if (busy !== undefined) {
+			return [playerId, { success: false, message: busy, alreadySatisfied: false, ticksUsed: 0 }];
+		}
+		if (ctx.claimedAccounts.has(playerId)) {
+			return [
+				playerId,
+				{ success: false, message: "busy:claimed", alreadySatisfied: false, ticksUsed: 0 },
+			];
+		}
+		ctx.claimedAccounts.add(playerId);
+		claimed.push(playerId);
+
+		try {
+			const goalOptions = (options ?? {}) as Record<string, unknown>;
+			const goal = createGoal(type, goalOptions);
+			const result = await runCancellable(ctx, playerId, type, goalOptions, (signal) =>
+				goal.execute(makeLibGoalContext(resolveLiveAccount(ctx, playerId), signal)),
+			);
+			return [playerId, result];
+		} catch (err) {
+			log.error(`[${playerId}] batch goal ${type} failed: ${errorMessage(err)}`);
+			return [
+				playerId,
+				{ success: false, message: errorMessage(err), alreadySatisfied: false, ticksUsed: 0 },
+			];
+		}
+	};
+
+	try {
+		const settled = await Promise.all((playerIds as string[]).map(runOne));
+		for (const [id, result] of settled) {
+			accounts[id] = result;
+		}
+	} finally {
+		for (const id of claimed) {
+			ctx.claimedAccounts.delete(id);
+		}
+	}
+
+	const ticks = Object.values(accounts).reduce((sum, r) => sum + r.ticksUsed, 0);
+	return jsonResponse(fleetOperation(accounts, ticks));
 }

@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import type { CombatEnvelope, PirateRadioEnvelope } from "@setpoint/protocol";
 import type { SpacemoltClient } from "@spacemolt/lib";
 import type { LibAccountManager } from "../accounts/lib-manager.js";
+import type { CombatHeartbeatStore } from "../combat/combat-heartbeat.js";
 import type { CombatModeStore } from "../combat/combat-mode-store.js";
 
 import type { CraftingEventsStore } from "../state/crafting-events-store.js";
@@ -14,12 +15,17 @@ import {
 	type HandlerContext,
 	handleAbortAccount,
 	handleAddAccount,
+	handleBatchGoal,
+	handleBattleLogEvents,
 	handleCombatEvents,
+	handleCombatHeartbeat,
 	handleCraftingEvents,
 	handleDashboardData,
 	handleDeleteAccount,
+	handleEnsureFleet,
 	handleExecuteGoal,
 	handleExecuteGoalAsync,
+	handleFleetMove,
 	handleGetAccount,
 	handleGetCombatMode,
 	handleGetJob,
@@ -70,14 +76,22 @@ export function resolveBindHost(env: Record<string, string | undefined> = proces
 export function isUnboundedRequest(req: Request): boolean {
 	const { pathname } = new URL(req.url);
 	if (req.method === "GET") {
-		return /\/(crafting|combat|pirate-radio)\/events$/.test(pathname);
+		return /\/(crafting|combat|pirate-radio|battle-log)\/events$/.test(pathname);
 	}
 	if (req.method === "POST") {
 		return (
 			/\/goal$/.test(pathname) ||
 			/\/raw$/.test(pathname) ||
 			pathname === "/accounts/register" ||
-			/\/loop$/.test(pathname)
+			/\/loop$/.test(pathname) ||
+			// Fleet operations and batch goals block on real game work for as long
+			// as it takes: fleet-move waits up to the full location budget PER
+			// member, and a batch runs a goal across dozens of accounts. Without
+			// this, Bun's 255s server idle timeout drops the caller while the work
+			// carries on server-side.
+			pathname === "/goals/batch" ||
+			/\/fleet$/.test(pathname) ||
+			/\/fleet\/move$/.test(pathname)
 		);
 	}
 	if (req.method === "DELETE") {
@@ -97,6 +111,9 @@ export interface ServerOptions {
 	combatEventsStore: EventBuffer<CombatEnvelope>;
 	pirateRadioStore: EventBuffer<PirateRadioEnvelope>;
 	combatModeStore: CombatModeStore;
+	combatHeartbeats?: CombatHeartbeatStore | undefined;
+	/** Whether an account is mid-battle. Late-bound: the combat reactor is built after the server. */
+	isInCombat?: ((playerId: string) => boolean) | undefined;
 	/**
 	 * Shared with the caller (rather than constructed privately here) so
 	 * combat detection — wired into `LibAccountManager` before `startServer()`
@@ -266,6 +283,12 @@ export function buildRoutes(ctx: HandlerContext): RouteTable {
 			DELETE: r(handleStopLoop),
 		},
 
+		"/accounts/:playerId/fleet": { POST: r(handleEnsureFleet) },
+		"/accounts/:playerId/fleet/move": { POST: r(handleFleetMove) },
+		"/accounts/:playerId/combat-heartbeat": { POST: r(handleCombatHeartbeat) },
+		"/accounts/:playerId/battle-log/events": { GET: r(handleBattleLogEvents) },
+		"/goals/batch": { POST: r(handleBatchGoal) },
+
 		"/accounts/:playerId/combat-mode": {
 			GET: r(handleGetCombatMode),
 			PATCH: r(handleSetCombatMode),
@@ -322,6 +345,8 @@ export function startServer(options: ServerOptions): DispatcherServer {
 		combatEventsStore: options.combatEventsStore,
 		pirateRadioStore: options.pirateRadioStore,
 		combatModeStore: options.combatModeStore,
+		combatHeartbeats: options.combatHeartbeats,
+		isInCombat: options.isInCombat,
 	};
 
 	const server = Bun.serve({

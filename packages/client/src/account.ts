@@ -6,6 +6,7 @@ import type {
 	CombatModeStatus,
 	CraftingUpdateEnvelope,
 	Empire,
+	FleetOperationResult,
 	GoalOptionsMap,
 	GoalResult,
 	GoalType,
@@ -16,6 +17,7 @@ import type {
 	MarketBookSnapshot,
 	ObservationSnapshot,
 	PirateRadioEnvelope,
+	ReconcileResult,
 	V2GameState,
 } from "@setpoint/protocol";
 import type { GetSystemResponse } from "@spacemolt/lib";
@@ -432,6 +434,48 @@ export class AccountCombatModeApi {
 		return result as CombatModeStatus;
 	}
 
+	/**
+	 * Streams a battle's tick-by-tick log.
+	 *
+	 * `battle/status` reports other participants only as percentages and only
+	 * answers for the asking account, so following a fight with N pilots costs N
+	 * polls per tick. The log carries absolute hull, shield, zone, stance and
+	 * target for every participant, so one stream describes the whole fight.
+	 *
+	 * Pass `sinceTick` to resume after a reconnect instead of replaying.
+	 */
+	battleLog(options: { battleId?: string; sinceTick?: number } = {}): EventSource {
+		const params = new URLSearchParams();
+		if (options.battleId !== undefined) params.set("battleId", options.battleId);
+		if (options.sinceTick !== undefined) params.set("sinceTick", String(options.sinceTick));
+		const query = params.size > 0 ? `?${params.toString()}` : "";
+		return new EventSource(
+			`${this.client.baseUrl}/accounts/${encodeURIComponent(this.id)}/battle-log/events${query}`,
+		);
+	}
+
+	/**
+	 * Signals that an external combat driver is alive for this account.
+	 *
+	 * Call this every tick the driver is running, whether or not it issued a
+	 * command — holding position is a legitimate and common move, so silence on
+	 * the command channel is not evidence of a dead driver. If the daemon sees
+	 * no heartbeat for five ticks while the account is in a battle, it takes the
+	 * fight with its built-in flee response rather than leaving a ship that
+	 * neither fights nor flees.
+	 *
+	 * The account's configured mode is not changed when that happens: re-arming
+	 * the driver is the caller's business, and the next battle starts external
+	 * again.
+	 */
+	async heartbeat(): Promise<{ playerId: string; acknowledgedAt: string }> {
+		const result = await this.client.request(
+			"POST",
+			`/accounts/${encodeURIComponent(this.id)}/combat-heartbeat`,
+		);
+		return result as { playerId: string; acknowledgedAt: string };
+	}
+
 	/** Sets and persists the account's combat-mode setting — takes effect on the next combat entry, no restart needed. */
 	async set(mode: CombatMode): Promise<CombatModeStatus> {
 		const result = await this.client.request(
@@ -440,6 +484,65 @@ export class AccountCombatModeApi {
 			{ body: { mode } },
 		);
 		return result as CombatModeStatus;
+	}
+}
+
+/**
+ * Fleet sub-API for an account, over `POST /accounts/:id/fleet`.
+ *
+ * Runs on the LEADER account. The daemon drives the invitees' accepts itself,
+ * but never takes an account away from work it is already doing: a member
+ * mid-loop, mid-goal or in combat comes back as a failed subject naming why,
+ * and it is left alone. Releasing an account is an operator action
+ * (`DELETE /accounts/:id/abort`).
+ */
+export class AccountFleetApi {
+	constructor(
+		private readonly client: SetpointClient,
+		private readonly id: string,
+	) {}
+
+	/**
+	 * Moves the fleet by moving its leader, then brings every member to
+	 * readiness — fuel and repair do not cascade from the leader, so each pays
+	 * its own way on arrival.
+	 *
+	 * Waits for a leader that is mid-jump rather than refusing: mid-transit the
+	 * leader reports no POI, so members measured against it would all look like
+	 * strays.
+	 */
+	async move(options: {
+		systemId: string;
+		poiId: string;
+		baseId?: string;
+		refuel?: boolean;
+		repair?: boolean;
+		maxWaitMs?: number;
+	}): Promise<FleetOperationResult> {
+		const result = await this.client.request(
+			"POST",
+			`/accounts/${encodeURIComponent(this.id)}/fleet/move`,
+			{ body: options },
+		);
+		return result as FleetOperationResult;
+	}
+
+	/**
+	 * Reconciles this account's fleet to exactly `members`, which may be player
+	 * ids or usernames. An empty list disbands the fleet — a leader cannot
+	 * simply leave one.
+	 *
+	 * Does not move ships: a member that is not already at the leader's POI
+	 * fails `not_at_poi` and reports where it actually is, so a caller can tell
+	 * an inbound ship from a stray one.
+	 */
+	async ensure(members: string[]): Promise<ReconcileResult> {
+		const result = await this.client.request(
+			"POST",
+			`/accounts/${encodeURIComponent(this.id)}/fleet`,
+			{ body: { members } },
+		);
+		return result as ReconcileResult;
 	}
 }
 
@@ -472,6 +575,9 @@ export class AccountApi {
 	/** Live pirate-radio sub-API for this account (`sp.account(id).pirateRadio`). */
 	readonly pirateRadio: AccountPirateRadioApi;
 
+	/** Fleet-composition sub-API for this account as leader (`sp.account(id).fleet`). */
+	readonly fleet: AccountFleetApi;
+
 	constructor(
 		private readonly client: SetpointClient,
 		private readonly id: string,
@@ -485,6 +591,7 @@ export class AccountApi {
 		this.combat = new AccountCombatApi(client, id);
 		this.combatMode = new AccountCombatModeApi(client, id);
 		this.pirateRadio = new AccountPirateRadioApi(client, id);
+		this.fleet = new AccountFleetApi(client, id);
 	}
 
 	/**

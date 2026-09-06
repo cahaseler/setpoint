@@ -1,6 +1,6 @@
 {
 	"name": "setpoint",
-	"version": "0.0.290",
+	"version": "0.0.291",
 	"description": "SpaceMolt game client service — declarative multi-account automation via the v2 REST API",
 	"license": "MIT",
 	"type": "module",
@@ -14,8 +14,8 @@
 		"start": "bun run src/index.ts",
 		"dev": "bun run --watch src/index.ts",
 		"smctl": "bun run src/cli/index.ts",
-		"test": "bun test tests/accounts tests/cli tests/combat tests/dispatcher tests/server tests/state tests/util packages/*/tests",
-		"test:coverage": "bun test --coverage tests/accounts tests/cli tests/combat tests/dispatcher tests/server tests/state tests/util packages/*/tests",
+		"test": "bun test tests/accounts tests/cli tests/combat tests/dispatcher tests/fleet tests/server tests/state tests/util packages/*/tests",
+		"test:coverage": "bun test --coverage tests/accounts tests/cli tests/combat tests/dispatcher tests/fleet tests/server tests/state tests/util packages/*/tests",
 		"lint": "biome check .",
 		"lint:fix": "biome check --write .",
 		"format": "biome format --write .",
@@ -31,6 +31,6 @@
 	},
 	"dependencies": {
 		"@setpoint/protocol": "workspace:*",
-		"@spacemolt/lib": "^13.1.0"
+		"@spacemolt/lib": "13.3.0"
 	}
 }

@@ -2,7 +2,10 @@ import { deprecatedGoalMessage, goalSchemas } from "@setpoint/protocol";
 import {
 	LibBuyAtStation,
 	LibEnhancedMiningRun,
+	LibEnsureCargo,
+	LibEnsureHull,
 	LibEnsureLoadout,
+	LibEnsureMagazines,
 	LibEnsureMarketbook,
 	LibFuelRescue,
 	LibLoadAtStation,
@@ -40,6 +43,8 @@ import {
 	LibLoadFromStorage,
 	LibNavigateToSystem,
 	LibNavigateViaRoute,
+	LibOpenBattle,
+	LibReloadWeapon,
 	LibScan,
 	LibSellOrDepositCargo,
 	LibTransferStorage,
@@ -78,7 +83,12 @@ const registry: ReadonlyMap<string, GoalFactory> = new Map<string, GoalFactory>(
 	["ensure-undocked", () => new LibEnsureUndocked()],
 	[
 		"ensure-fueled",
-		(opts) => new LibEnsureFueled(goalSchemas["ensure-fueled"].parse(opts).targetFuel),
+		(opts) => {
+			const validated = goalSchemas["ensure-fueled"].parse(opts);
+			return new LibEnsureFueled(validated.targetFuel, {
+				...(validated.requireFull !== undefined ? { requireFull: validated.requireFull } : {}),
+			});
+		},
 	],
 	["ensure-repaired", () => new LibEnsureRepaired()],
 	[
@@ -237,6 +247,9 @@ const registry: ReadonlyMap<string, GoalFactory> = new Map<string, GoalFactory>(
 				poiId: validated.poiId,
 				baseId: validated.baseId,
 				...(validated.refuel !== undefined ? { refuel: validated.refuel } : {}),
+				...(validated.requireFullFuel !== undefined
+					? { requireFullFuel: validated.requireFullFuel }
+					: {}),
 				...(validated.repair !== undefined ? { repair: validated.repair } : {}),
 				...(validated.cashSource !== undefined ? { cashSource: validated.cashSource } : {}),
 				...(validated.minCredits !== undefined ? { minCredits: validated.minCredits } : {}),
@@ -388,10 +401,71 @@ const registry: ReadonlyMap<string, GoalFactory> = new Map<string, GoalFactory>(
 				poiId: validated.poiId,
 				baseId: validated.baseId,
 				modules: validated.modules,
-				...(validated.ammo !== undefined ? { ammo: validated.ammo } : {}),
 				...(validated.uninstalledStorage !== undefined
 					? { uninstalledStorage: validated.uninstalledStorage }
 					: {}),
+				...(validated.phase !== undefined ? { phase: validated.phase } : {}),
+			});
+		},
+	],
+	[
+		"ensure-cargo",
+		(opts) => {
+			const validated = goalSchemas["ensure-cargo"].parse(opts);
+			return new LibEnsureCargo({
+				systemId: validated.systemId,
+				poiId: validated.poiId,
+				baseId: validated.baseId,
+				items: validated.items,
+				...(validated.source !== undefined ? { source: validated.source } : {}),
+				...(validated.surplusTo !== undefined ? { surplusTo: validated.surplusTo } : {}),
+				...(validated.unlisted !== undefined ? { unlisted: validated.unlisted } : {}),
+			});
+		},
+	],
+	[
+		"ensure-hull",
+		(opts) => {
+			const validated = goalSchemas["ensure-hull"].parse(opts);
+			return new LibEnsureHull({
+				systemId: validated.systemId,
+				poiId: validated.poiId,
+				baseId: validated.baseId,
+				...(validated.shipId !== undefined ? { shipId: validated.shipId } : {}),
+				...(validated.shipClass !== undefined ? { shipClass: validated.shipClass } : {}),
+				...(validated.source !== undefined ? { source: validated.source } : {}),
+			});
+		},
+	],
+	[
+		"open-battle",
+		(opts) => {
+			const validated = goalSchemas["open-battle"].parse(opts);
+			return new LibOpenBattle({
+				mode: validated.mode,
+				...(validated.targetId !== undefined ? { targetId: validated.targetId } : {}),
+				...(validated.sideId !== undefined ? { sideId: validated.sideId } : {}),
+				...(validated.challengeId !== undefined ? { challengeId: validated.challengeId } : {}),
+			});
+		},
+	],
+	[
+		"ensure-magazines",
+		(opts) => {
+			const validated = goalSchemas["ensure-magazines"].parse(opts);
+			return new LibEnsureMagazines({
+				...(validated.policy !== undefined ? { policy: validated.policy } : {}),
+				...(validated.ammo !== undefined ? { ammo: validated.ammo } : {}),
+			});
+		},
+	],
+	[
+		"reload-weapon",
+		(opts) => {
+			const validated = goalSchemas["reload-weapon"].parse(opts);
+			return new LibReloadWeapon({
+				moduleId: validated.moduleId,
+				...(validated.ammoItemId !== undefined ? { ammoItemId: validated.ammoItemId } : {}),
 			});
 		},
 	],

@@ -65,3 +65,44 @@ describe("logDrift", () => {
 		expect(line).not.toContain("time_played");
 	});
 });
+
+describe("position drift tagging", () => {
+	afterEach(() => {
+		(console.warn as unknown as { mockRestore?: () => void }).mockRestore?.();
+		(console.info as unknown as { mockRestore?: () => void }).mockRestore?.();
+	});
+
+	test("tags a poi_id drift at warn so it can be counted separately", () => {
+		const warn = spyOn(console, "warn");
+		spyOn(console, "info");
+
+		logDrift({
+			playerId: "p1",
+			username: "ILC Voyager",
+			drifts: [
+				{ section: "location", path: "poi_id", before: "sol_station", after: "belt-1" },
+				{ section: "location", path: "nearby_players", before: [], after: ["x"] },
+			],
+		});
+
+		expect(warn).toHaveBeenCalledTimes(1);
+		const line = String(warn.mock.calls[0]?.[0]);
+		expect(line).toContain("[position-drift]");
+		expect(line).toContain("location.poi_id");
+		// Ambient drift is not promoted into the tagged line.
+		expect(line).not.toContain("nearby_players");
+	});
+
+	test("ambient drift alone produces no position-drift warning", () => {
+		const warn = spyOn(console, "warn");
+		spyOn(console, "info");
+
+		logDrift({
+			playerId: "p1",
+			username: undefined,
+			drifts: [{ section: "location", path: "nearby_players", before: [], after: ["x"] }],
+		});
+
+		expect(warn).not.toHaveBeenCalled();
+	});
+});

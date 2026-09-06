@@ -34,6 +34,7 @@ import {
 	reduceCombatEvent,
 	reduceTimeout,
 } from "./combat-detector.js";
+import type { CombatHeartbeatStore } from "./combat-heartbeat.js";
 import type { CombatModeStore } from "./combat-mode-store.js";
 import {
 	type RecoveryProximity,
@@ -46,6 +47,9 @@ const log = createLogger("combat-reactor");
 
 const DEFAULT_EXIT_TIMEOUT_MS = 60_000;
 
+/** Five game ticks. Long enough that a driver pausing to think is not mistaken for a dead one. */
+const DEFAULT_EXTERNAL_HEARTBEAT_TIMEOUT_MS = 50_000;
+
 export interface CombatReactorDeps extends AccountReleaseDeps {
 	manager: LibAccountManager;
 	combatEventsStore: EventBuffer<CombatEnvelope>;
@@ -55,6 +59,16 @@ export interface CombatReactorDeps extends AccountReleaseDeps {
 	strategy?: CombatResponseStrategy;
 	/** Wall-clock ms with no combat activity before presuming a fight resolved. Defaults to 60s. */
 	exitTimeoutMs?: number;
+	/**
+	 * Liveness signal from external combat drivers. Without it, an account in
+	 * `"external"` mode whose driver has died neither fights nor flees.
+	 */
+	heartbeats?: CombatHeartbeatStore;
+	/**
+	 * Wall-clock ms an in-battle `"external"` account may go without a driver
+	 * heartbeat before setpoint takes the fight. Defaults to 50s — five ticks.
+	 */
+	externalHeartbeatTimeoutMs?: number;
 }
 
 interface InterruptedWork {
@@ -66,6 +80,8 @@ interface InterruptedWork {
 interface TrackedAccount {
 	state: CombatDetectorState;
 	timer?: ReturnType<typeof setTimeout> | undefined;
+	/** Watchdog for an `"external"` account whose driver may have died mid-fight. */
+	watchdog?: ReturnType<typeof setInterval> | undefined;
 	responseController?: AbortController | undefined;
 	interrupted?: InterruptedWork | undefined;
 }
@@ -74,10 +90,13 @@ export class CombatReactor {
 	private readonly tracked = new Map<string, TrackedAccount>();
 	private readonly strategy: CombatResponseStrategy;
 	private readonly exitTimeoutMs: number;
+	private readonly externalHeartbeatTimeoutMs: number;
 
 	constructor(private readonly deps: CombatReactorDeps) {
 		this.strategy = deps.strategy ?? new FleeCombatStrategy();
 		this.exitTimeoutMs = deps.exitTimeoutMs ?? DEFAULT_EXIT_TIMEOUT_MS;
+		this.externalHeartbeatTimeoutMs =
+			deps.externalHeartbeatTimeoutMs ?? DEFAULT_EXTERNAL_HEARTBEAT_TIMEOUT_MS;
 	}
 
 	/** Feed one combat-relevant notification for an account through the detector. */
@@ -106,9 +125,23 @@ export class CombatReactor {
 	}
 
 	/** Clears all pending timers and in-flight response controllers — call on daemon shutdown. */
+	/**
+	 * Whether this account is currently in a battle.
+	 *
+	 * Exposed so fleet operations can refuse to touch a ship mid-fight. Combat
+	 * releases an account from its loop and goals, so a fighting ship otherwise
+	 * looks idle to every other "is it busy" check in the daemon.
+	 */
+	isInCombat(playerId: string): boolean {
+		return this.tracked.get(playerId)?.state.activeBattleId !== undefined;
+	}
+
 	stop(): void {
 		for (const tracked of this.tracked.values()) {
 			if (tracked.timer) clearTimeout(tracked.timer);
+			// The watchdog is an interval, so leaving it behind would both keep the
+			// process alive and let it fire a combat response after shutdown.
+			if (tracked.watchdog) clearInterval(tracked.watchdog);
 			tracked.responseController?.abort();
 		}
 		this.tracked.clear();
@@ -186,9 +219,15 @@ export class CombatReactor {
 			log.info(
 				`[${playerId}] combat entered — combat mode is "external", released from setpoint work but skipping the automatic flee response`,
 			);
+			this.armExternalWatchdog(playerId, tracked, battleId);
 			return;
 		}
 
+		this.runStrategy(playerId, tracked, battleId);
+	}
+
+	/** Run the configured combat-response strategy for an account already in a battle. */
+	private runStrategy(playerId: string, tracked: TrackedAccount, battleId: string): void {
 		const account = this.deps.manager.getByPlayerId(playerId);
 		if (!account) {
 			log.warn(
@@ -282,6 +321,61 @@ export class CombatReactor {
 			clearTimeout(tracked.timer);
 			tracked.timer = undefined;
 		}
+		this.clearWatchdog(tracked);
+	}
+
+	private clearWatchdog(tracked: TrackedAccount): void {
+		if (tracked.watchdog) {
+			clearInterval(tracked.watchdog);
+			tracked.watchdog = undefined;
+		}
+	}
+
+	/**
+	 * Watch an `"external"` account for a driver that has stopped breathing.
+	 *
+	 * Only armed while in battle: an external account sitting outside a fight
+	 * with no driver is simply parked, which is fine. The trigger is a missed
+	 * heartbeat rather than an absence of commands, because the most common tick
+	 * in a well-fought battle is one where the driver deliberately holds.
+	 *
+	 * When it fires, setpoint takes the fight — but does NOT rewrite the
+	 * account's configured mode. A setting the daemon silently changed on a
+	 * timer becomes a mystery to whoever debugs it later; re-arming is the
+	 * driver's business, and the next battle starts external again.
+	 */
+	private armExternalWatchdog(playerId: string, tracked: TrackedAccount, battleId: string): void {
+		const heartbeats = this.deps.heartbeats;
+		if (heartbeats === undefined) return;
+
+		// The driver is presumed alive at the moment combat starts; it has one
+		// full window to check in.
+		heartbeats.beat(playerId);
+		this.clearWatchdog(tracked);
+
+		tracked.watchdog = setInterval(
+			() => {
+				const current = this.tracked.get(playerId);
+				if (!current || current.state.activeBattleId === undefined) {
+					if (current) this.clearWatchdog(current);
+					heartbeats.clear(playerId);
+					return;
+				}
+
+				const silence = heartbeats.sinceLast(playerId);
+				if (silence === undefined || silence < this.externalHeartbeatTimeoutMs) return;
+
+				log.warn(
+					`[${playerId}] external combat driver has not checked in for ${Math.round(silence / 1000)}s during battle ${battleId} — taking the fight with the built-in flee response. The account's combat mode is left as "external"; re-arm the driver when it is back.`,
+				);
+				this.clearWatchdog(current);
+				this.runStrategy(playerId, current, battleId);
+				// Checked several times per window: polling AT the timeout means a beat
+				// landing just after a tick is not noticed for nearly two full windows,
+				// so a documented five-tick fallback would really take up to ten.
+			},
+			Math.max(1, Math.floor(this.externalHeartbeatTimeoutMs / 5)),
+		);
 	}
 
 	private checkTimeout(playerId: string): void {

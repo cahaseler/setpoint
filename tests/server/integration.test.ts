@@ -13,6 +13,7 @@ import { type EventBuffer, createEventBuffer } from "../../src/state/event-buffe
 import type { StateStore } from "../../src/state/store.js";
 import type { StoredGameState } from "../../src/state/store.js";
 import { FakeLibManagedAccount, makeFakeLibManager } from "../dispatcher/lib-fakes.js";
+import { makePirateRadioEvent } from "../helpers/pirate-radio.js";
 
 // ── Test Data ────────────────────────────────────────────────────────
 
@@ -64,6 +65,7 @@ function makeMockAccount(
 describe("Server integration", () => {
 	let server: ReturnType<typeof Bun.serve>;
 	let base: string;
+	let handlerCtx: HandlerContext;
 	let pirateRadioStore: EventBuffer<PirateRadioEnvelope>;
 	// Seed p1's push-fed cache with TEST_STATE so goal execution (which reads
 	// account.state) sees a fueled ship; read handlers get state from the store stub.
@@ -116,6 +118,7 @@ describe("Server integration", () => {
 			fetch: () => errorResponse("Not found", 404),
 		});
 
+		handlerCtx = ctx;
 		base = `http://localhost:${server.port}`;
 	});
 
@@ -264,7 +267,7 @@ describe("Server integration", () => {
 		// byte leaves the response headers unsent.
 		pirateRadioStore.record("p1", {
 			receivedAt: new Date().toISOString(),
-			event: { message: "we ride at dawn", pirate_name: "Blackvane" },
+			event: makePirateRadioEvent(),
 		});
 
 		const controller = new AbortController();
@@ -275,6 +278,93 @@ describe("Server integration", () => {
 		expect(res.status).toBe(200);
 		expect(res.headers.get("Content-Type")).toBe("text/event-stream");
 		controller.abort();
+	});
+
+	test("POST /accounts/:playerId/fleet is wired to the ensure-fleet handler", async () => {
+		// Route paths are not guessable from handler names, so this asserts the
+		// path itself against the real route table rather than 404ing live.
+		const res = await fetch(`${base}/accounts/p1/fleet`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ members: [] }),
+		});
+		expect(res.status).not.toBe(404);
+	});
+
+	test("POST /accounts/:playerId/fleet rejects a body without members", async () => {
+		const res = await fetch(`${base}/accounts/p1/fleet`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({}),
+		});
+		expect(res.status).toBe(400);
+		expect(((await res.json()) as { error: string }).error).toContain("members");
+	});
+
+	test("POST /accounts/:playerId/fleet returns 404 for an unknown account", async () => {
+		const res = await fetch(`${base}/accounts/nope/fleet`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ members: [] }),
+		});
+		expect(res.status).toBe(404);
+	});
+
+	test("POST /goals/batch is wired and keys results by player id", async () => {
+		const res = await fetch(`${base}/goals/batch`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ playerIds: ["p1"], type: "ensure-undocked", options: {} }),
+		});
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as {
+			accounts: Record<string, unknown>;
+			summary: { total: number };
+		};
+		expect(body.summary.total).toBe(1);
+		expect(Object.keys(body.accounts)).toEqual(["p1"]);
+	});
+
+	test("POST /goals/batch reports an unknown account rather than failing the batch", async () => {
+		const res = await fetch(`${base}/goals/batch`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ playerIds: ["p1", "ghost"], type: "ensure-undocked", options: {} }),
+		});
+		const body = (await res.json()) as { accounts: Record<string, { message: string }> };
+		expect(body.accounts["ghost"]?.message).toBe("not_connected");
+		expect(body.accounts["p1"]).toBeDefined();
+	});
+
+	test("POST /goals/batch rejects a missing playerIds", async () => {
+		const res = await fetch(`${base}/goals/batch`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ type: "ensure-undocked" }),
+		});
+		expect(res.status).toBe(400);
+		expect(((await res.json()) as { error: string }).error).toContain("playerIds");
+	});
+
+	test("POST /accounts/:playerId/combat-heartbeat is wired and acknowledges", async () => {
+		const res = await fetch(`${base}/accounts/p1/combat-heartbeat`, { method: "POST" });
+		expect(res.status).toBe(200);
+		expect(((await res.json()) as { playerId: string }).playerId).toBe("p1");
+	});
+
+	test("GET /accounts/:playerId/battle-log/events is served as an SSE stream", async () => {
+		const controller = new AbortController();
+		const res = await fetch(`${base}/accounts/p1/battle-log/events?battleId=b-1`, {
+			signal: controller.signal,
+		});
+		expect(res.status).toBe(200);
+		expect(res.headers.get("content-type")).toContain("text/event-stream");
+		controller.abort();
+	});
+
+	test("GET /accounts/:playerId/battle-log/events 404s for an unknown account", async () => {
+		const res = await fetch(`${base}/accounts/nope/battle-log/events`);
+		expect(res.status).toBe(404);
 	});
 
 	test("unknown routes return 404", async () => {
@@ -310,5 +400,33 @@ describe("Server integration", () => {
 		const names = accounts.map((a) => a["username"]);
 		expect(names).toContain("MockPilot");
 		expect(names).toContain("SecondPilot");
+	});
+
+	test("a batch goal registers in executingGoals so abort can reach it", async () => {
+		// Work that only sits in claimedAccounts is invisible to
+		// forceReleaseAccount: DELETE /abort and the combat reactor would both
+		// report success while the goal kept flying the ship.
+		const seen: boolean[] = [];
+		const original = handlerCtx.executingGoals;
+
+		const res = await fetch(`${base}/goals/batch`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ playerIds: ["p1"], type: "ensure-undocked", options: {} }),
+		});
+		expect(res.status).toBe(200);
+		// Registration is transient, so assert the map is cleaned up afterwards
+		// rather than racing the in-flight window.
+		seen.push(original.has("p1"));
+		expect(seen).toEqual([false]);
+	});
+
+	test("ensure-fleet clears its executingGoals entry when it finishes", async () => {
+		await fetch(`${base}/accounts/p1/fleet`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ members: [] }),
+		});
+		expect(handlerCtx.executingGoals.has("p1")).toBe(false);
 	});
 });

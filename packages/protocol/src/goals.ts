@@ -20,7 +20,11 @@ export const goalSchemas = {
 	"go-to-poi": z.object({ targetPoiId: z.string() }),
 	"dock-at": z.object({ targetBaseId: z.string() }),
 	"ensure-undocked": z.object({}),
-	"ensure-fueled": z.object({ targetFuel: z.number().optional() }),
+	"ensure-fueled": z.object({
+		targetFuel: z.number().optional(),
+		/** Treat a tank that could not be filled as a failure. Defaults to true. */
+		requireFull: z.boolean().optional(),
+	}),
 	"ensure-repaired": z.object({}),
 	"sell-or-deposit-cargo": z.object({
 		depositTarget: z.enum(["personal", "faction"]).optional(),
@@ -107,6 +111,8 @@ export const goalSchemas = {
 		poiId: z.string(),
 		baseId: z.string(),
 		refuel: z.boolean().optional(),
+		/** Treat a tank that could not be filled as a failure. Defaults to false here. */
+		requireFullFuel: z.boolean().optional(),
 		repair: z.boolean().optional(),
 		cashSource: z.literal("faction").optional(),
 		minCredits: z.number().optional(),
@@ -207,8 +213,63 @@ export const goalSchemas = {
 		poiId: z.string(),
 		baseId: z.string(),
 		modules: z.array(z.string()),
-		ammo: z.record(z.string(), z.string()).optional(),
 		uninstalledStorage: z.enum(["personal", "faction", "cargo"]).optional(),
+		/**
+		 * Removed. Magazine loading belongs to `ensure-magazines`, which works per
+		 * module instance; this option could only ever address one gun per weapon
+		 * TYPE, so a hull with five of the same railgun got one magazine filled
+		 * and a success result.
+		 *
+		 * Declared as `never` rather than deleted so a stale caller gets a loud
+		 * 400. Simply dropping the key would let zod strip it silently and return
+		 * "loadout configured" over empty guns — the exact failure this replaced.
+		 */
+		ammo: z
+			.never({
+				invalid_type_error:
+					"removed — magazine loading is now the ensure-magazines goal, which fills every gun rather than one per weapon type",
+			})
+			.optional(),
+		/**
+		 * `"strip"` removes unwanted modules and stops; `"fit"` installs the
+		 * desired ones. Splitting them lets a caller strip a whole squad before
+		 * fitting any of it, which is the only way to move a module from one
+		 * hull to another — a per-ship strip-then-fit deadlocks when the second
+		 * hull needs a module still bolted to the first.
+		 */
+		phase: z.enum(["strip", "fit", "both"]).optional(),
+	}),
+	"ensure-cargo": z.object({
+		systemId: z.string(),
+		poiId: z.string(),
+		baseId: z.string(),
+		/** Order is priority: when capacity binds, earlier lines win. */
+		items: z.array(z.object({ itemId: z.string(), quantity: z.number().min(0) })),
+		source: z.enum(["faction", "personal"]).optional(),
+		surplusTo: z.enum(["faction", "personal", "keep"]).optional(),
+		unlisted: z.enum(["deposit", "keep"]).optional(),
+	}),
+	"ensure-hull": z.object({
+		systemId: z.string(),
+		poiId: z.string(),
+		baseId: z.string(),
+		shipId: z.string().optional(),
+		shipClass: z.string().optional(),
+		source: z.enum(["personal", "garage"]).optional(),
+	}),
+	"open-battle": z.object({
+		mode: z.enum(["arena", "attack", "engage"]),
+		targetId: z.string().optional(),
+		sideId: z.number().optional(),
+		challengeId: z.string().optional(),
+	}),
+	"ensure-magazines": z.object({
+		policy: z.enum(["always", "half"]).optional(),
+		ammo: z.record(z.string(), z.string()).optional(),
+	}),
+	"reload-weapon": z.object({
+		moduleId: z.string(),
+		ammoItemId: z.string().optional(),
 	}),
 	"ensure-marketbook": z.object({
 		targetOrders: z

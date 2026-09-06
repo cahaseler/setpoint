@@ -1,6 +1,6 @@
 /** Transport core for `@setpoint/client` — fetch-based HTTP with retry/timeout. */
 
-import type { JobRecord, LoopStatus, V2GameState } from "@setpoint/protocol";
+import type { FleetOperationResult, JobRecord, LoopStatus, V2GameState } from "@setpoint/protocol";
 import { AccountApi, AccountsApi } from "./account.js";
 import { ConnectionError, DeprecatedGoalError, SetpointHttpError, TimeoutError } from "./errors.js";
 import { JobApi } from "./jobs.js";
@@ -147,6 +147,25 @@ export class SetpointClient {
 	}
 
 	/** Returns the account-scoped goal API for the given account id (player_id or username). */
+	/**
+	 * Runs one goal across several accounts and answers once, keyed by player id.
+	 *
+	 * The daemon runs them concurrently — accounts are independent and the lib
+	 * serialises mutations per account — so this is one round trip instead of N.
+	 * An account already busy is reported in its own entry and skipped, never
+	 * preempted.
+	 */
+	async batchGoal(
+		playerIds: string[],
+		type: string,
+		options: Record<string, unknown> = {},
+	): Promise<FleetOperationResult> {
+		const result = await this.request("POST", "/goals/batch", {
+			body: { playerIds, type, options },
+		});
+		return result as FleetOperationResult;
+	}
+
 	account(id: string): AccountApi {
 		return new AccountApi(this, id);
 	}

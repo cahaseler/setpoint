@@ -26,11 +26,11 @@ test("buy-items item array shape", () => {
 	expect(() => goalSchemas["buy-items"].parse({ items: [] })).toThrow();
 });
 
-test("GoalType includes all 43 registry types", () => {
+test("GoalType includes all 48 registry types", () => {
 	const types: GoalType[] = Object.keys(goalSchemas) as GoalType[];
 	expect(types).toContain("navigate-to-system");
 	expect(types).toContain("transfer-storage");
-	expect(types.length).toBe(43);
+	expect(types.length).toBe(48);
 });
 
 // A compile-time check: GoalOptionsMap["navigate-to-system"] has targetSystemId: string.

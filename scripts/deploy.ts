@@ -72,7 +72,10 @@ if (!lint.success) {
 }
 
 // Step 3: Typecheck
-const typecheck = runStep("typecheck", "tsc --noEmit");
+// Must match package.json's `typecheck` script: the root tsconfig does not
+// include packages/, so a bare `tsc --noEmit` type-checks src/ only and lets a
+// broken @setpoint/client or @setpoint/protocol through a green deploy.
+const typecheck = runStep("typecheck", "bun run typecheck");
 results.push(typecheck);
 if (!typecheck.success) {
 	console.error("Typecheck failed:");
