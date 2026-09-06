@@ -16,6 +16,7 @@ import type {
 	MarketBookSnapshot,
 	ObservationSnapshot,
 	PirateRadioEnvelope,
+	ReconcileResult,
 	V2GameState,
 } from "@setpoint/protocol";
 import type { GetSystemResponse } from "@spacemolt/lib";
@@ -443,6 +444,40 @@ export class AccountCombatModeApi {
 	}
 }
 
+/**
+ * Fleet sub-API for an account, over `POST /accounts/:id/fleet`.
+ *
+ * Runs on the LEADER account. The daemon drives the invitees' accepts itself,
+ * but never takes an account away from work it is already doing: a member
+ * mid-loop, mid-goal or in combat comes back as a failed subject naming why,
+ * and it is left alone. Releasing an account is an operator action
+ * (`DELETE /accounts/:id/abort`).
+ */
+export class AccountFleetApi {
+	constructor(
+		private readonly client: SetpointClient,
+		private readonly id: string,
+	) {}
+
+	/**
+	 * Reconciles this account's fleet to exactly `members`, which may be player
+	 * ids or usernames. An empty list disbands the fleet — a leader cannot
+	 * simply leave one.
+	 *
+	 * Does not move ships: a member that is not already at the leader's POI
+	 * fails `not_at_poi` and reports where it actually is, so a caller can tell
+	 * an inbound ship from a stray one.
+	 */
+	async ensure(members: string[]): Promise<ReconcileResult> {
+		const result = await this.client.request(
+			"POST",
+			`/accounts/${encodeURIComponent(this.id)}/fleet`,
+			{ body: { members } },
+		);
+		return result as ReconcileResult;
+	}
+}
+
 /** Goal API scoped to a single account, identified by player_id or username. */
 export class AccountApi {
 	/** Loop sub-API for this account (`sp.account(id).loop`). */
@@ -472,6 +507,9 @@ export class AccountApi {
 	/** Live pirate-radio sub-API for this account (`sp.account(id).pirateRadio`). */
 	readonly pirateRadio: AccountPirateRadioApi;
 
+	/** Fleet-composition sub-API for this account as leader (`sp.account(id).fleet`). */
+	readonly fleet: AccountFleetApi;
+
 	constructor(
 		private readonly client: SetpointClient,
 		private readonly id: string,
@@ -485,6 +523,7 @@ export class AccountApi {
 		this.combat = new AccountCombatApi(client, id);
 		this.combatMode = new AccountCombatModeApi(client, id);
 		this.pirateRadio = new AccountPirateRadioApi(client, id);
+		this.fleet = new AccountFleetApi(client, id);
 	}
 
 	/**
