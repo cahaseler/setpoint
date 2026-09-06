@@ -18,9 +18,14 @@ export interface FleetMoveOptions {
 	poiId: string;
 	/** Dock every member here on arrival. Omit to stop at the POI. */
 	baseId?: string;
-	/** Top up each member's fuel on arrival. Defaults to true. */
+	/**
+	 * Top up fuel on arrival. Defaults to whether `baseId` was given, because
+	 * refuelling requires being docked — defaulting it on for a move to a bare
+	 * POI would fail every ship for not being somewhere it was never asked to
+	 * dock.
+	 */
 	refuel?: boolean;
-	/** Repair each member's hull on arrival. Defaults to true. */
+	/** Repair hull on arrival. Same default and the same reason as `refuel`. */
 	repair?: boolean;
 	/** How long to wait for the leader to settle and for members to arrive. */
 	maxWaitMs?: number;
@@ -43,6 +48,14 @@ export async function fleetMove(
 	access: FleetAccess,
 	options: FleetMoveOptions,
 ): Promise<FleetOperationResult> {
+	const settle: SettleOptions = {
+		systemId: options.systemId,
+		poiId: options.poiId,
+		...(options.baseId !== undefined ? { baseId: options.baseId } : {}),
+		refuel: options.refuel ?? options.baseId !== undefined,
+		repair: options.repair ?? options.baseId !== undefined,
+	};
+
 	const waitOpts = options.maxWaitMs === undefined ? {} : { maxWaitMs: options.maxWaitMs };
 	let waitedForLeader = false;
 
@@ -55,7 +68,7 @@ export async function fleetMove(
 	const status = await fleetStatus(leader);
 	const memberIds = (status.members ?? []).filter((m) => !m.is_leader).map((m) => m.player_id);
 
-	const leaderResult = await moveLeader(leader, options);
+	const leaderResult = await moveLeader(leader, settle);
 	// Keyed by player_id like every other entry: a caller diffing this map
 	// against its own roster must not find a row named "leader" matching nothing.
 	// Prefer our own account's player id: FleetStatusResponse.leader is a bare
@@ -74,7 +87,7 @@ export async function fleetMove(
 	let ticks = leaderResult.ticksUsed;
 
 	for (const id of memberIds) {
-		const result = await settleMember(access, id, options, waitOpts);
+		const result = await settleMember(access, id, settle, waitOpts);
 		ticks += result.ticksUsed;
 		accounts[id] = result;
 	}
@@ -88,7 +101,16 @@ export async function fleetMove(
 	};
 }
 
-async function moveLeader(leader: LibGoalContext, options: FleetMoveOptions): Promise<GoalResult> {
+/** The resolved per-ship work, after defaults are applied once for the whole move. */
+interface SettleOptions {
+	systemId: string;
+	poiId: string;
+	baseId?: string;
+	refuel: boolean;
+	repair: boolean;
+}
+
+async function moveLeader(leader: LibGoalContext, options: SettleOptions): Promise<GoalResult> {
 	const navigate = await new LibNavigateToSystem(options.systemId).execute(leader);
 	if (!navigate.success) return navigate;
 
@@ -103,13 +125,22 @@ async function moveLeader(leader: LibGoalContext, options: FleetMoveOptions): Pr
 		if (!dock.success) return { ...dock, ticksUsed: ticks };
 	}
 
-	return succeeded(`Leader at ${options.systemId}/${options.poiId}`, ticks);
+	// The leader is readied on the same terms as everyone else. Skipping it here
+	// meant one request treated the leader and the members differently.
+	const ready = await readyShip(leader, options);
+	ticks += ready.ticksUsed;
+	if (!ready.success) return { ...ready, ticksUsed: ticks };
+
+	return succeeded(
+		`Leader at ${options.systemId}/${options.poiId}${ready.message === "" ? "" : ` (${ready.message})`}`,
+		ticks,
+	);
 }
 
 async function settleMember(
 	access: FleetAccess,
 	playerId: string,
-	options: FleetMoveOptions,
+	options: SettleOptions,
 	waitOpts: { maxWaitMs?: number },
 ): Promise<GoalResult> {
 	const ctx = access.contextFor(playerId);
@@ -147,7 +178,6 @@ async function settleMember(
 	}
 
 	let ticks = 0;
-	const notes: string[] = [];
 
 	if (options.baseId !== undefined) {
 		const dock = await new LibDockAt(options.baseId).execute(ctx);
@@ -155,20 +185,35 @@ async function settleMember(
 		if (!dock.success) return { ...dock, ticksUsed: ticks };
 	}
 
-	// Neither of these cascades from the leader — each member pays its own way.
-	if (options.refuel !== false) {
+	const ready = await readyShip(ctx, options);
+	ticks += ready.ticksUsed;
+	if (!ready.success) return { ...ready, ticksUsed: ticks };
+
+	return succeeded(`Arrived${ready.message === "" ? "" : ` (${ready.message})`}`, ticks);
+}
+
+/**
+ * Top up fuel and hull, if this move asked for it.
+ *
+ * Neither cascades from the leader in the game, so every ship pays its own way.
+ */
+async function readyShip(ctx: LibGoalContext, options: SettleOptions): Promise<GoalResult> {
+	let ticks = 0;
+	const notes: string[] = [];
+
+	if (options.refuel) {
 		const fuel = await new LibEnsureFueled().execute(ctx);
 		ticks += fuel.ticksUsed;
 		if (!fuel.success) return { ...fuel, ticksUsed: ticks };
 		notes.push(fuel.alreadySatisfied ? "fuel ok" : "refueled");
 	}
 
-	if (options.repair !== false) {
+	if (options.repair) {
 		const repair = await new LibEnsureRepaired().execute(ctx);
 		ticks += repair.ticksUsed;
 		if (!repair.success) return { ...repair, ticksUsed: ticks };
 		notes.push(repair.alreadySatisfied ? "hull ok" : "repaired");
 	}
 
-	return succeeded(`Arrived${notes.length > 0 ? ` (${notes.join(", ")})` : ""}`, ticks);
+	return succeeded(notes.join(", "), ticks);
 }

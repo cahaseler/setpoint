@@ -151,3 +151,64 @@ describe("fleetMove safety and keying", () => {
 		expect(Object.keys(result.accounts)).toEqual(["leader-id"]);
 	});
 });
+
+describe("fleetMove refuel/repair defaults", () => {
+	test("a move to a bare POI does not try to refuel, and members do not fail", async () => {
+		// Reported live: a fleet moved to an arena POI reported both members
+		// "Cannot refuel: must be docked at a station" despite having arrived.
+		// Refuelling needs a station, so it must not default on without a baseId.
+		const leader = leaderAt(DEST, ["alpha"]);
+		const alpha = memberAt(DEST);
+
+		const result = await fleetMove(makeLibGoalContext(leader), access({ alpha }), opts);
+
+		expect(result.success).toBe(true);
+		expect(result.accounts["alpha"]?.success).toBe(true);
+		expect(alpha.calls.some((c) => c.action === "refuel")).toBe(false);
+		expect(alpha.calls.some((c) => c.action === "repair")).toBe(false);
+	});
+
+	test("refuel and repair default ON when a baseId is given", async () => {
+		const leader = leaderAt({ ...DEST, docked_at: "arena_base" }, ["alpha"]);
+		const alpha = memberAt({ ...DEST, docked_at: "arena_base" });
+
+		const result = await fleetMove(makeLibGoalContext(leader), access({ alpha }), {
+			...opts,
+			baseId: "arena_base",
+		});
+
+		expect(result.success).toBe(true);
+		// Both already full, so satisfied without a wire call — the point is that
+		// the steps ran rather than being skipped.
+		expect(result.accounts["alpha"]?.message).toContain("fuel ok");
+		expect(result.accounts["alpha"]?.message).toContain("hull ok");
+	});
+
+	test("the leader is readied on the same terms as the members", async () => {
+		// Previously the leader skipped refuel/repair entirely, so one request
+		// treated the leader and the members differently.
+		const leader = leaderAt({ ...DEST, docked_at: "arena_base" }, []);
+
+		const result = await fleetMove(makeLibGoalContext(leader), access({}), {
+			...opts,
+			baseId: "arena_base",
+		});
+
+		expect(result.accounts["leader-id"]?.message).toContain("fuel ok");
+	});
+
+	test("explicit refuel:false is honoured even with a baseId", async () => {
+		const leader = leaderAt({ ...DEST, docked_at: "arena_base" }, ["alpha"]);
+		const alpha = memberAt({ ...DEST, docked_at: "arena_base" });
+
+		const result = await fleetMove(makeLibGoalContext(leader), access({ alpha }), {
+			...opts,
+			baseId: "arena_base",
+			refuel: false,
+			repair: false,
+		});
+
+		expect(result.success).toBe(true);
+		expect(result.accounts["alpha"]?.message).not.toContain("fuel");
+	});
+});
