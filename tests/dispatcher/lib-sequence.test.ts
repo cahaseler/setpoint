@@ -103,3 +103,61 @@ describe("runLibSequence", () => {
 		expect(progressRef.currentStep).toBeUndefined();
 	});
 });
+
+describe("runLibSequence reconnect resilience", () => {
+	test("a step follows the account through a reconnect mid-step", async () => {
+		// The lib replaces the Account instance on reconnect. A step that pinned
+		// the instance it started with would keep talking to a dead socket — and
+		// a step can run for minutes (go-to-poi polls arrival for up to 600s).
+		const original = new FakeLibGoalAccount({ location: { system_id: "sol" } });
+		const afterReconnect = new FakeLibGoalAccount({ location: { system_id: "sirius" } });
+
+		let live: FakeLibGoalAccount = original;
+		const outer = makeLibGoalContext(() => live);
+
+		const observed: Array<string | undefined> = [];
+		const step: LibGoal = {
+			name: "long-step",
+			async execute(ctx) {
+				observed.push(ctx.state.location?.system_id);
+				// The socket drops and the lib hands us a new Account.
+				live = afterReconnect;
+				observed.push(ctx.state.location?.system_id);
+				return { success: true, message: "ok", alreadySatisfied: false, ticksUsed: 0 };
+			},
+		};
+
+		const result = await runLibSequence([step], outer);
+
+		expect(result.success).toBe(true);
+		expect(observed).toEqual(["sol", "sirius"]);
+	});
+
+	test("a later step uses the reconnected account, not the one the sequence started with", async () => {
+		const original = new FakeLibGoalAccount({ location: { system_id: "sol" } });
+		const afterReconnect = new FakeLibGoalAccount({ location: { system_id: "sirius" } });
+
+		let live: FakeLibGoalAccount = original;
+		const outer = makeLibGoalContext(() => live);
+
+		const seen: Array<string | undefined> = [];
+		const ok = { success: true, message: "ok", alreadySatisfied: false, ticksUsed: 0 };
+		const first: LibGoal = {
+			name: "first",
+			async execute() {
+				live = afterReconnect;
+				return ok;
+			},
+		};
+		const second: LibGoal = {
+			name: "second",
+			async execute(ctx) {
+				seen.push(ctx.state.location?.system_id);
+				return ok;
+			},
+		};
+
+		await runLibSequence([first, second], outer);
+		expect(seen).toEqual(["sirius"]);
+	});
+});
