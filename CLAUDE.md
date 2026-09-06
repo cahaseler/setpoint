@@ -409,6 +409,16 @@ On entering combat, setpoint always releases the account from any running loop/g
 - `flee` (default) — setpoint's built-in `FleeCombatStrategy` automatically sends the `flee` battle stance until it escapes or exhausts its retry budget.
 - `external` — setpoint sends no automatic combat commands at all, leaving the ship free for hand-written combat logic (a bot, a script) driving it directly via the raw API or goals.
 
+**An `external` driver must send a heartbeat.** `POST /accounts/:playerId/combat-heartbeat` every tick the driver is alive, whether or not it issued a command — holding position is a legitimate and common move, so silence on the command channel is not evidence of a dead driver. After five ticks of silence *while the account is in a battle*, setpoint takes the fight with its built-in flee response and logs it at `warn`. An `external` account outside a battle is simply parked and is never touched. The account's configured mode is **not** rewritten when the fallback fires: a setting the daemon silently changed on a timer becomes a mystery later, so re-arming is the driver's business and the next battle starts `external` again. Heartbeats are in-memory only — a value surviving a restart would be a lie about a process that did not.
+
+### Fleet operations (multi-account)
+
+Fleet work is the one thing in setpoint that spans accounts: an invite is worthless until the invitee accepts, and that accept runs on the invitee's own connection. Rather than widen `LibGoalContext`, fleet operations reach other accounts through the narrow `FleetAccess` port in `src/fleet/`, supplied by the server layer.
+
+**There is no preemption anywhere in it.** `FleetAccess.busyReason()` reports why an account cannot be commanded (`busy:loop:mining`, `busy:goal:...`, `in_combat`) and has no counterpart that frees one. A member mid-loop is reported as a failed subject and left completely alone. Releasing an account is an operator action — `DELETE /accounts/:playerId/abort`. Note that `in_combat` is checked first and separately, because combat already strips an account of its loop and goals, so a fighting ship looks idle to every other busy check.
+
+`ensure-fleet` deliberately does not move ships: a member not at the leader's POI fails `not_at_poi` carrying its actual system, POI and in-transit flag, so a caller can tell an inbound ship from a stray one. Positioning is `fleet-move`'s job.
+
 ```bash
 smctl combat-mode <playerId>            # Get the current mode
 smctl combat-mode <playerId> external   # Drive this ship's combat with your own code
@@ -453,6 +463,8 @@ The daemon listens on `http://127.0.0.1:7580` by default. All responses are JSON
 | `POST` | `/accounts` | Add account (queued, 202) | `smctl accounts add` |
 | `POST` | `/accounts/register` | Register new account | `smctl accounts register` |
 | `DELETE` | `/accounts/:playerId` | Remove account | `smctl accounts remove` |
+| `POST` | `/accounts/:playerId/state/refresh` | Force a live `get_status` re-seed of the cache | — |
+| `GET` | `/accounts/:playerId/system[/:systemId]` | System/POI map for an account | — |
 | `GET` | `/accounts/:playerId/state` | Full game state | `smctl state` |
 | `GET` | `/accounts/:playerId/state/:section` | State section | `smctl state <id> <section>` |
 | `POST` | `/accounts/:playerId/goal` | Execute goal (sync) | `smctl goal` |
@@ -464,6 +476,11 @@ The daemon listens on `http://127.0.0.1:7580` by default. All responses are JSON
 | `DELETE` | `/accounts/:playerId/loop` | Stop loop | `smctl loop stop` |
 | `GET` | `/accounts/:playerId/combat-mode` | Get combat-response mode | `smctl combat-mode <id>` |
 | `PATCH` | `/accounts/:playerId/combat-mode` | Set combat-response mode (no restart) | `smctl combat-mode <id> <mode>` |
+| `POST` | `/accounts/:playerId/combat-heartbeat` | External combat driver liveness ping (see below) | — (use `@setpoint/client`'s `account.combatMode.heartbeat()`) |
+| `POST` | `/accounts/:playerId/fleet` | Reconcile the fleet this account leads to an exact membership | — (use `account.fleet.ensure()`) |
+| `POST` | `/accounts/:playerId/fleet/move` | Move the fleet and bring every member to readiness | — (use `account.fleet.move()`) |
+| `POST` | `/goals/batch` | Run one goal across many accounts, keyed by player id | — (use `client.batchGoal()`) |
+| `GET` | `/accounts/:playerId/battle-log/events` | Live tick-by-tick battle log (Server-Sent Events) | — (use `account.battleLog()`) |
 | `DELETE` | `/accounts/:playerId/abort` | Release account from all in-progress work | `smctl abort` |
 | `POST` | `/accounts/:playerId/raw` | Raw API passthrough | `smctl raw` |
 | `GET` | `/accounts/:playerId/market/:baseId` | Cached order book for a base (subscribe first via `raw`) | `smctl market <id> <baseId>` |
