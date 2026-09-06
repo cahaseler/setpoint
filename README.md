@@ -27,396 +27,243 @@ For full installation and configuration, see **[SETUP.md](SETUP.md)**.
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** — development workflow and conventions
 - **[SECURITY.md](SECURITY.md)** — trust model and vulnerability reporting
 
+## Programmatic Access
+
+Two published workspace packages let you drive setpoint from your own TypeScript
+without hand-rolling HTTP:
+
+- **`@setpoint/client`** — a typed client for the whole daemon API. Goal and loop
+  options are typed from the schema registry, so your editor knows the options
+  for every goal type.
+- **`@setpoint/protocol`** — the shared goal/loop/result types and zod schemas.
+  Anything crossing the daemon/client boundary is defined here once.
+
+```ts
+import { SetpointClient } from "@setpoint/client";
+
+const sp = new SetpointClient({ baseUrl: "http://localhost:7580" });
+
+await sp.account("MyPilot").goal("navigate-to-system", { targetSystemId: "sol" });
+await sp.account("MyPilot").loop.start("mining", { /* typed options */ });
+
+// One goal across many accounts, in one round trip, keyed by player id.
+const batch = await sp.batchGoal(["PilotA", "PilotB"], "ensure-magazines", {});
+
+// Live streams, as async iterables over Server-Sent Events
+for await (const event of sp.account("MyPilot").crafting.events()) {
+  console.log(event);
+}
+```
+
 ## CLI Reference
 
-All commands are available via `smctl`. Options `--port <n>`, `--json '<json>'`, and `--stdin` apply globally.
+All commands are available via `smctl`. `--port <n>`, `--json '<json>'` and
+`--stdin` apply globally; `--async` applies to `goal`.
 
 | Command | Description |
 |---------|-------------|
-| `smctl health` | Check daemon health |
-| `smctl accounts list` | List connected accounts |
-| `smctl accounts get <id>` | Get account details and state summary |
-| `smctl accounts add --json '{...}'` | Add existing account |
-| `smctl accounts register --json '{...}'` | Register new account |
-| `smctl accounts remove <id>` | Disconnect and remove account |
-| `smctl state <id> [section]` | Get game state (sections: player, ship, cargo, location, modules, skills, missions, queue) |
-| `smctl goal <id> --json '{...}'` | Execute a one-off goal |
-| `smctl loop status <id>` | Check loop status |
-| `smctl loop start <id> --json '{...}'` | Start a repeating loop |
-| `smctl loop stop <id>` | Stop running loop |
-| `smctl raw <id> --json '{...}'` | Raw API passthrough |
-| `smctl log-level [level]` | Get/set log level |
-| `smctl help [topic]` | Show help (topics: goals, loops, trading, hauling) |
+| `smctl health` | Daemon health and uptime |
+| `smctl status` | Dashboard JSON for every account (state, loop, jobs) |
+| `smctl accounts list` | List connected and pending accounts |
+| `smctl accounts get <id>` | Account details |
+| `smctl accounts add --json '{...}'` | Connect an account the Clerk key already owns |
+| `smctl accounts register --json '{...}'` | Register a new account |
+| `smctl accounts remove <id>` | Disconnect and remove an account |
+| `smctl state <id> [section]` | Game state, or one section |
+| `smctl goal <id> [--async] --json '{...}'` | Run a goal; `--async` returns a `job_id` immediately |
+| `smctl job status <jobId>` | Poll an async goal job |
+| `smctl loop status\|start\|stop\|update <id>` | Loop lifecycle; `update` patches options live |
+| `smctl abort <id> [--force]` | Show in-progress work, or release the account with `--force` |
+| `smctl combat-mode <id> [flee\|external]` | Get or set the combat-response mode |
+| `smctl market <id> <baseId>` | Cached order book (subscribe first) |
+| `smctl observation <id>` | Cached observation-watch view (subscribe first) |
+| `smctl raw <id> <action> [key=value ...]` | Raw game API passthrough |
+| `smctl log-level [level]` | Get or set the log level |
+| `smctl help [topic]` | Detailed help — see below |
+
+`smctl help` is the authoritative reference for options, and it is generated
+from the same schemas the daemon validates against, so it never drifts from the
+code. Topics: `goals`, `loops`, `mining`, `trading`, `hauling`,
+`storage-transfer`, `exploration`, `salvage`, `guard`, `roaming-salvage`,
+`tow-salvage`, `fuel-rescue`.
+
+Every command returns JSON. Exit codes: `0` success, `1` client error (4xx),
+`2` server error (5xx), `3` daemon unreachable, `4` bad arguments, `5` timeout.
 
 ## HTTP API Reference
 
-### Health
+The daemon listens on `http://127.0.0.1:7580` by default. Every `:playerId`
+also accepts a username (case-insensitive).
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/health` | Returns daemon status |
+| GET | `/health` | Daemon status and uptime |
+| GET | `/dashboard/data` | Per-account state, loop status, recent jobs |
+| GET | `/accounts` | List accounts |
+| POST | `/accounts` | Connect an owned account (202, connects in background) |
+| GET | `/accounts/:playerId` | Account details |
+| DELETE | `/accounts/:playerId` | Disconnect and remove |
+| POST | `/accounts/register` | Register a new account |
+| GET | `/accounts/:playerId/state[/:section]` | Game state, or one section |
+| POST | `/accounts/:playerId/state/refresh` | Force a live re-seed of the cache |
+| GET | `/accounts/:playerId/system[/:systemId]` | System / POI map |
+| POST | `/accounts/:playerId/goal` | Run a goal, wait for the result |
+| POST | `/accounts/:playerId/goal/async` | Run a goal in the background (202, returns `job_id`) |
+| GET | `/jobs/:jobId` | Async job status |
+| POST | `/goals/batch` | One goal across many accounts, keyed by player id |
+| GET/POST/PATCH/DELETE | `/accounts/:playerId/loop` | Loop status, start, live option patch, stop |
+| POST | `/accounts/:playerId/fleet` | Reconcile the fleet this account leads |
+| POST | `/accounts/:playerId/fleet/move` | Move the fleet and ready every member |
+| GET/PATCH | `/accounts/:playerId/combat-mode` | Get or set combat-response mode |
+| POST | `/accounts/:playerId/combat-heartbeat` | External combat-driver liveness ping |
+| DELETE | `/accounts/:playerId/abort` | Release the account from all in-progress work |
+| POST | `/accounts/:playerId/raw` | Raw game API passthrough |
+| GET | `/accounts/:playerId/market/:baseId` | Cached order book (subscribe first) |
+| GET | `/accounts/:playerId/observation` | Cached observation view (subscribe first) |
+| GET | `/accounts/:playerId/crafting/events` | Live crafting progress (SSE) |
+| GET | `/accounts/:playerId/combat/events` | Live combat events (SSE) |
+| GET | `/accounts/:playerId/pirate-radio/events` | Intercepted pirate transmissions (SSE) |
+| GET | `/accounts/:playerId/battle-log/events` | Tick-by-tick battle log (SSE) |
+| GET/POST | `/log-level` | Get or set the log level |
 
-### Accounts
+## Goals
 
-| Method | Path | Body | Description |
-|--------|------|------|-------------|
-| GET | `/accounts` | — | List all accounts |
-| POST | `/accounts` | `{ username }` | Connect an already-owned account |
-| GET | `/accounts/:playerId` | — | Get account details and state summary |
-| DELETE | `/accounts/:playerId` | — | Disconnect and remove account |
-| POST | `/accounts/register` | `{ username, empire }` | Register new account (uses `registration_code` from `config/registration.json`) |
+Goals are submitted as `{ type, options }` and are **idempotent** — each one
+checks whether it is already satisfied and returns immediately, without
+spending a tick, if so.
 
-### State
+Around fifty goal types are available, in three layers:
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/accounts/:playerId/state` | Full game state from local cache |
-| GET | `/accounts/:playerId/state/:section` | Single section: `player`, `ship`, `cargo`, `location`, `modules`, `skills`, `missions`, `queue` |
+- **Primitives** — one action each: `navigate-to-system`, `go-to-poi`,
+  `dock-at`, `ensure-fueled`, `ensure-repaired`, `buy-items`,
+  `create-buy-order`, `install-mod`, `reload-weapon`, `scan`, and so on.
+- **Compounds** — multi-step sequences that handle travel, docking and the
+  operation in one call: `prepare-at-station`, `mining-run`, `buy-at-station`,
+  `sell-at-station-priced`, `unload-at-station`, `fuel-rescue`,
+  `ensure-loadout`, `ensure-magazines`, `ensure-cargo`, `ensure-hull`.
+- **Fleet operations** — spanning several accounts: `ensure-fleet` and
+  `fleet-move`, driven from the fleet leader.
 
-### Goals
+Run `smctl help goals` for every type with its exact options. That output is
+generated from the validating schemas, so it cannot fall out of date.
 
-| Method | Path | Body | Description |
-|--------|------|------|-------------|
-| POST | `/accounts/:playerId/goal` | `{ type, options }` | Execute a one-off goal and wait for result |
+### Reconciling goals
 
-### Loops
-
-| Method | Path | Body | Description |
-|--------|------|------|-------------|
-| GET | `/accounts/:playerId/loop` | — | Get current loop status |
-| POST | `/accounts/:playerId/loop` | `{ type, options }` | Start a repeating loop |
-| DELETE | `/accounts/:playerId/loop` | — | Stop running loop |
-
-### Raw API Passthrough
-
-| Method | Path | Body | Description |
-|--------|------|------|-------------|
-| POST | `/accounts/:playerId/raw` | `{ toolGroup, action, params }` | Pass a call directly to the SpaceMolt API |
-
-### Config
-
-| Method | Path | Body | Description |
-|--------|------|------|-------------|
-| GET | `/log-level` | — | Get current log level |
-| POST | `/log-level` | `{ level }` | Set log level |
-
-## Goal Types Reference
-
-Goals are submitted as `{ type, options }`. Goals check current state first — if the goal is already satisfied, they succeed immediately without making API calls.
-
-### Navigation
-
-| Goal | Required | Optional |
-|------|----------|---------|
-| `navigate-to-system` | `targetSystemId` (string) | — |
-| `go-to-poi` | `targetPoiId` (string) | — |
-| `dock-at` | `targetBaseId` (string) | — |
-| `ensure-undocked` | — | — |
-| `ensure-fueled` | — | `targetFuel` (number) |
-| `ensure-repaired` | — | — |
-
-### Cargo & Market
-
-| Goal | Required | Optional |
-|------|----------|---------|
-| `sell-or-deposit-cargo` | — | — (sells all cargo, deposits unsold to personal storage) |
-| `ensure-empty-cargo` | — | — |
-| `jettison-cargo` | `itemId` (string), `quantity` (number) | — |
-| `load-from-storage` | `itemId` (string) | `maxQuantity` (number) |
-| `buy-items` | `items: Array<{ itemId, maxPrice }>` | `items[].maxQuantity` |
-| `list-cargo-for-sale` | `items: Array<{ itemId, minPrice }>` | — |
-| `create-buy-order` | `itemId`, `quantity`, `price` | — |
-| `create-sell-order` | `itemId`, `quantity`, `price` | — |
-
-### Faction Storage
-
-| Goal | Required | Optional |
-|------|----------|---------|
-| `deposit-to-faction-storage` | `itemId` (string), `quantity` (number) | — |
-| `withdraw-from-faction-storage` | `itemId` (string) | `quantity` (number) |
-| `load-from-faction-storage` | `itemId` (string) | `maxQuantity` (number) |
-| `gift-to-player` | `targetName`, `itemId`, `quantity` | `message` (string) |
-
-### Items
-
-| Goal | Required | Optional |
-|------|----------|---------|
-| `use-item` | `itemId` (string) | — |
-
-> Managed crafting goals (`craft`, `craft-batch`) and the `crafting` loop were removed when the game moved crafting to an asynchronous job queue. Submit and track craft jobs directly through the [raw passthrough](#raw-api-passthrough).
-
-### Missions
-
-| Goal | Required | Optional |
-|------|----------|---------|
-| `accept-mission` | `missionId` (string) | — |
-| `complete-mission` | `missionId` (string) | — |
-| `abandon-mission` | `missionId` (string) | — |
-
-### Ship Modules
-
-| Goal | Required | Optional |
-|------|----------|---------|
-| `install-mod` | `moduleId` (string) | — |
-| `uninstall-mod` | `moduleId` (string) | — |
-
-### Scanning
-
-| Goal | Required | Optional |
-|------|----------|---------|
-| `scan` | — | — |
-
-### Compound Goals
-
-Compound goals execute multi-step sequences built from primitives. They handle navigation, docking, and the requested operation in a single call.
-
-| Goal | Required | Optional |
-|------|----------|---------|
-| `prepare-at-station` | `systemId`, `poiId`, `baseId` | `refuel` (bool), `repair` (bool) |
-| `sell-at-station` | `systemId`, `stationPoiId`, `baseId` | `refuel` (bool) |
-| `buy-at-station` | `systemId`, `poiId`, `baseId`, `items: Array<{ itemId, maxPrice, maxQuantity? }>` | `refuel` (bool) |
-| `sell-at-station-priced` | `systemId`, `stationPoiId`, `baseId`, `items: Array<{ itemId, minPrice }>` | `refuel` (bool) |
-| `load-at-station` | `systemId`, `poiId`, `baseId`, `sourceType` ("personal-storage"\|"faction-storage"\|"market"), `items` | `refuel` (bool) |
-| `unload-at-station` | `systemId`, `poiId`, `baseId`, `destType` ("personal-storage"\|"faction-storage"\|"gift"\|"market") | `targetPlayer` (required for gift), `items`, `refuel` (bool) |
-| `mine-until-full` | — | `fullThreshold` (number), `maxAttempts` (number) |
-| `mining-run` | `systemId`, `beltPoiId` | `fullThreshold` (number), `maxAttempts` (number) |
-| `enhanced-mining-run` | `systemId`, `beltPoiId`, `junkItemIds: string[]` | `fullThreshold`, `maxAttempts`, `maxJettisonRounds` |
-| `mine-with-jettison` | `junkItemIds: string[]` | `fullThreshold`, `maxAttempts`, `maxJettisonRounds` |
-
-## Loop Types Reference
-
-Loops are long-running repeating behaviors. Each account supports one active loop at a time.
-
-### mining
-
-Mine ore at a belt, then travel to a station and sell all cargo. Repeat.
-
-**Options:**
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `miningSystemId` | string | yes | System containing the asteroid belt |
-| `beltPoiId` | string | yes | POI ID of the asteroid belt |
-| `sellSystemId` | string | yes | System containing the sell station |
-| `sellStationPoiId` | string | yes | POI ID of the sell station |
-| `sellBaseId` | string | yes | Base ID at the sell station |
-| `fullThreshold` | number | no | Cargo fill ratio to consider "full" (default 0.9) |
-| `maxAttempts` | number | no | Max mine attempts per fill cycle |
-| `maxIterations` | number | no | Max loop iterations before stopping |
+The `ensure-*` goals return a richer result. Instead of one pass/fail, they
+report **per subject** — per gun, per fleet member, per item stack — with what
+was desired, what was found, and what was done:
 
 ```json
 {
-  "type": "mining",
-  "options": {
-    "miningSystemId": "sol",
-    "beltPoiId": "asteroid-belt-1",
-    "sellSystemId": "sol",
-    "sellStationPoiId": "sol-station",
-    "sellBaseId": "sol-base",
-    "fullThreshold": 0.9,
-    "maxAttempts": 100,
-    "maxIterations": 50
-  }
+  "success": false,
+  "summary": { "total": 5, "changed": 4, "unchanged": 0, "failed": 1 },
+  "subjects": [
+    { "id": "mod-7", "kind": "weapon", "ok": true, "action": "updated",
+      "before": { "ammo": 0 }, "after": { "ammo": 7, "roundsDiscarded": 0 } },
+    { "id": "mod-9", "kind": "weapon", "ok": false, "action": "none",
+      "message": "insufficient_cargo: tungsten_slug_case",
+      "before": { "ammo": 0, "capacity": 7 } }
+  ]
 }
 ```
 
-### enhanced-mining
+Two properties are worth relying on. `success` is true only if **every** subject
+succeeded, so a partial result can never read as a clean one. And a failed
+subject always carries `before` — the state actually observed — because the
+usual reason a subject fails is that the caller's model was stale, not that the
+ship misbehaved.
 
-Mine ore, jettison low-value items to make room for better ore, continue mining until full, then sell. Repeat.
+## Loops
 
-**Options:**
+Loops are long-running repeating behaviours. Each account runs at most one at a
+time. Configs are persisted to `config/loops/<player_id>.json` and resume
+automatically when the daemon restarts.
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `miningSystemId` | string | yes | System containing the asteroid belt |
-| `beltPoiId` | string | yes | POI ID of the asteroid belt |
-| `sellSystemId` | string | yes | System containing the sell station |
-| `sellStationPoiId` | string | yes | POI ID of the sell station |
-| `sellBaseId` | string | yes | Base ID at the sell station |
-| `junkItemIds` | string[] | yes | Item IDs to jettison when cargo is full |
-| `fullThreshold` | number | no | Cargo fill ratio to consider "full" (default 0.9) |
-| `maxAttempts` | number | no | Max mine attempts per fill cycle |
-| `maxJettisonRounds` | number | no | Max jettison rounds before selling anyway |
-| `maxIterations` | number | no | Max loop iterations before stopping |
+| Loop | Behaviour |
+|------|-----------|
+| `mining` | Mine a belt until full, sell at a station, repeat |
+| `enhanced-mining` | As above, jettisoning low-value ore to make room for better |
+| `salvage` | Work wrecks at a POI and sell the proceeds |
+| `roaming-salvage` | Range across systems looking for wrecks |
+| `tow-salvage` | Tow wrecks home, then process them |
+| `trading` | Buy below a price at one station, sell above a price at another |
+| `hauling` | Move goods between storage, market, or another player |
+| `storage-transfer` | Shuttle items between personal and faction storage |
+| `exploration` | Survey systems and gather intel |
+| `guard` | Patrol a POI and engage pirates, returning home to repair |
 
-```json
-{
-  "type": "enhanced-mining",
-  "options": {
-    "miningSystemId": "sol",
-    "beltPoiId": "asteroid-belt-1",
-    "sellSystemId": "sol",
-    "sellStationPoiId": "sol-station",
-    "sellBaseId": "sol-base",
-    "junkItemIds": ["stone", "ice"],
-    "fullThreshold": 0.9,
-    "maxAttempts": 100,
-    "maxJettisonRounds": 3,
-    "maxIterations": 50
-  }
-}
-```
+`smctl help loops` lists them with example JSON; `smctl help <loop>` gives a
+detailed reference for most.
 
-### trading
+Loop status distinguishes a healthy loop from a stuck one: `consecutiveFailures`
+and `lastFailure` populate even before the first iteration completes, so a loop
+failing repeatedly is not mistaken for one still on its first cycle.
 
-Travel to a buy station and purchase items below max price, then travel to a sell station and sell above min price. Repeat.
+## Combat Response
 
-**Options:**
+Entering combat always releases the account from any running loop, goal or job,
+so nothing else is fighting for control of the ship. What happens next is set
+per account and persisted:
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `buyStation.systemId` | string | yes | System of the buy station |
-| `buyStation.poiId` | string | yes | POI ID of the buy station |
-| `buyStation.baseId` | string | yes | Base ID at the buy station |
-| `sellStation.systemId` | string | yes | System of the sell station |
-| `sellStation.stationPoiId` | string | yes | POI ID of the sell station |
-| `sellStation.baseId` | string | yes | Base ID at the sell station |
-| `items` | Array | yes | Items to trade |
-| `items[].itemId` | string | yes | Item to buy and sell |
-| `items[].maxBuyPrice` | number | yes | Skip buying if market price exceeds this |
-| `items[].minSellPrice` | number | yes | Skip selling if market price is below this |
-| `items[].maxQuantity` | number | no | Cap quantity purchased per iteration |
-| `refuel` | boolean | no | Refuel at each station |
-| `maxIterations` | number | no | Max loop iterations before stopping |
+- **`flee`** (default) — setpoint sends the flee stance until the ship escapes.
+- **`external`** — setpoint sends no combat commands, leaving the ship to your
+  own combat logic.
 
-```json
-{
-  "type": "trading",
-  "options": {
-    "buyStation": {
-      "systemId": "alpha",
-      "poiId": "alpha-station",
-      "baseId": "alpha-base"
-    },
-    "sellStation": {
-      "systemId": "beta",
-      "stationPoiId": "beta-station",
-      "baseId": "beta-base"
-    },
-    "items": [
-      { "itemId": "copper_ore", "maxBuyPrice": 8, "minSellPrice": 15 },
-      { "itemId": "iron_ore", "maxBuyPrice": 5, "minSellPrice": 12, "maxQuantity": 50 }
-    ],
-    "refuel": true,
-    "maxIterations": 100
-  }
-}
-```
-
-### hauling
-
-Load items from a source location, travel to a destination, unload. Repeat.
-
-Source and destination `type` values:
-- `"personal-storage"` — the account's personal storage at that base
-- `"faction-storage"` — the faction's shared storage at that base
-- `"market"` — buy from or list on the market at that base
-- `"gift"` — deliver directly to another player (destination only; requires `targetPlayer`)
-
-**Example: personal storage to faction storage**
-
-```json
-{
-  "type": "hauling",
-  "options": {
-    "source": {
-      "systemId": "sol",
-      "poiId": "sol-station",
-      "baseId": "sol-base",
-      "type": "personal-storage",
-      "items": [{ "itemId": "iron_bar", "quantity": 50 }]
-    },
-    "destination": {
-      "systemId": "alpha",
-      "poiId": "alpha-station",
-      "baseId": "alpha-base",
-      "type": "faction-storage"
-    },
-    "refuel": true,
-    "maxIterations": 10
-  }
-}
-```
-
-**Example: market buy to gift delivery**
-
-```json
-{
-  "type": "hauling",
-  "options": {
-    "source": {
-      "systemId": "sol",
-      "poiId": "sol-station",
-      "baseId": "sol-base",
-      "type": "market",
-      "items": [{ "itemId": "fuel_cell", "maxPrice": 20, "quantity": 10 }]
-    },
-    "destination": {
-      "systemId": "sol",
-      "poiId": "sol-station",
-      "baseId": "sol-base",
-      "type": "gift",
-      "targetPlayer": "FriendName"
-    },
-    "maxIterations": 5
-  }
-}
-```
-
-**Example: faction storage to market listing**
-
-```json
-{
-  "type": "hauling",
-  "options": {
-    "source": {
-      "systemId": "alpha",
-      "poiId": "alpha-station",
-      "baseId": "alpha-base",
-      "type": "faction-storage",
-      "items": [{ "itemId": "copper_ore" }]
-    },
-    "destination": {
-      "systemId": "beta",
-      "poiId": "beta-station",
-      "baseId": "beta-base",
-      "type": "market",
-      "items": [{ "itemId": "copper_ore", "minPrice": 15 }]
-    },
-    "refuel": true
-  }
-}
-```
+An `external` driver should POST to `/accounts/:playerId/combat-heartbeat` every
+tick it is alive, whether or not it issued a command. If the daemon sees no
+heartbeat for five ticks **while the account is in a battle**, it takes the fight
+with the built-in flee response rather than leaving a ship that neither fights
+nor flees. The configured mode is not changed when that happens.
 
 ## Raw API Passthrough
 
-For operations not yet wrapped in goals, send the call directly to the SpaceMolt API:
+For anything not yet wrapped in a goal, send the call straight through the
+account's managed connection:
 
 ```json
 { "toolGroup": "spacemolt", "action": "get_nearby", "params": {} }
 ```
 
-The response envelope (`result`, `structuredContent`, `notifications`, `session`, `error`) is returned as-is, and `structuredContent` is still applied to the local state cache.
+The response is `{ result, structuredContent }`, plus `tick` and `command` for
+mutations. Live push events (chat, combat, and so on) arrive on the event
+streams, not on command responses, so `raw` does not relay them.
 
-## Loop Persistence
+## How It Works
 
-- Loops auto-save to `config/loops/<player_id>.json` when started
-- On daemon restart, all saved loops are automatically resumed
-- The loop config file is deleted when the loop stops or completes normally
-- Loops are deterministic — if interrupted mid-iteration, they resume from current game state on next start
+**Declarative model.** You specify outcomes, not API calls. setpoint reads the
+current state, works out what is missing, and does only that.
 
-## Key Concepts for AI Agents
+**The game library owns the connection.** setpoint speaks to SpaceMolt through
+`@spacemolt/lib`, which holds one WebSocket per account, reconnects and
+re-authenticates on drops, and paces connects to stay inside the server's
+per-IP limits. A single Clerk API key authenticates every account you own —
+there are no per-account passwords stored anywhere.
 
-**Declarative model**: Specify desired outcomes, not individual API calls. setpoint determines the current state and plans what actions are needed.
+**One mutation per account per tick.** The game executes mutations on a
+ten-second tick, one per account. Queries are unrestricted. The library
+serialises mutations per account and retries rate-limited ones itself, so
+setpoint does not add a second layer of pacing on top. An awaited mutation does
+not resolve until the action actually executes, which for travel can be many
+ticks.
 
-**Idempotent goals**: Every goal checks whether it is already satisfied before acting. If a ship is already at the target system, `navigate-to-system` returns success immediately without spending a tick.
+**State is push-fed.** Each account has a live cache updated by server pushes
+and mutation deltas; that cache is what goals read, so checking state costs no
+tick and no wire call. The local SQLite database is a read-only mirror of it,
+kept current by a projector, and exists so the HTTP state endpoints can answer
+without going through an account's connection.
 
-**Rate limits**: The SpaceMolt API allows one mutation per 10-second game tick per account. Query endpoints (`get_state`, `get_cargo`, `get_nearby`, etc.) are unlimited. setpoint enforces this automatically.
+**Failures are reported, not hidden.** A goal that cannot reach its outcome says
+so, with the state it observed. Loops retry a failed iteration and stop after a
+bounded number of consecutive failures rather than spinning forever.
 
-**State caching**: Game state is stored in a local SQLite database and updated after every mutation response. Reading state via setpoint does not consume ticks.
+**Nothing preempts running work.** Fleet operations that need an account already
+running a loop or goal report that as a failure naming the reason; they never
+take the account away from it. Releasing an account is a deliberate action
+(`smctl abort <id> --force`).
 
-**Error behavior**: API errors in primitive goals terminate the current loop iteration with an error result. The loop configuration persists, so restarting the daemon will auto-resume the loop from current game state.
+## Security
 
-**One account, one loop**: Each account can run at most one loop at a time. Starting a new loop replaces any existing loop for that account.
-
-**Session management**: The daemon handles keepalive polling (every 10–15 minutes), automatic re-login on session expiry (401), and staggered session creation on startup to stay within the 20/min session creation limit.
+The API has **no authentication** and binds to `127.0.0.1`. Anything that can
+reach the port can command every account. Do not expose it to a network or put
+it behind a reverse proxy without adding your own authentication first. See
+**[SECURITY.md](SECURITY.md)**.
