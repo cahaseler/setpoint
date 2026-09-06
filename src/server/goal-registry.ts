@@ -2,6 +2,7 @@ import { deprecatedGoalMessage, goalSchemas } from "@setpoint/protocol";
 import {
 	LibBuyAtStation,
 	LibEnhancedMiningRun,
+	LibEnsureCargo,
 	LibEnsureHull,
 	LibEnsureLoadout,
 	LibEnsureMagazines,
@@ -404,6 +405,21 @@ const registry: ReadonlyMap<string, GoalFactory> = new Map<string, GoalFactory>(
 					? { uninstalledStorage: validated.uninstalledStorage }
 					: {}),
 				...(validated.phase !== undefined ? { phase: validated.phase } : {}),
+			});
+		},
+	],
+	[
+		"ensure-cargo",
+		(opts) => {
+			const validated = goalSchemas["ensure-cargo"].parse(opts);
+			return new LibEnsureCargo({
+				systemId: validated.systemId,
+				poiId: validated.poiId,
+				baseId: validated.baseId,
+				items: validated.items,
+				...(validated.source !== undefined ? { source: validated.source } : {}),
+				...(validated.surplusTo !== undefined ? { surplusTo: validated.surplusTo } : {}),
+				...(validated.unlisted !== undefined ? { unlisted: validated.unlisted } : {}),
 			});
 		},
 	],

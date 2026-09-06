@@ -4,6 +4,8 @@ export { LibDrainTowedWreck } from "./drain-towed-wreck.js";
 export type { DrainTowedWreckOptions } from "./drain-towed-wreck.js";
 export { LibEnhancedMiningRun } from "./enhanced-mining-run.js";
 export type { EnhancedMiningRunOptions } from "./enhanced-mining-run.js";
+export { LibEnsureCargo } from "./ensure-cargo.js";
+export type { CargoBillLine, EnsureCargoOptions } from "./ensure-cargo.js";
 export { LibEnsureHull } from "./ensure-hull.js";
 export type { EnsureHullOptions } from "./ensure-hull.js";
 export { LibEnsureLoadout } from "./ensure-loadout.js";

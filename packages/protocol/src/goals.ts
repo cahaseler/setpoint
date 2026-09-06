@@ -223,6 +223,16 @@ export const goalSchemas = {
 		 */
 		phase: z.enum(["strip", "fit", "both"]).optional(),
 	}),
+	"ensure-cargo": z.object({
+		systemId: z.string(),
+		poiId: z.string(),
+		baseId: z.string(),
+		/** Order is priority: when capacity binds, earlier lines win. */
+		items: z.array(z.object({ itemId: z.string(), quantity: z.number().min(0) })),
+		source: z.enum(["faction", "personal"]).optional(),
+		surplusTo: z.enum(["faction", "personal", "keep"]).optional(),
+		unlisted: z.enum(["deposit", "keep"]).optional(),
+	}),
 	"ensure-hull": z.object({
 		systemId: z.string(),
 		poiId: z.string(),
