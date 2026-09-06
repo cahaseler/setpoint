@@ -45,6 +45,69 @@ export interface LoopResult extends GoalResult {
 	iterationCount: number;
 }
 
+/**
+ * What a reconciling goal did to one subject it was asked to bring into line.
+ *
+ * `"none"` covers both "already correct" and "deliberately skipped" — the two
+ * are distinguished by `ok` plus `message`, not by a separate action.
+ */
+export type ReconcileAction = "none" | "created" | "updated" | "removed";
+
+/**
+ * One thing a reconciling goal acted on: a weapon, a fleet member, an item
+ * stack, a hull, a module slot.
+ *
+ * `id` is whatever addresses that subject in the game — a `module_id`, a
+ * `player_id`, an `item_id`, a ship uuid. It is stable enough for a caller to
+ * diff two runs against each other.
+ */
+export interface ReconcileSubject {
+	id: string;
+	/** What sort of thing this is, so a generic consumer can render it. */
+	kind: string;
+	/** Whether THIS subject reached the desired state. */
+	ok: boolean;
+	action: ReconcileAction;
+	/**
+	 * Why this subject failed, or why nothing was done to it. Failure reasons
+	 * are prefixed, machine-readable tokens (`cargo_full`, `not_at_poi`,
+	 * `busy:mining-loop`) so a caller can branch without parsing prose.
+	 */
+	message?: string;
+	/** What was asked for. Recorded so a stored result stays diagnosable without the original request. */
+	desired?: Record<string, unknown>;
+	before?: Record<string, unknown>;
+	after?: Record<string, unknown>;
+}
+
+/**
+ * Result of a goal that reconciles many subjects toward a desired state.
+ *
+ * The invariant that matters: `success` is true only when EVERY subject is
+ * `ok`, and `alreadySatisfied` only when every action is `"none"`. A goal that
+ * fixed four of five guns cannot report success — which is the structural fix
+ * for a partial reload reporting a clean result.
+ *
+ * Facts about the ship or fleet as a whole rather than any one subject (hold
+ * capacity, the fleet's id, the hull left parked behind) go in `context`, not
+ * smuggled into an unrelated subject.
+ */
+export interface ReconcileResult extends GoalResult {
+	subjects: ReconcileSubject[];
+	summary: { total: number; changed: number; unchanged: number; failed: number };
+	context?: Record<string, unknown>;
+}
+
+/**
+ * Result of an operation spanning several accounts — a fleet goal driven from
+ * a leader, or one goal submitted across a batch. Keyed by `player_id`, so a
+ * caller diffs it against the set it asked for.
+ */
+export interface FleetOperationResult extends GoalResult {
+	accounts: Record<string, GoalResult | ReconcileResult>;
+	summary: { total: number; succeeded: number; failed: number };
+}
+
 /** Status of a running (or previously run) loop, as exposed by the daemon's loop manager. */
 export interface LoopStatus {
 	type: string;
