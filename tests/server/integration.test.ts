@@ -350,6 +350,21 @@ describe("Server integration", () => {
 		expect(((await res.json()) as { playerId: string }).playerId).toBe("p1");
 	});
 
+	test("GET /accounts/:playerId/battle-log/events is served as an SSE stream", async () => {
+		const controller = new AbortController();
+		const res = await fetch(`${base}/accounts/p1/battle-log/events?battleId=b-1`, {
+			signal: controller.signal,
+		});
+		expect(res.status).toBe(200);
+		expect(res.headers.get("content-type")).toContain("text/event-stream");
+		controller.abort();
+	});
+
+	test("GET /accounts/:playerId/battle-log/events 404s for an unknown account", async () => {
+		const res = await fetch(`${base}/accounts/nope/battle-log/events`);
+		expect(res.status).toBe(404);
+	});
+
 	test("unknown routes return 404", async () => {
 		const res = await fetch(`${base}/nonexistent`);
 		expect(res.status).toBe(404);

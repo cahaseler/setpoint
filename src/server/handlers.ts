@@ -1826,6 +1826,110 @@ export function handlePirateRadioEvents(
 	return new Response(stream, { headers: SSE_HEADERS });
 }
 
+/** How often the battle-log tail asks for new ticks. One game tick. */
+const BATTLE_LOG_POLL_MS = 10_000;
+
+/**
+ * Stream a battle's tick-by-tick log as Server-Sent Events.
+ *
+ * `battle/status` only reports other participants as percentages and only
+ * answers for the asking account, so following a fight with N pilots means N
+ * polls per tick. The battle log carries absolute hull, shield, zone, stance
+ * and target for EVERY participant plus per-weapon attack rows, so one tail
+ * describes the whole fight.
+ *
+ * Polled on demand rather than tailed in the background: it costs nothing when
+ * nobody is watching, and a client that cares is by definition connected. The
+ * cursor advances by tick, so a reconnecting client resumes with `sinceTick`
+ * instead of replaying the fight.
+ */
+export function handleBattleLogEvents(
+	req: Request,
+	params: RouteParams,
+	ctx: HandlerContext,
+): Response {
+	const account = resolveAccount(ctx, params["playerId"] ?? "");
+	if (!account) {
+		return errorResponse("Account not found", 404);
+	}
+	const actualId = playerIdOf(account);
+
+	const url = new URL(req.url);
+	const battleIdParam = url.searchParams.get("battleId") ?? undefined;
+	const sinceTickParam = Number(url.searchParams.get("sinceTick"));
+	let cursor = Number.isFinite(sinceTickParam) ? sinceTickParam : 0;
+
+	const encoder = new TextEncoder();
+	let timer: ReturnType<typeof setInterval> | undefined;
+	let closed = false;
+
+	const stream = new ReadableStream<Uint8Array>({
+		start(controller): void {
+			const send = (payload: unknown): void => {
+				if (closed) return;
+				controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
+			};
+
+			const poll = async (): Promise<void> => {
+				try {
+					const live = ctx.manager.getByPlayerId(actualId);
+					if (!live) {
+						send({ type: "ended", reason: "account_disconnected" });
+						return;
+					}
+
+					let battleId = battleIdParam;
+					if (battleId === undefined) {
+						const status = await live.commands.spacemolt_battle.status();
+						battleId = (status.structuredContent as { battle_id?: string } | undefined)?.battle_id;
+						if (battleId === undefined) return;
+					}
+
+					const response = await live.commands.spacemolt_battle.log({
+						id: battleId,
+						tick_start: cursor,
+					});
+					const body = response.structuredContent as
+						| { entries?: Array<{ tick?: number }>; status?: string }
+						| undefined;
+
+					for (const entry of body?.entries ?? []) {
+						send({ type: "tick", battleId, entry });
+						if (typeof entry.tick === "number" && entry.tick >= cursor) {
+							cursor = entry.tick + 1;
+						}
+					}
+
+					if (body?.status === "completed") {
+						send({ type: "ended", reason: "battle_completed", battleId });
+					}
+				} catch (err) {
+					// A battle that has ended, or an account no longer in one, answers
+					// with an error here. That is a normal end to the tail, not a fault
+					// worth tearing the stream down over without saying why.
+					send({ type: "error", message: errorMessage(err) });
+				}
+			};
+
+			// Flush a frame immediately. A stream that writes no bytes leaves the
+			// response headers unsent, so a client waits on a connection that
+			// looks dead until the first tick happens to produce output.
+			send({ type: "open", battleId: battleIdParam ?? null, sinceTick: cursor });
+
+			void poll();
+			timer = setInterval(() => {
+				void poll();
+			}, BATTLE_LOG_POLL_MS);
+		},
+		cancel(): void {
+			closed = true;
+			if (timer) clearInterval(timer);
+		},
+	});
+
+	return new Response(stream, { headers: SSE_HEADERS });
+}
+
 // ── Fleet ───────────────────────────────────────────────────────────
 
 /**

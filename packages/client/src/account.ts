@@ -447,6 +447,26 @@ export class AccountCombatModeApi {
 	 * the driver is the caller's business, and the next battle starts external
 	 * again.
 	 */
+	/**
+	 * Streams a battle's tick-by-tick log.
+	 *
+	 * `battle/status` reports other participants only as percentages and only
+	 * answers for the asking account, so following a fight with N pilots costs N
+	 * polls per tick. The log carries absolute hull, shield, zone, stance and
+	 * target for every participant, so one stream describes the whole fight.
+	 *
+	 * Pass `sinceTick` to resume after a reconnect instead of replaying.
+	 */
+	battleLog(options: { battleId?: string; sinceTick?: number } = {}): EventSource {
+		const params = new URLSearchParams();
+		if (options.battleId !== undefined) params.set("battleId", options.battleId);
+		if (options.sinceTick !== undefined) params.set("sinceTick", String(options.sinceTick));
+		const query = params.size > 0 ? `?${params.toString()}` : "";
+		return new EventSource(
+			`${this.client.baseUrl}/accounts/${encodeURIComponent(this.id)}/battle-log/events${query}`,
+		);
+	}
+
 	async heartbeat(): Promise<{ playerId: string; acknowledgedAt: string }> {
 		const result = await this.client.request(
 			"POST",

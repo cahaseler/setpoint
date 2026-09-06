@@ -16,6 +16,7 @@ import {
 	handleAbortAccount,
 	handleAddAccount,
 	handleBatchGoal,
+	handleBattleLogEvents,
 	handleCombatEvents,
 	handleCombatHeartbeat,
 	handleCraftingEvents,
@@ -75,7 +76,7 @@ export function resolveBindHost(env: Record<string, string | undefined> = proces
 export function isUnboundedRequest(req: Request): boolean {
 	const { pathname } = new URL(req.url);
 	if (req.method === "GET") {
-		return /\/(crafting|combat|pirate-radio)\/events$/.test(pathname);
+		return /\/(crafting|combat|pirate-radio|battle-log)\/events$/.test(pathname);
 	}
 	if (req.method === "POST") {
 		return (
@@ -277,6 +278,7 @@ export function buildRoutes(ctx: HandlerContext): RouteTable {
 		"/accounts/:playerId/fleet": { POST: r(handleEnsureFleet) },
 		"/accounts/:playerId/fleet/move": { POST: r(handleFleetMove) },
 		"/accounts/:playerId/combat-heartbeat": { POST: r(handleCombatHeartbeat) },
+		"/accounts/:playerId/battle-log/events": { GET: r(handleBattleLogEvents) },
 		"/goals/batch": { POST: r(handleBatchGoal) },
 
 		"/accounts/:playerId/combat-mode": {
