@@ -215,6 +215,22 @@ export const goalSchemas = {
 		modules: z.array(z.string()),
 		uninstalledStorage: z.enum(["personal", "faction", "cargo"]).optional(),
 		/**
+		 * Removed. Magazine loading belongs to `ensure-magazines`, which works per
+		 * module instance; this option could only ever address one gun per weapon
+		 * TYPE, so a hull with five of the same railgun got one magazine filled
+		 * and a success result.
+		 *
+		 * Declared as `never` rather than deleted so a stale caller gets a loud
+		 * 400. Simply dropping the key would let zod strip it silently and return
+		 * "loadout configured" over empty guns — the exact failure this replaced.
+		 */
+		ammo: z
+			.never({
+				invalid_type_error:
+					"removed — magazine loading is now the ensure-magazines goal, which fills every gun rather than one per weapon type",
+			})
+			.optional(),
+		/**
 		 * `"strip"` removes unwanted modules and stops; `"fit"` installs the
 		 * desired ones. Splitting them lets a caller strip a whole squad before
 		 * fitting any of it, which is the only way to move a module from one

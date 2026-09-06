@@ -443,31 +443,19 @@ describe("goal-registry", () => {
 		expect(goal.name).toBe("ensure-loadout");
 	});
 
-	test("creates ensure-loadout with optional ammo map", () => {
-		const goal = createGoal("ensure-loadout", {
-			systemId: "sol",
-			poiId: "sol_station",
-			baseId: "sol_base",
-			modules: ["laser_mod"],
-			ammo: { laser_type_1: "laser_ammo_a" },
-		});
-		expect(goal.name).toBe("ensure-loadout");
-	});
-
-	test("ensure-loadout no longer accepts ammo — ensure-magazines owns magazine loading", () => {
-		// Two goals filling magazines with different semantics is how a loadout
-		// could report success with most of its guns empty.
-		const goal = createGoal("ensure-loadout", {
-			systemId: "sol",
-			poiId: "sol_station",
-			baseId: "sol_base",
-			modules: ["laser_mod"],
-			ammo: { laser_type_1: "laser_ammo_a" },
-		});
-		expect(goal.name).toBe("ensure-loadout");
-		expect(
-			(goal as unknown as { options: Record<string, unknown> }).options["ammo"],
-		).toBeUndefined();
+	test("ensure-loadout REJECTS ammo loudly instead of silently dropping it", () => {
+		// Silently stripping the key would return "loadout configured" over empty
+		// guns — the exact failure ensure-magazines replaced. ensure-loadout could
+		// only ever address one gun per weapon TYPE.
+		expect(() =>
+			createGoal("ensure-loadout", {
+				systemId: "sol",
+				poiId: "sol_station",
+				baseId: "sol_base",
+				modules: ["laser_mod"],
+				ammo: { laser_type_1: "laser_ammo_a" },
+			}),
+		).toThrow("ensure-magazines");
 	});
 
 	test("creates ensure-loadout with each phase value", () => {

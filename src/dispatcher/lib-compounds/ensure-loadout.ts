@@ -217,6 +217,30 @@ export class LibEnsureLoadout implements LibGoal {
 		);
 	}
 
+	/**
+	 * Where uninstalled modules go.
+	 *
+	 * Defaults to faction storage: a module parked in personal storage is
+	 * invisible to the next pilot's refit, so faction is the only default under
+	 * which a squad can pass hardware between hulls. An account with no faction
+	 * has nowhere to deposit, though, and would fail at the deposit where it
+	 * used to succeed — so the default (and only the default) falls back to
+	 * personal. An explicit `uninstalledStorage: "faction"` is still honoured
+	 * and still fails loudly, because the caller asked for it by name.
+	 */
+	private resolveStorage(ctx: LibGoalContext): "personal" | "faction" | "cargo" {
+		const requested = this.options.uninstalledStorage;
+		if (requested !== undefined) return requested;
+
+		const hasFaction =
+			typeof (ctx.state.player as { faction_id?: string } | undefined)?.faction_id === "string";
+		if (!hasFaction) {
+			log.info("Account has no faction — depositing uninstalled modules to personal storage");
+			return "personal";
+		}
+		return "faction";
+	}
+
 	private getModules(ctx: LibGoalContext): ModuleRecord[] {
 		return ctx.state.modules ?? [];
 	}
@@ -227,7 +251,7 @@ export class LibEnsureLoadout implements LibGoal {
 	): Promise<GoalResult> {
 		let ticksUsed = 0;
 		const messages: string[] = [];
-		const storage = this.options.uninstalledStorage ?? "faction";
+		const storage = this.resolveStorage(ctx);
 
 		for (const mod of modules) {
 			// Check for external cancellation between modules — a loadout change can

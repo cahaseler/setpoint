@@ -8,6 +8,9 @@ function baseState() {
 		location: { system_id: "sol", poi_id: "sol_station", docked_at: "sol_base" },
 		ship: { fuel: 100, max_fuel: 100, hull: 50, max_hull: 50, cargo_capacity: 100, cargo_used: 0 },
 		cargo: [] as Array<{ item_id: string; quantity: number }>,
+		// Faction-affiliated by default, which is what makes "faction" the
+		// default destination for uninstalled modules.
+		player: { id: "p1", faction_id: "ilc" },
 	};
 }
 
@@ -101,6 +104,45 @@ describe("LibEnsureLoadout", () => {
 		// Uninstalled modules default to FACTION storage: a module parked in
 		// personal storage is invisible to the next pilot's refit, so faction is
 		// the only default under which a squad can pass hardware between hulls.
+		expect(
+			account.calls.some(
+				(c) => c.action === "deposit" && (c.params as { target?: string })?.target === "faction",
+			),
+		).toBe(true);
+	});
+
+	test("an account with no faction falls back to personal storage", async () => {
+		// The faction default is right for squad refits, but an unaffiliated
+		// account has nowhere to deposit and would fail where it used to succeed.
+		const account = makeRefitAccount();
+		account.setState({ player: { id: "p1" } } as never);
+
+		await new LibEnsureLoadout({
+			systemId: "sol",
+			poiId: "sol_station",
+			baseId: "sol_base",
+			modules: [],
+		}).execute(makeLibGoalContext(account));
+
+		expect(
+			account.calls.some(
+				(c) => c.action === "deposit" && (c.params as { target?: string })?.target === "self",
+			),
+		).toBe(true);
+	});
+
+	test("an explicit faction request is still honoured for an account with no faction", async () => {
+		const account = makeRefitAccount();
+		account.setState({ player: { id: "p1" } } as never);
+
+		await new LibEnsureLoadout({
+			systemId: "sol",
+			poiId: "sol_station",
+			baseId: "sol_base",
+			modules: [],
+			uninstalledStorage: "faction",
+		}).execute(makeLibGoalContext(account));
+
 		expect(
 			account.calls.some(
 				(c) => c.action === "deposit" && (c.params as { target?: string })?.target === "faction",
