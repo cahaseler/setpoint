@@ -367,6 +367,18 @@ describe("Server integration", () => {
 		expect(res.status).toBe(404);
 	});
 
+	test("POST /fleet/move rejects refuel without a baseId rather than failing every member", async () => {
+		// Refuelling requires a station. Answering once, up front, beats an
+		// identical "must be docked" failure on every ship in the fleet.
+		const res = await fetch(`${base}/accounts/p1/fleet/move`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ systemId: "sol", poiId: "arena", refuel: true }),
+		});
+		expect(res.status).toBe(400);
+		expect(((await res.json()) as { error: string }).error).toContain("baseId");
+	});
+
 	test("unknown routes return 404", async () => {
 		const res = await fetch(`${base}/nonexistent`);
 		expect(res.status).toBe(404);
