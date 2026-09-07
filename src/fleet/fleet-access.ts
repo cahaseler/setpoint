@@ -18,8 +18,15 @@ import type { LibGoalContext } from "../dispatcher/lib-goal-context.js";
 export interface FleetAccess {
 	/** Canonical player id for an id or username, or `undefined` if unknown. */
 	resolve(playerIdOrUsername: string): string | undefined;
-	/** A goal context for another connected account. */
-	contextFor(playerId: string): LibGoalContext | undefined;
+	/**
+	 * A goal context for another connected account.
+	 *
+	 * `signal` must be threaded through: without it an aborted fleet operation
+	 * keeps commanding the members it had not reached yet, while the leader's
+	 * job is already marked released and a fresh operation can start on the
+	 * same ships.
+	 */
+	contextFor(playerId: string, signal?: AbortSignal): LibGoalContext | undefined;
 	/**
 	 * Why this account cannot be commanded right now, as a machine-readable
 	 * token (`busy:mining-loop`, `busy:goal:navigate-to-system`, `in_combat`),

@@ -43,17 +43,20 @@ export function makeFleetAccess(deps: FleetAccessDeps): FleetAccess {
 			return account === undefined ? undefined : playerIdOf(account);
 		},
 
-		contextFor: (playerId) => {
+		contextFor: (playerId, signal) => {
 			if (lookup(playerId) === undefined) return undefined;
 			// Re-resolve on every access: a reconnect replaces the Account
 			// instance, and a fleet operation can outlive one socket.
-			return makeLibGoalContext(() => {
+			const resolve = (): never => {
 				const account = lookup(playerId);
 				if (account === undefined) {
 					throw new Error(`Account ${playerId} is no longer connected`);
 				}
 				return account as never;
-			});
+			};
+			return signal === undefined
+				? makeLibGoalContext(resolve)
+				: makeLibGoalContext(resolve, signal);
 		},
 
 		busyReason: (playerId) => {

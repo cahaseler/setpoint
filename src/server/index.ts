@@ -14,6 +14,7 @@ import type { ExecutingGoalEntry } from "./account-release.js";
 import {
 	type HandlerContext,
 	handleAbortAccount,
+	handleAbortJob,
 	handleAddAccount,
 	handleBatchGoal,
 	handleBatchGoalAsync,
@@ -276,7 +277,7 @@ export function buildRoutes(ctx: HandlerContext): RouteTable {
 		"/accounts/:playerId/abort": { DELETE: r(handleAbortAccount) },
 
 		// Jobs
-		"/jobs/:jobId": { GET: r(handleGetJob) },
+		"/jobs/:jobId": { GET: r(handleGetJob), DELETE: r(handleAbortJob) },
 
 		// Loops
 		"/accounts/:playerId/loop": {

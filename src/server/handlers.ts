@@ -2063,6 +2063,42 @@ function leaderBusyResponse(ctx: HandlerContext, leaderId: string): Response | u
 	return undefined;
 }
 
+/**
+ * An AbortSignal that fires when either input does.
+ *
+ * A batch has two reasons to stop: the whole batch was aborted, or this one
+ * account was released on its own. Both must reach the goal.
+ */
+function anySignal(signals: AbortSignal[]): AbortSignal {
+	const controller = new AbortController();
+	for (const signal of signals) {
+		if (signal.aborted) {
+			controller.abort();
+			break;
+		}
+		signal.addEventListener("abort", () => controller.abort(), { once: true });
+	}
+	return controller.signal;
+}
+
+/** Parse and validate a batch body, shared by the sync and async handlers. */
+function parseBatchBody(
+	body: unknown,
+): { playerIds: string[]; type: string; options: unknown } | { error: string } {
+	const { playerIds, type, options } = (body ?? {}) as Record<string, unknown>;
+	if (
+		!Array.isArray(playerIds) ||
+		playerIds.length === 0 ||
+		playerIds.some((entry) => typeof entry !== "string")
+	) {
+		return { error: "playerIds is required (non-empty array of player ids or usernames)" };
+	}
+	if (typeof type !== "string") {
+		return { error: "type is required (goal type)" };
+	}
+	return { playerIds: playerIds as string[], type, options };
+}
+
 /** Parse and validate a fleet-move body, shared by the sync and async handlers. */
 function parseFleetMoveBody(body: unknown): { options: FleetMoveOptions } | { error: string } {
 	const { systemId, poiId, baseId, refuel, repair, maxWaitMs } = (body ?? {}) as Record<
@@ -2220,6 +2256,30 @@ export function handleCombatHeartbeat(
 	return jsonResponse({ playerId, acknowledgedAt: new Date().toISOString() });
 }
 
+/**
+ * Cancel a running job by id.
+ *
+ * The account-scoped abort reaches goals and fleet operations through the
+ * account they run on. A batch spans accounts, so this is the only handle on
+ * it — hence an id-based route rather than only the per-account one.
+ */
+export function handleAbortJob(_req: Request, params: RouteParams, ctx: HandlerContext): Response {
+	const jobId = params["jobId"];
+	if (!jobId) return errorResponse("Missing jobId", 400);
+
+	const record = ctx.jobManager.get(jobId);
+	if (!record) return errorResponse(`Job not found: ${jobId}`, 404);
+
+	// Idempotent: cancelling a job that already finished is not an error, it is
+	// a caller and a daemon that raced, and the caller got the outcome it wanted.
+	const aborted = ctx.jobManager.abort(jobId);
+	if (!aborted) {
+		return jsonResponse({ jobId, aborted: false, status: record.status });
+	}
+	log.info(`[${record.accountId}] Job ${jobId} (${record.goalType ?? "?"}) aborted by request`);
+	return jsonResponse({ jobId, aborted: true });
+}
+
 // ── Batch goals ─────────────────────────────────────────────────────
 
 /**
@@ -2242,11 +2302,18 @@ export async function runBatchGoal(
 	playerIds: string[],
 	type: string,
 	options: unknown,
+	signal?: AbortSignal,
 ): Promise<FleetOperationResult> {
 	const accounts: Record<string, GoalResult> = {};
 	const claimed: string[] = [];
 
 	const runOne = async (idOrName: string): Promise<[string, GoalResult]> => {
+		if (signal?.aborted === true) {
+			return [
+				idOrName,
+				{ success: false, message: "aborted", alreadySatisfied: false, ticksUsed: 0 },
+			];
+		}
 		const account = resolveAccount(ctx, idOrName);
 		if (!account) {
 			return [
@@ -2272,8 +2339,13 @@ export async function runBatchGoal(
 		try {
 			const goalOptions = (options ?? {}) as Record<string, unknown>;
 			const goal = createGoal(type, goalOptions);
-			const result = await runCancellable(ctx, playerId, type, goalOptions, (signal) =>
-				goal.execute(makeLibGoalContext(resolveLiveAccount(ctx, playerId), signal)),
+			const result = await runCancellable(ctx, playerId, type, goalOptions, (perAccount) =>
+				goal.execute(
+					makeLibGoalContext(
+						resolveLiveAccount(ctx, playerId),
+						signal === undefined ? perAccount : anySignal([signal, perAccount]),
+					),
+				),
 			);
 			return [playerId, result];
 		} catch (err) {
@@ -2311,18 +2383,9 @@ export async function handleBatchGoal(
 	} catch {
 		return errorResponse("Invalid JSON body", 400);
 	}
-	const { playerIds, type, options } = (body ?? {}) as Record<string, unknown>;
-	if (
-		!Array.isArray(playerIds) ||
-		playerIds.length === 0 ||
-		playerIds.some((p) => typeof p !== "string")
-	) {
-		return errorResponse("playerIds is required (non-empty array of player ids or usernames)", 400);
-	}
-	if (typeof type !== "string") {
-		return errorResponse("type is required (goal type)", 400);
-	}
-	return jsonResponse(await runBatchGoal(ctx, playerIds as string[], type, options));
+	const parsed = parseBatchBody(body);
+	if ("error" in parsed) return errorResponse(parsed.error, 400);
+	return jsonResponse(await runBatchGoal(ctx, parsed.playerIds, parsed.type, parsed.options));
 }
 
 /**
@@ -2343,24 +2406,40 @@ export async function handleEnsureFleetAsync(
 	const busy = leaderBusyResponse(ctx, leaderId);
 	if (busy) return busy;
 
-	let body: unknown;
+	// Claim synchronously, before the first await. Without this the body read
+	// below is a window in which a second submission passes the same checks and
+	// starts a second job on one leader — two navigate chains interleaving on
+	// one ship. Released once startJob's job record becomes the durable marker.
+	ctx.claimedAccounts.add(leaderId);
 	try {
-		body = await req.json();
-	} catch {
-		return errorResponse("Invalid JSON body", 400);
-	}
-	const members = (body as { members?: unknown })?.members;
-	if (!Array.isArray(members) || members.some((m) => typeof m !== "string")) {
-		return errorResponse("members is required (array of player ids or usernames)", 400);
+		return await submit();
+	} catch (err) {
+		log.error(`[${leaderId}] ensure-fleet submission failed: ${errorMessage(err)}`);
+		return errorResponse(`ensure-fleet failed: ${errorMessage(err)}`, 500);
+	} finally {
+		ctx.claimedAccounts.delete(leaderId);
 	}
 
-	return startJob(ctx, leaderId, "ensure-fleet", { members }, (signal) =>
-		ensureFleet(
-			makeLibGoalContext(resolveLiveAccount(ctx, leaderId), signal),
-			makeFleetAccess(ctx as unknown as FleetAccessDeps),
-			{ members: members as string[] },
-		),
-	);
+	async function submit(): Promise<Response> {
+		let body: unknown;
+		try {
+			body = await req.json();
+		} catch {
+			return errorResponse("Invalid JSON body", 400);
+		}
+		const members = (body as { members?: unknown })?.members;
+		if (!Array.isArray(members) || members.some((m) => typeof m !== "string")) {
+			return errorResponse("members is required (array of player ids or usernames)", 400);
+		}
+
+		return startJob(ctx, leaderId, "ensure-fleet", { members }, (signal) =>
+			ensureFleet(
+				makeLibGoalContext(resolveLiveAccount(ctx, leaderId), signal),
+				makeFleetAccess(ctx as unknown as FleetAccessDeps),
+				{ members: members as string[] },
+			),
+		);
+	}
 }
 
 /**
@@ -2382,27 +2461,43 @@ export async function handleFleetMoveAsync(
 	const busy = leaderBusyResponse(ctx, leaderId);
 	if (busy) return busy;
 
-	let body: unknown;
+	// Claim synchronously, before the first await. Without this the body read
+	// below is a window in which a second submission passes the same checks and
+	// starts a second job on one leader — two navigate chains interleaving on
+	// one ship. Released once startJob's job record becomes the durable marker.
+	ctx.claimedAccounts.add(leaderId);
 	try {
-		body = await req.json();
-	} catch {
-		return errorResponse("Invalid JSON body", 400);
+		return await submit();
+	} catch (err) {
+		log.error(`[${leaderId}] fleet-move submission failed: ${errorMessage(err)}`);
+		return errorResponse(`fleet-move failed: ${errorMessage(err)}`, 500);
+	} finally {
+		ctx.claimedAccounts.delete(leaderId);
 	}
-	const parsed = parseFleetMoveBody(body);
-	if ("error" in parsed) return errorResponse(parsed.error, 400);
 
-	return startJob(
-		ctx,
-		leaderId,
-		"fleet-move",
-		parsed.options as unknown as Record<string, unknown>,
-		(signal) =>
-			fleetMove(
-				makeLibGoalContext(resolveLiveAccount(ctx, leaderId), signal),
-				makeFleetAccess(ctx as unknown as FleetAccessDeps),
-				parsed.options,
-			),
-	);
+	async function submit(): Promise<Response> {
+		let body: unknown;
+		try {
+			body = await req.json();
+		} catch {
+			return errorResponse("Invalid JSON body", 400);
+		}
+		const parsed = parseFleetMoveBody(body);
+		if ("error" in parsed) return errorResponse(parsed.error, 400);
+
+		return startJob(
+			ctx,
+			leaderId,
+			"fleet-move",
+			parsed.options as unknown as Record<string, unknown>,
+			(signal) =>
+				fleetMove(
+					makeLibGoalContext(resolveLiveAccount(ctx, leaderId), signal),
+					makeFleetAccess(ctx as unknown as FleetAccessDeps),
+					parsed.options,
+				),
+		);
+	}
 }
 
 /** Async sibling of `handleBatchGoal`. */
@@ -2417,19 +2512,14 @@ export async function handleBatchGoalAsync(
 	} catch {
 		return errorResponse("Invalid JSON body", 400);
 	}
-	const { playerIds, type, options } = (body ?? {}) as Record<string, unknown>;
-	if (
-		!Array.isArray(playerIds) ||
-		playerIds.length === 0 ||
-		playerIds.some((p) => typeof p !== "string")
-	) {
-		return errorResponse("playerIds is required (non-empty array of player ids or usernames)", 400);
-	}
-	if (typeof type !== "string") {
-		return errorResponse("type is required (goal type)", 400);
-	}
+	const parsed = parseBatchBody(body);
+	if ("error" in parsed) return errorResponse(parsed.error, 400);
 
-	return startJob(ctx, BATCH_JOB_OWNER, `batch:${type}`, { playerIds, type, options }, () =>
-		runBatchGoal(ctx, playerIds as string[], type, options),
+	return startJob(
+		ctx,
+		BATCH_JOB_OWNER,
+		`batch:${parsed.type}`,
+		{ playerIds: parsed.playerIds, type: parsed.type, options: parsed.options },
+		(signal) => runBatchGoal(ctx, parsed.playerIds, parsed.type, parsed.options, signal),
 	);
 }

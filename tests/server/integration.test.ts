@@ -72,6 +72,7 @@ describe("Server integration", () => {
 	const accounts = [
 		makeMockAccount("p1", "MockPilot", TEST_STATE as unknown as GameState),
 		makeMockAccount("p2", "SecondPilot"),
+		makeMockAccount("p3", "ThirdPilot"),
 	];
 
 	beforeAll(() => {
@@ -134,7 +135,7 @@ describe("Server integration", () => {
 
 		expect(res.status).toBe(200);
 		expect(body["status"]).toBe("ok");
-		expect(body["accounts"]).toBe(2);
+		expect(body["accounts"]).toBe(3);
 		expect(typeof body["uptime"]).toBe("number");
 	});
 
@@ -146,7 +147,7 @@ describe("Server integration", () => {
 		const list = body["accounts"] as Array<Record<string, unknown>>;
 
 		expect(res.status).toBe(200);
-		expect(list).toHaveLength(2);
+		expect(list).toHaveLength(3);
 		expect(list.some((a) => a["username"] === "MockPilot")).toBe(true);
 		expect(list.some((a) => a["username"] === "SecondPilot")).toBe(true);
 	});
@@ -385,15 +386,29 @@ describe("Server integration", () => {
 		const res = await fetch(`${base}/accounts/p1/fleet/move/async`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ systemId: "sol", poiId: "arena", maxWaitMs: 10 }),
+			// Target where the leader already is, so the move settles immediately
+			// and the test asserts the job lifecycle rather than navigation.
+			body: JSON.stringify({ systemId: "sol", poiId: "sol_station", maxWaitMs: 10 }),
 		});
 		expect(res.status).toBe(202);
 		const body = (await res.json()) as { job_id?: string };
 		expect(typeof body.job_id).toBe("string");
 
-		// The submitted work is pollable by that id, like any async goal.
-		const job = await fetch(`${base}/jobs/${body.job_id}`);
-		expect(job.status).toBe(200);
+		// Poll to a terminal state: an HTTP 200 on /jobs proves only that the
+		// route exists, not that the work ran.
+		let record: { status?: string; outcome?: string; result?: Record<string, unknown> } = {};
+		for (let i = 0; i < 60; i++) {
+			record = (await (await fetch(`${base}/jobs/${body.job_id}`)).json()) as typeof record;
+			if (record.status === "completed" || record.status === "failed") break;
+			await new Promise((r) => setTimeout(r, 50));
+		}
+		expect(["completed", "failed"]).toContain(record.status ?? "missing");
+		expect(record.outcome).toBeDefined();
+		if (record.status === "completed") {
+			// A fleet result, not a bare GoalResult.
+			expect(record.result).toHaveProperty("accounts");
+			expect(record.result).toHaveProperty("summary");
+		}
 	});
 
 	test("POST /accounts/:playerId/fleet/async returns 202 with a job id", async () => {
@@ -419,13 +434,32 @@ describe("Server integration", () => {
 	test("the async fleet routes validate their body before creating a job", async () => {
 		// A bad body must be rejected outright, not accepted as a job that fails
 		// later — the caller finds out now rather than after a poll.
-		const res = await fetch(`${base}/accounts/p2/fleet/move/async`, {
+		const res = await fetch(`${base}/accounts/p3/fleet/move/async`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ systemId: "sol", poiId: "arena", refuel: true }),
 		});
 		expect(res.status).toBe(400);
 		expect(((await res.json()) as { error: string }).error).toContain("baseId");
+	});
+
+	test("DELETE /jobs/:jobId cancels a running job", async () => {
+		// A batch spans accounts and records a synthetic owner, so the
+		// per-account abort cannot reach it. This is its only handle.
+		const submit = await fetch(`${base}/goals/batch/async`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ playerIds: ["p1"], type: "ensure-undocked", options: {} }),
+		});
+		const { job_id } = (await submit.json()) as { job_id: string };
+
+		const res = await fetch(`${base}/jobs/${job_id}`, { method: "DELETE" });
+		expect(res.status).toBe(200);
+		expect((await res.json()) as { jobId: string }).toHaveProperty("jobId", job_id);
+	});
+
+	test("DELETE /jobs/:jobId is idempotent and 404s for an unknown id", async () => {
+		expect((await fetch(`${base}/jobs/nope`, { method: "DELETE" })).status).toBe(404);
 	});
 
 	test("unknown routes return 404", async () => {
@@ -457,7 +491,7 @@ describe("Server integration", () => {
 		expect(typeof body["startedAt"]).toBe("string");
 		const accounts = body["accounts"] as Array<Record<string, unknown>>;
 		// Integration test context has 2 connected accounts (p1, p2)
-		expect(accounts).toHaveLength(2);
+		expect(accounts).toHaveLength(3);
 		const names = accounts.map((a) => a["username"]);
 		expect(names).toContain("MockPilot");
 		expect(names).toContain("SecondPilot");

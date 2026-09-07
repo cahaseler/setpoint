@@ -148,14 +148,6 @@ export class SetpointClient {
 
 	/** Returns the account-scoped goal API for the given account id (player_id or username). */
 	/**
-	 * Runs one goal across several accounts and answers once, keyed by player id.
-	 *
-	 * The daemon runs them concurrently — accounts are independent and the lib
-	 * serialises mutations per account — so this is one round trip instead of N.
-	 * An account already busy is reported in its own entry and skipped, never
-	 * preempted.
-	 */
-	/**
 	 * Submits {@link batchGoal} as a background job and returns its id.
 	 *
 	 * Prefer {@link batchGoalToCompletion} unless you want to poll yourself.
@@ -191,6 +183,14 @@ export class SetpointClient {
 		return job.result as unknown as FleetOperationResult;
 	}
 
+	/**
+	 * Runs one goal across several accounts and answers once, keyed by player id.
+	 *
+	 * The daemon runs them concurrently — accounts are independent and the lib
+	 * serialises mutations per account — so this is one round trip instead of N.
+	 * An account already busy is reported in its own entry and skipped, never
+	 * preempted.
+	 */
 	async batchGoal(
 		playerIds: string[],
 		type: string,

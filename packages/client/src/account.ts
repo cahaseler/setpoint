@@ -487,15 +487,6 @@ export class AccountCombatModeApi {
 	}
 }
 
-/**
- * Fleet sub-API for an account, over `POST /accounts/:id/fleet`.
- *
- * Runs on the LEADER account. The daemon drives the invitees' accepts itself,
- * but never takes an account away from work it is already doing: a member
- * mid-loop, mid-goal or in combat comes back as a failed subject naming why,
- * and it is left alone. Releasing an account is an operator action
- * (`DELETE /accounts/:id/abort`).
- */
 /** Destination and on-arrival readiness for a fleet move. */
 export interface FleetMoveRequest {
 	systemId: string;
@@ -507,21 +498,21 @@ export interface FleetMoveRequest {
 	maxWaitMs?: number;
 }
 
+/**
+ * Fleet sub-API for an account, over `POST /accounts/:id/fleet`.
+ *
+ * Runs on the LEADER account. The daemon drives the invitees' accepts itself,
+ * but never takes an account away from work it is already doing: a member
+ * mid-loop, mid-goal or in combat comes back as a failed subject naming why,
+ * and it is left alone. Releasing an account is an operator action
+ * (`DELETE /accounts/:id/abort`).
+ */
 export class AccountFleetApi {
 	constructor(
 		private readonly client: SetpointClient,
 		private readonly id: string,
 	) {}
 
-	/**
-	 * Moves the fleet by moving its leader, then brings every member to
-	 * readiness — fuel and repair do not cascade from the leader, so each pays
-	 * its own way on arrival.
-	 *
-	 * Waits for a leader that is mid-jump rather than refusing: mid-transit the
-	 * leader reports no POI, so members measured against it would all look like
-	 * strays.
-	 */
 	/**
 	 * Submits {@link move} as a background job and returns its id immediately.
 	 *
@@ -557,6 +548,15 @@ export class AccountFleetApi {
 		return job.result as unknown as FleetOperationResult;
 	}
 
+	/**
+	 * Moves the fleet by moving its leader, then brings every member to
+	 * readiness — fuel and repair do not cascade from the leader, so each pays
+	 * its own way on arrival.
+	 *
+	 * Waits for a leader that is mid-jump rather than refusing: mid-transit the
+	 * leader reports no POI, so members measured against it would all look like
+	 * strays.
+	 */
 	async move(options: {
 		systemId: string;
 		poiId: string;
@@ -573,15 +573,6 @@ export class AccountFleetApi {
 		return result as FleetOperationResult;
 	}
 
-	/**
-	 * Reconciles this account's fleet to exactly `members`, which may be player
-	 * ids or usernames. An empty list disbands the fleet — a leader cannot
-	 * simply leave one.
-	 *
-	 * Does not move ships: a member that is not already at the leader's POI
-	 * fails `not_at_poi` and reports where it actually is, so a caller can tell
-	 * an inbound ship from a stray one.
-	 */
 	/**
 	 * Submits {@link ensure} as a background job and returns its id immediately.
 	 *
@@ -613,6 +604,15 @@ export class AccountFleetApi {
 		return job.result as unknown as ReconcileResult;
 	}
 
+	/**
+	 * Reconciles this account's fleet to exactly `members`, which may be player
+	 * ids or usernames. An empty list disbands the fleet — a leader cannot
+	 * simply leave one.
+	 *
+	 * Does not move ships: a member that is not already at the leader's POI
+	 * fails `not_at_poi` and reports where it actually is, so a caller can tell
+	 * an inbound ship from a stray one.
+	 */
 	async ensure(members: string[]): Promise<ReconcileResult> {
 		const result = await this.client.request(
 			"POST",
