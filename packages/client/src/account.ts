@@ -217,9 +217,11 @@ export class AccountObservationApi {
 	 * which subscribes and maintains the watch for you (throws
 	 * `SetpointHttpError` 404 if not subscribed / no data cached yet).
 	 *
-	 * Covers five of `get_nearby`'s six presence classes. Arena NPCs are in
-	 * neither the baseline nor any update, so a ship in an arena match still
-	 * has to poll `get_nearby` to see its opponents.
+	 * Covers five of `get_nearby`'s six presence classes; arena NPCs are in
+	 * neither the baseline nor any update. Follow an arena match with
+	 * `account.battleLog()` rather than working around that — the battle log
+	 * carries absolute hull, shield, zone, stance and target for every
+	 * participant, which is strictly more than presence.
 	 */
 	async get(): Promise<ObservationSnapshot> {
 		const result = await this.client.request(

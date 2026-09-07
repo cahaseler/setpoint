@@ -263,9 +263,12 @@ export interface MarketBookSnapshot {
  * read the event stream instead — the merged view cannot tell you that a
  * contact left, only that it is no longer here.
  *
- * The watch covers five of `get_nearby`'s six presence classes. Arena NPCs are
- * in neither the baseline nor any update, so a ship in an arena match still
- * has to poll `get_nearby` to see its opponents.
+ * The watch covers five of `get_nearby`'s six presence classes; arena NPCs are
+ * in neither the baseline nor any update. That is not a gap worth working
+ * around, because a ship in an arena match should be following
+ * `GET /accounts/:playerId/battle-log/events` instead — the battle log carries
+ * absolute hull, shield, zone, stance and target for every participant, which
+ * is strictly more than presence.
  */
 export interface ObservationSnapshot {
 	poi_id?: string;
