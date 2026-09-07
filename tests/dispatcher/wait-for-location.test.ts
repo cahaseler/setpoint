@@ -88,3 +88,32 @@ describe("waitForLocation deadline", () => {
 		expect(Date.now() - started).toBeLessThan(1_000);
 	});
 });
+
+describe("waitForLocation cache mode", () => {
+	test("useCache reads the push-fed cache instead of querying every poll", async () => {
+		// A fleet follower's arrival is pushed since game v0.596.2, so querying
+		// each ship on every poll is traffic the push already carries.
+		const account = new FakeLibGoalAccount({
+			location: { system_id: "sol", poi_id: "arena", in_transit: false },
+		});
+
+		const state = await waitForLocation(
+			makeLibGoalContext(account),
+			(s) => s.location?.poi_id === "arena",
+			{ useCache: true },
+		);
+
+		expect(state.location?.poi_id).toBe("arena");
+		expect(account.refreshCalls).toBe(0);
+	});
+
+	test("the default still forces a live read", async () => {
+		const account = new FakeLibGoalAccount({
+			location: { system_id: "sol", poi_id: "arena", in_transit: false },
+		});
+
+		await waitForLocation(makeLibGoalContext(account), (s) => s.location?.poi_id === "arena");
+
+		expect(account.refreshCalls).toBeGreaterThan(0);
+	});
+});

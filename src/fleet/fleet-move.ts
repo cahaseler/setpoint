@@ -56,7 +56,14 @@ export async function fleetMove(
 		repair: options.repair ?? options.baseId !== undefined,
 	};
 
-	const waitOpts = options.maxWaitMs === undefined ? {} : { maxWaitMs: options.maxWaitMs };
+	// Members are carried by the fleet and never ack anything, so their arrival
+	// used to be observable only by querying each of them on every poll. Since
+	// game v0.596.2 the server pushes a follower its arrival state directly, so
+	// the cache is authoritative and the per-ship query is gone.
+	const waitOpts = {
+		useCache: true,
+		...(options.maxWaitMs === undefined ? {} : { maxWaitMs: options.maxWaitMs }),
+	};
 	let waitedForLeader = false;
 
 	if (leader.state.location?.in_transit === true) {

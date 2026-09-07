@@ -158,3 +158,49 @@ describe("createNoticeRateLimiter", () => {
 		expect(limiter.admit("server_restart", 10)).toBeNull();
 	});
 });
+
+describe("unsolicited server events (game v0.596.2)", () => {
+	test("an action_result with no request_id is an event, not a stray envelope", () => {
+		// Nothing of ours is waiting on it. The server uses this shape to
+		// announce things that happened to the account without it asking.
+		const notice = classifyServerNotice("action_result", { command: "ship_captured" }, undefined);
+		expect(notice).not.toBeNull();
+		expect(notice?.kind).toBe("unsolicited-event");
+		expect(notice?.type).toBe("ship_captured");
+		expect(notice?.summary).toContain("captured");
+	});
+
+	test("an action_result WITH a request_id stays an ordinary envelope", () => {
+		// That one is a reply to something we sent, and says nothing operational.
+		expect(classifyServerNotice("action_result", { command: "jump" }, "req-123")).toBeNull();
+	});
+
+	test("every documented event kind is recognised", () => {
+		for (const command of [
+			"player_died",
+			"ship_captured",
+			"emergency_warp_stabilizer",
+			"passenger_stranded",
+			"fleet_kicked",
+			"fleet_disbanded",
+			"mobile_capital_transit",
+		]) {
+			const notice = classifyServerNotice("action_result", { command }, undefined);
+			expect(notice?.type).toBe(command);
+			// A recognised event gets prose, not the bare fallback.
+			expect(notice?.summary).not.toContain("unsolicited ");
+		}
+	});
+
+	test("an unrecognised event is still surfaced rather than dropped", () => {
+		// The list is bounded by what the release documented; a new one must not
+		// vanish silently just because setpoint has not been taught its name.
+		const notice = classifyServerNotice("action_result", { command: "abducted" }, undefined);
+		expect(notice?.kind).toBe("unsolicited-event");
+		expect(notice?.summary).toContain("abducted");
+	});
+
+	test("an action_result with no command at all is ignored", () => {
+		expect(classifyServerNotice("action_result", { result: {} }, undefined)).toBeNull();
+	});
+});

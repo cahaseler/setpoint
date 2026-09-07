@@ -19,6 +19,18 @@ const DEFAULT_POLL_INTERVAL_MS = 5_000;
 export interface LocationWaitOptions {
 	maxWaitMs?: number;
 	pollIntervalMs?: number;
+	/**
+	 * Read position from the push-fed cache instead of forcing a live
+	 * `get_status` on every poll.
+	 *
+	 * Only safe where the server actually pushes the transition being waited
+	 * for. Since game v0.596.2 a fleet follower receives its arrival state
+	 * directly, so waiting on a member to arrive no longer needs a query per
+	 * poll per ship. A non-forced read still escalates to a live one if the
+	 * cache goes stale (see `isStateStale`), so a missed push degrades to
+	 * today's behaviour rather than waiting forever.
+	 */
+	useCache?: boolean;
 }
 
 /**
@@ -43,8 +55,10 @@ export async function waitForLocation(
 	const maxWaitMs = opts.maxWaitMs ?? DEFAULT_MAX_WAIT_MS;
 	const pollIntervalMs = opts.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
 	const deadline = Date.now() + maxWaitMs;
+	const read = (): Promise<Readonly<GameState>> =>
+		opts.useCache === true ? ctx.refreshState() : ctx.refreshState({ force: true });
 
-	let state = await ctx.refreshState({ force: true });
+	let state = await read();
 	while (!predicate(state) && !ctx.signal?.aborted && Date.now() < deadline) {
 		// Never sleep past the deadline. A full poll interval with only
 		// milliseconds of budget left overshoots maxWaitMs by orders of
@@ -53,7 +67,7 @@ export async function waitForLocation(
 		if (wait <= 0) break;
 		log.info(`Location unresolved, waiting ${wait / 1000}s before re-checking`);
 		await new Promise<void>((resolve) => setTimeout(resolve, wait));
-		state = await ctx.refreshState({ force: true });
+		state = await read();
 	}
 	return state;
 }

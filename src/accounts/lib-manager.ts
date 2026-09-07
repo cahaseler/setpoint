@@ -239,7 +239,7 @@ export class LibAccountManager {
 		// closures. Same try/catch isolation rationale as the handlers above.
 		account.onAny((frame) => {
 			try {
-				const notice = classifyServerNotice(frame.type, frame.payload);
+				const notice = classifyServerNotice(frame.type, frame.payload, frame.request_id);
 				if (!notice) return;
 				const suppressed = this.noticeLimiter.admit(notice.type, Date.now());
 				if (suppressed === null) return;
@@ -252,7 +252,10 @@ export class LibAccountManager {
 				// chatter on the system channel, mission completions — at a volume
 				// that buries the thing worth reading. They stay classified and stay
 				// available at debug, rather than being dropped outright.
-				if (notice.kind === "server-lifecycle") {
+				// An unsolicited event earns INFO for the same reason a lifecycle
+				// notice does: it is rare, it explains otherwise-inexplicable
+				// behaviour, and nothing else in the daemon reports it.
+				if (notice.kind === "server-lifecycle" || notice.kind === "unsolicited-event") {
 					log.info(line);
 				} else {
 					log.debug(line);
