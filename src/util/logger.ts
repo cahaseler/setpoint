@@ -1,5 +1,15 @@
-import { appendFileSync, existsSync, mkdirSync, renameSync, statSync } from "node:fs";
+import {
+	appendFileSync,
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	renameSync,
+	statSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
+import { gzipSync } from "node:zlib";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
@@ -39,8 +49,23 @@ function formatMessage(level: LogLevel, context: string, message: string): strin
 
 // --- File logging ---
 
-const MAX_LOG_SIZE = 10 * 1024 * 1024; // 10 MB
-const MAX_ROTATED_FILES = 3;
+/**
+ * Retention is sized so an incident reported hours later can still be
+ * investigated, while staying hard-bounded.
+ *
+ * Rotated files are gzipped, which measures ~8:1 on this log, so the 40 kept
+ * generations hold ~800 MB of history in ~100 MB on disk. At the observed write
+ * rate that is well over a day. Worst-case footprint is the active file plus 40
+ * compressed generations — it cannot grow past that, which is the property that
+ * matters: an unrotated log here once reached 7 GB in three days.
+ *
+ * Compressed generations are still greppable with `zgrep`.
+ */
+const MAX_LOG_SIZE = 20 * 1024 * 1024; // 20 MB
+const MAX_ROTATED_FILES = 40;
+
+let maxLogSize = MAX_LOG_SIZE;
+let maxRotatedFiles = MAX_ROTATED_FILES;
 let logFilePath: string | undefined;
 let logFileEnabled = false;
 
@@ -48,8 +73,13 @@ let logFileEnabled = false;
  * Enable file logging. Call once at startup.
  * Logs are written to the specified path (default: logs/daemon.log relative to cwd).
  */
-export function enableFileLogging(path?: string): void {
+export function enableFileLogging(
+	path?: string,
+	options: { maxSizeBytes?: number; maxFiles?: number } = {},
+): void {
 	logFilePath = path ?? join(process.cwd(), "logs", "daemon.log");
+	maxLogSize = options.maxSizeBytes ?? MAX_LOG_SIZE;
+	maxRotatedFiles = options.maxFiles ?? MAX_ROTATED_FILES;
 	const dir = dirname(logFilePath);
 	if (!existsSync(dir)) {
 		mkdirSync(dir, { recursive: true });
@@ -65,24 +95,70 @@ export function isFileLoggingEnabled(): boolean {
 	return logFileEnabled;
 }
 
+/** Stop writing to a file. Used by tests to avoid leaking state between cases. */
+export function disableFileLogging(): void {
+	logFileEnabled = false;
+	logFilePath = undefined;
+}
+
+/**
+ * Move generation `i` up to `i + 1`, whichever form it exists in.
+ *
+ * Generations written before compression was introduced are plain files; both
+ * forms are shifted so an upgrade does not strand or delete existing history.
+ */
+function shiftGeneration(base: string, i: number): void {
+	for (const suffix of [".gz", ""]) {
+		const from = `${base}.${i}${suffix}`;
+		if (existsSync(from)) {
+			renameSync(from, `${base}.${i + 1}${suffix}`);
+			return;
+		}
+	}
+}
+
+/** Drop generation `i` in whichever form it exists, so retention stays bounded. */
+function dropGeneration(base: string, i: number): void {
+	for (const suffix of [".gz", ""]) {
+		const path = `${base}.${i}${suffix}`;
+		if (existsSync(path)) unlinkSync(path);
+	}
+}
+
 function rotateIfNeeded(): void {
 	if (!logFilePath || !logFileEnabled) return;
 	try {
 		if (!existsSync(logFilePath)) return;
 		const stats = statSync(logFilePath);
-		if (stats.size < MAX_LOG_SIZE) return;
+		if (stats.size < maxLogSize) return;
 
-		// Rotate: daemon.log.2 → daemon.log.3, daemon.log.1 → daemon.log.2, daemon.log → daemon.log.1
-		for (let i = MAX_ROTATED_FILES - 1; i >= 1; i--) {
-			const from = `${logFilePath}.${i}`;
-			const to = `${logFilePath}.${i + 1}`;
-			if (existsSync(from)) {
-				renameSync(from, to);
-			}
+		// The oldest generation falls off the end first, so the shift below never
+		// pushes a file past the retention limit.
+		dropGeneration(logFilePath, maxRotatedFiles);
+		for (let i = maxRotatedFiles - 1; i >= 1; i--) {
+			shiftGeneration(logFilePath, i);
 		}
+
+		// Rename the active file out of the way FIRST, then compress it in place.
+		//
+		// Several sessions run `tail -n 0 -F` against the active log, watching for
+		// server-restart notices. Rename-then-recreate is the exact filesystem
+		// sequence they have always seen, and `tail -F` follows it. Compressing
+		// the active file and unlinking it would work too, but it is a different
+		// event sequence for nine long-running watchers to absorb for no gain.
 		renameSync(logFilePath, `${logFilePath}.1`);
+
+		// If compression fails for any reason, the plain generation is simply
+		// left in place: keeping the history uncompressed beats losing it, and
+		// shiftGeneration handles either form.
+		try {
+			writeFileSync(`${logFilePath}.1.gz`, gzipSync(readFileSync(`${logFilePath}.1`)));
+			unlinkSync(`${logFilePath}.1`);
+		} catch {
+			// Left as a plain .1 generation.
+		}
 	} catch {
-		// Rotation failed — not critical, keep logging to current file
+		// Rotation failed — not critical, keep logging to the current file.
 	}
 }
 

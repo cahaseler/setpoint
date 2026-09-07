@@ -2094,6 +2094,15 @@ export async function handleFleetMove(
 		if (typeof systemId !== "string" || typeof poiId !== "string") {
 			return errorResponse("systemId and poiId are required (strings)", 400);
 		}
+		// Refuelling and repairing require a station. Asking for either without a
+		// baseId cannot be satisfied, and answering once here beats failing every
+		// member individually for not being docked somewhere it was never sent.
+		if ((refuel === true || repair === true) && typeof baseId !== "string") {
+			return errorResponse(
+				"refuel and repair require baseId — there is nowhere to dock without one",
+				400,
+			);
+		}
 
 		const moveOptions = {
 			systemId,

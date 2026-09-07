@@ -26,6 +26,26 @@ function pathKey(d: FieldDrift): string {
 }
 
 /**
+ * How much of a drift payload to spell out on the summary line.
+ *
+ * Ambient drift is dominated by fields like `location.nearby_players`, whose
+ * before/after values are whole player lists. Dumping them in full made this
+ * one logger 58% of the daemon's entire log volume, which bought a shorter
+ * retention window for everyone else. The path list is what makes a line
+ * scannable, and the fields that actually break goals are already logged in
+ * full on the [position-drift] line above, so truncating here loses nothing
+ * that was being used.
+ */
+const MAX_DRIFT_PAYLOAD_CHARS = 400;
+
+function summarize(drifts: FieldDrift[]): string {
+	const json = JSON.stringify(drifts);
+	return json.length <= MAX_DRIFT_PAYLOAD_CHARS
+		? json
+		: `${json.slice(0, MAX_DRIFT_PAYLOAD_CHARS)}… (${json.length} chars)`;
+}
+
+/**
  * Drift paths that silently break goals rather than merely being stale.
  *
  * `location.poi_id` is the one that matters: a movement goal asks "am I already
@@ -68,5 +88,5 @@ export function logDrift(event: DriftEvent): void {
 		);
 	}
 
-	log.info(`[${who}] drift detected: ${paths.join(", ")} — ${JSON.stringify(drifts)}`);
+	log.info(`[${who}] drift detected: ${paths.join(", ")} — ${summarize(drifts)}`);
 }

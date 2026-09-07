@@ -106,3 +106,52 @@ describe("position drift tagging", () => {
 		expect(warn).not.toHaveBeenCalled();
 	});
 });
+
+describe("drift payload size", () => {
+	afterEach(() => {
+		(console.info as unknown as { mockRestore?: () => void }).mockRestore?.();
+		(console.warn as unknown as { mockRestore?: () => void }).mockRestore?.();
+	});
+
+	test("a huge ambient payload is truncated rather than dumped in full", () => {
+		// Dumping these in full made the drift logger 58% of the daemon's entire
+		// log volume, which shortened the retention window for everything else.
+		const info = spyOn(console, "info");
+		spyOn(console, "warn");
+
+		logDrift({
+			playerId: "p1",
+			username: "Alpha",
+			drifts: [
+				{
+					section: "location",
+					path: "nearby_players",
+					before: [],
+					after: Array.from({ length: 200 }, (_, i) => ({ name: `player-${i}` })),
+				},
+			],
+		});
+
+		const line = String(info.mock.calls[0]?.[0]);
+		expect(line.length).toBeLessThan(700);
+		// The scannable part — which field drifted — is still there.
+		expect(line).toContain("location.nearby_players");
+		expect(line).toContain("chars)");
+	});
+
+	test("a small payload is left intact", () => {
+		const info = spyOn(console, "info");
+		spyOn(console, "warn");
+
+		logDrift({
+			playerId: "p1",
+			username: "Alpha",
+			drifts: [{ section: "ship", path: "fuel", before: 10, after: 100 }],
+		});
+
+		const line = String(info.mock.calls[0]?.[0]);
+		expect(line).toContain('"before":10');
+		expect(line).toContain('"after":100');
+		expect(line).not.toContain("chars)");
+	});
+});

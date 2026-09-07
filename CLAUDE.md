@@ -222,18 +222,31 @@ ops scripts — so they know directly what they depend on. `ListAgents` shows
 who is around; `SendMessage` them and ask. That is a definite answer about
 current consumers, which log archaeology can only approximate.
 
-The daemon's own log is a weak second source, not a substitute. The route
-wrapper does log every request at INFO, so `grep "GET /path" logs/daemon.log*`
-finds callers — but `daemon.log` rotates at 10MB, which on a live fleet is
-every 10-20 minutes, so four files cover well under an hour. A quiet hour
-proves nothing about a caller that runs daily. If you do use it, check a
-known-live route (`/dashboard/data`) in the same window as a control: zero
-hits only means something if the log captured traffic at all.
+The daemon's own log is a second source. The route wrapper logs every request
+at INFO, so `zgrep "POST /accounts/<id>/raw" logs/daemon.log logs/daemon.log.*`
+finds callers.
 
-There is deliberately no long-horizon log. An unrotated `stdout.log` reached
-7GB in three days for history nobody was reading — the consumers here monitor
-setpoint for restart pings, not for their own call records. Disk is finite;
-ask a peer instead.
+**Use `zgrep`, not `grep`.** Rotated generations are gzipped, so a bare
+`grep logs/daemon.log*` silently reads only the active file and misses every
+older generation — it will look like nothing happened rather than like you
+searched the wrong thing.
+
+Retention is 20MB active plus 40 compressed generations. At the observed write
+rate that is over a day of history for roughly 120MB on disk, and it is
+hard-bounded: the oldest generation is dropped before the shift, so it cannot
+grow past that. The bound is the point — an unrotated `stdout.log` here once
+reached 7GB in three days.
+
+Two things dominate log volume, and both are deliberately capped rather than
+verbose: the drift logger truncates its before/after payload
+(`MAX_DRIFT_PAYLOAD_CHARS`), because dumping whole `nearby_players` arrays made
+it 58% of the entire log; and the per-request line is one line, not a body dump.
+If you add a high-frequency logger, check its share before assuming it is free —
+it is paid for in everyone else's retention window.
+
+Asking a peer session is still the better answer for "who consumes this
+endpoint", because the log answers what happened recently, not what a daily job
+depends on.
 
 ### Error Handling
 - Game API rejections surface as `SpacemoltError` (from `@spacemolt/lib`), with a `.code` field goals match against (e.g. `already_docked`, `unknown_destination`) — see `src/dispatcher/lib-primitives/dock-at.ts` for the pattern
