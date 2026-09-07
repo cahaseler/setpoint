@@ -3,7 +3,7 @@
 import type { FleetOperationResult, JobRecord, LoopStatus, V2GameState } from "@setpoint/protocol";
 import { AccountApi, AccountsApi } from "./account.js";
 import { ConnectionError, DeprecatedGoalError, SetpointHttpError, TimeoutError } from "./errors.js";
-import { JobApi } from "./jobs.js";
+import { JobApi, type WaitForJobOptions, waitForJob } from "./jobs.js";
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:7580";
 const DEFAULT_RETRY_DELAY_MS = 1000;
@@ -155,6 +155,42 @@ export class SetpointClient {
 	 * An account already busy is reported in its own entry and skipped, never
 	 * preempted.
 	 */
+	/**
+	 * Submits {@link batchGoal} as a background job and returns its id.
+	 *
+	 * Prefer {@link batchGoalToCompletion} unless you want to poll yourself.
+	 */
+	async batchGoalAsync(
+		playerIds: string[],
+		type: string,
+		options: Record<string, unknown> = {},
+	): Promise<{ job_id: string }> {
+		const result = await this.request("POST", "/goals/batch/async", {
+			body: { playerIds, type, options },
+		});
+		return result as { job_id: string };
+	}
+
+	/**
+	 * Submits {@link batchGoal} in the background and polls until it finishes.
+	 *
+	 * A batch is only as fast as its slowest account, so it runs for as long as
+	 * the longest goal in it. Polling keeps that off a single held connection.
+	 */
+	async batchGoalToCompletion(
+		playerIds: string[],
+		type: string,
+		options: Record<string, unknown> = {},
+		opts?: WaitForJobOptions,
+	): Promise<FleetOperationResult> {
+		const { job_id } = await this.batchGoalAsync(playerIds, type, options);
+		const job = await waitForJob(this, job_id, opts);
+		if (job.status === "failed") {
+			throw new Error(job.error ?? `Job ${job_id} failed`);
+		}
+		return job.result as unknown as FleetOperationResult;
+	}
+
 	async batchGoal(
 		playerIds: string[],
 		type: string,

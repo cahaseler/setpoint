@@ -379,6 +379,55 @@ describe("Server integration", () => {
 		expect(((await res.json()) as { error: string }).error).toContain("baseId");
 	});
 
+	test("POST /accounts/:playerId/fleet/move/async returns 202 with a job id", async () => {
+		// The whole point: a 33-hull region-crossing move runs for minutes, which
+		// is longer than any caller should hold a connection open for.
+		const res = await fetch(`${base}/accounts/p1/fleet/move/async`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ systemId: "sol", poiId: "arena", maxWaitMs: 10 }),
+		});
+		expect(res.status).toBe(202);
+		const body = (await res.json()) as { job_id?: string };
+		expect(typeof body.job_id).toBe("string");
+
+		// The submitted work is pollable by that id, like any async goal.
+		const job = await fetch(`${base}/jobs/${body.job_id}`);
+		expect(job.status).toBe(200);
+	});
+
+	test("POST /accounts/:playerId/fleet/async returns 202 with a job id", async () => {
+		const res = await fetch(`${base}/accounts/p2/fleet/async`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ members: [] }),
+		});
+		expect(res.status).toBe(202);
+		expect(typeof ((await res.json()) as { job_id?: string }).job_id).toBe("string");
+	});
+
+	test("POST /goals/batch/async returns 202 with a job id", async () => {
+		const res = await fetch(`${base}/goals/batch/async`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ playerIds: ["p1"], type: "ensure-undocked", options: {} }),
+		});
+		expect(res.status).toBe(202);
+		expect(typeof ((await res.json()) as { job_id?: string }).job_id).toBe("string");
+	});
+
+	test("the async fleet routes validate their body before creating a job", async () => {
+		// A bad body must be rejected outright, not accepted as a job that fails
+		// later — the caller finds out now rather than after a poll.
+		const res = await fetch(`${base}/accounts/p2/fleet/move/async`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ systemId: "sol", poiId: "arena", refuel: true }),
+		});
+		expect(res.status).toBe(400);
+		expect(((await res.json()) as { error: string }).error).toContain("baseId");
+	});
+
 	test("unknown routes return 404", async () => {
 		const res = await fetch(`${base}/nonexistent`);
 		expect(res.status).toBe(404);
