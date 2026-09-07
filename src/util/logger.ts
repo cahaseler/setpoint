@@ -139,14 +139,23 @@ function rotateIfNeeded(): void {
 			shiftGeneration(logFilePath, i);
 		}
 
-		// Compress into generation 1. If compression fails for any reason, fall
-		// back to a plain rename: keeping the history uncompressed is strictly
-		// better than losing it, and shiftGeneration handles either form.
+		// Rename the active file out of the way FIRST, then compress it in place.
+		//
+		// Several sessions run `tail -n 0 -F` against the active log, watching for
+		// server-restart notices. Rename-then-recreate is the exact filesystem
+		// sequence they have always seen, and `tail -F` follows it. Compressing
+		// the active file and unlinking it would work too, but it is a different
+		// event sequence for nine long-running watchers to absorb for no gain.
+		renameSync(logFilePath, `${logFilePath}.1`);
+
+		// If compression fails for any reason, the plain generation is simply
+		// left in place: keeping the history uncompressed beats losing it, and
+		// shiftGeneration handles either form.
 		try {
-			writeFileSync(`${logFilePath}.1.gz`, gzipSync(readFileSync(logFilePath)));
-			unlinkSync(logFilePath);
+			writeFileSync(`${logFilePath}.1.gz`, gzipSync(readFileSync(`${logFilePath}.1`)));
+			unlinkSync(`${logFilePath}.1`);
 		} catch {
-			renameSync(logFilePath, `${logFilePath}.1`);
+			// Left as a plain .1 generation.
 		}
 	} catch {
 		// Rotation failed — not critical, keep logging to the current file.
