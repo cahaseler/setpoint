@@ -210,10 +210,16 @@ export class AccountObservationApi {
 	) {}
 
 	/**
-	 * Gets the cached observation-watch view. There is no subscribe method
-	 * here — subscribe first via
-	 * `account.raw.spacemolt.subscribe_observation()` (throws
+	 * Gets the cached observation-watch view: players, pirates, empire NPCs,
+	 * wildlife and intact prizes at the watched POI. There is no subscribe
+	 * method here — subscribe first via
+	 * `account.raw.spacemolt.subscribe_observation()`, or open `events()`,
+	 * which subscribes and maintains the watch for you (throws
 	 * `SetpointHttpError` 404 if not subscribed / no data cached yet).
+	 *
+	 * Covers five of `get_nearby`'s six presence classes. Arena NPCs are in
+	 * neither the baseline nor any update, so a ship in an arena match still
+	 * has to poll `get_nearby` to see its opponents.
 	 */
 	async get(): Promise<ObservationSnapshot> {
 		const result = await this.client.request(
@@ -239,9 +245,10 @@ export class AccountObservationApi {
 	 * Pass `activeScan: true` to run an active sensor sweep, which resolves
 	 * cloaked contacts at the cost of making this ship detectable.
 	 *
-	 * Each event is the game server's frame verbatim, so it carries the pirate,
-	 * creature, empire-NPC and prize arrays that `get()` — the lib's merged
-	 * player-only view — does not.
+	 * Each event is the game server's frame verbatim — `*_changed`/`*_departed`
+	 * pairs, not `get()`'s merged current view. Use this when an arrival or a
+	 * departure is the thing you act on; a merged view cannot distinguish
+	 * "left" from "was never here".
 	 */
 	async *events(opts?: { signal?: AbortSignal; activeScan?: boolean }): AsyncGenerator<
 		ObservationUpdateEnvelope,

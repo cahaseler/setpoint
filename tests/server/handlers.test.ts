@@ -2808,6 +2808,10 @@ describe("handleRawAction", () => {
 			tick: 0,
 			nearby: new Map(),
 			system: new Map(),
+			pirates: new Map(),
+			empireNpcs: new Map(),
+			creatures: new Map(),
+			prizes: new Map(),
 			cloaked: new Map(),
 			unknownSignature: false,
 			activeScan: false,
@@ -3061,6 +3065,10 @@ describe("handleGetObservation", () => {
 			tick: 3,
 			nearby: new Map([["p2", { player_id: "p2", username: "Other", in_combat: false }]]),
 			system: new Map(),
+			pirates: new Map(),
+			empireNpcs: new Map(),
+			creatures: new Map(),
+			prizes: new Map(),
 			cloaked: new Map(),
 			unknownSignature: false,
 			activeScan: true,
@@ -3082,6 +3090,56 @@ describe("handleGetObservation", () => {
 		expect(body.poi_id).toBe("sol_station");
 		expect(body.activeScan).toBe(true);
 		expect(body.nearby).toEqual([{ player_id: "p2", username: "Other", in_combat: false }]);
+	});
+
+	test("serializes every presence class the watch tracks, not just players", async () => {
+		// Before @spacemolt/lib 14.2.0 the cache merged only the player arrays, so
+		// a pirate arriving at a watched POI was invisible to this route. These
+		// four assertions are the whole point of the bump.
+		const account = makeAccount("p1");
+		account.setObservation({
+			poi_id: "sol_asteroid_belt",
+			system_id: "sol",
+			tick: 9,
+			nearby: new Map(),
+			system: new Map(),
+			pirates: new Map([
+				[
+					"pirate_1",
+					{
+						pirate_id: "pirate_1",
+						name: "Raider",
+						is_boss: false,
+						status: "hostile",
+						tier: "raider",
+					},
+				],
+			]),
+			empireNpcs: new Map([["npc_1", { npc_id: "npc_1", name: "Customs Patrol" }]]),
+			creatures: new Map([["cr_1", { creature_id: "cr_1", name: "Void Drifter" }]]),
+			prizes: new Map([["pz_1", { prize_id: "pz_1", name: "Derelict Hauler" }]]),
+			cloaked: new Map(),
+			unknownSignature: false,
+			activeScan: false,
+		} as unknown as Parameters<typeof account.setObservation>[0]);
+		const ctx = makeContext({ accounts: [account] });
+
+		const res = handleGetObservation(
+			new Request("http://localhost/accounts/p1/observation"),
+			{ playerId: "p1" },
+			ctx,
+		);
+		const body = (await res.json()) as {
+			pirates: Array<{ pirate_id: string }>;
+			empireNpcs: Array<{ npc_id: string }>;
+			creatures: Array<{ creature_id: string }>;
+			prizes: Array<{ prize_id: string }>;
+		};
+
+		expect(body.pirates.map((p) => p.pirate_id)).toEqual(["pirate_1"]);
+		expect(body.empireNpcs.map((n) => n.npc_id)).toEqual(["npc_1"]);
+		expect(body.creatures.map((c) => c.creature_id)).toEqual(["cr_1"]);
+		expect(body.prizes.map((p) => p.prize_id)).toEqual(["pz_1"]);
 	});
 
 	test("returns 404 when not subscribed", () => {

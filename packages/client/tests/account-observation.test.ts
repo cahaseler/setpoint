@@ -37,6 +37,12 @@ describe("AccountApi.observation", () => {
 		tick: 3,
 		nearby: [{ player_id: "p2", username: "Other", in_combat: false }],
 		system: [],
+		pirates: [
+			{ pirate_id: "pirate_1", name: "Raider", is_boss: false, status: "hostile", tier: "raider" },
+		],
+		empireNpcs: [],
+		creatures: [],
+		prizes: [],
 		cloaked: [],
 		unknownSignature: false,
 		activeScan: true,
@@ -49,6 +55,9 @@ describe("AccountApi.observation", () => {
 		const result = await client.account("Player1").observation.get();
 
 		expect(result).toEqual(view);
+		// The pirate array is the whole reason this route was worth fixing — it
+		// was silently dropped before @spacemolt/lib 14.2.0 merged the class.
+		expect(result.pirates[0]?.pirate_id).toBe("pirate_1");
 		expect(fetchCalls).toHaveLength(1);
 		expect(fetchCalls[0]?.url).toBe("http://127.0.0.1:7580/accounts/Player1/observation");
 		expect(fetchCalls[0]?.method).toBe("GET");

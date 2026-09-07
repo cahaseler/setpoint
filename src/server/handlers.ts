@@ -1633,6 +1633,10 @@ function serializeObservation(view: ObservationView): ObservationSnapshot {
 		tick: view.tick,
 		nearby: [...view.nearby.values()],
 		system: [...view.system.values()],
+		pirates: [...view.pirates.values()],
+		empireNpcs: [...view.empireNpcs.values()],
+		creatures: [...view.creatures.values()],
+		prizes: [...view.prizes.values()],
 		cloaked: [...view.cloaked.values()],
 		unknownSignature: view.unknownSignature,
 		activeScan: view.activeScan,
@@ -1850,9 +1854,11 @@ export function handlePirateRadioEvents(
  * cloaked contacts at the cost of being detectable. An already-running sweep
  * satisfies a subscriber that didn't ask for one.
  *
- * The events are the server's frames verbatim, so they carry the pirate,
- * creature, empire-NPC and prize arrays that `GET .../observation` (the lib's
- * merged player-only view) does not.
+ * The events are the server's frames verbatim — `*_changed`/`*_departed`
+ * pairs, not `GET .../observation`'s merged current view. Reach for this when
+ * an arrival or a departure is the thing being acted on, since a merged view
+ * cannot distinguish "left" from "was never here"; reach for the snapshot when
+ * the question is only who is here now.
  */
 export async function handleObservationEvents(
 	req: Request,

@@ -4,7 +4,11 @@ import type {
 	MarketItem,
 	NotificationPayloads,
 	ObservationUpdateEvent,
+	ObservedCreature,
+	ObservedEmpireNpc,
+	ObservedPirate,
 	ObservedPlayer,
+	ObservedPrize,
 	PirateRadioEvent,
 } from "./game.js";
 
@@ -248,19 +252,39 @@ export interface MarketBookSnapshot {
 /**
  * JSON-safe snapshot of the observation watch (the lib's `account.observation()`),
  * as returned by `GET /accounts/:playerId/observation`. The lib's
- * `ObservationView` keys `nearby`/`system`/`cloaked` as `Map`s (not
+ * `ObservationView` keys each presence class as a `Map` (not
  * JSON-serializable); here they are flattened to arrays, matching the shape
  * the game server sends in `subscribe_observation` and `observation_update`.
  * Subscribing is not exposed as a dedicated endpoint — issue
- * `spacemolt.subscribe_observation` via the raw passthrough first.
+ * `spacemolt.subscribe_observation` via the raw passthrough first, or open
+ * `GET /accounts/:playerId/observation/events`, which subscribes for you.
+ *
+ * This is the merged current view. For arrivals and departures as they happen,
+ * read the event stream instead — the merged view cannot tell you that a
+ * contact left, only that it is no longer here.
+ *
+ * The watch covers five of `get_nearby`'s six presence classes. Arena NPCs are
+ * in neither the baseline nor any update, so a ship in an arena match still
+ * has to poll `get_nearby` to see its opponents.
  */
 export interface ObservationSnapshot {
 	poi_id?: string;
 	system_id?: string;
 	/** Tick of the most recent update (0 if only the initial baseline has been seen). */
 	tick: number;
+	/** Uncloaked players at the watched POI. */
 	nearby: ObservedPlayer[];
+	/** Uncloaked players elsewhere in the system. */
 	system: ObservedPlayer[];
+	/** Pirate NPCs at the watched POI. */
+	pirates: ObservedPirate[];
+	/** Empire NPCs at the watched POI. */
+	empireNpcs: ObservedEmpireNpc[];
+	/** Wildlife at the watched POI. Watch-only — creatures have no `location` equivalent. */
+	creatures: ObservedCreature[];
+	/** Intact captured ships at the watched POI. */
+	prizes: ObservedPrize[];
+	/** Cloaked contacts resolved by an active sensor sweep. */
 	cloaked: CloakedContact[];
 	unknownSignature: boolean;
 	activeScan: boolean;
@@ -301,9 +325,10 @@ export interface PirateRadioEnvelope {
  * observation watch is subscribed, so opening that route subscribes the
  * account if it isn't already and keeps the watch alive across POI changes.
  *
- * The event is the server's frame verbatim, so it carries the pirate,
- * creature, empire-NPC and prize arrays that `ObservationSnapshot` (the lib's
- * merged view) does not.
+ * The event is the server's frame verbatim: `*_changed`/`*_departed` pairs
+ * rather than `ObservationSnapshot`'s merged current view. Use it when an
+ * arrival or a departure is the thing you act on, since a merged view cannot
+ * distinguish "left" from "was never here".
  */
 export interface ObservationUpdateEnvelope {
 	/** Wall-clock time setpoint received this push (ISO 8601) — the server payload only carries a game tick. */
