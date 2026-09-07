@@ -36,11 +36,24 @@ const PROTOCOL_FRAME_TYPES: ReadonlySet<string> = new Set([
 	"logged_in",
 	"welcome",
 	"registered",
-	// `ok` carries the per-action acknowledgement for a completed mutation —
+	// `ok` is the v1 response envelope, so most of what arrives on it is the
+	// per-action acknowledgement for a mutation this account issued —
 	// `{"action":"jump","arrival_tick":…,"destination":…}` and the dock/travel
-	// equivalents. It has no published schema, so it would otherwise read as an
-	// undocumented push, but it is an envelope for work this account asked for
-	// rather than anything the server is announcing.
+	// equivalents.
+	//
+	// It is not purely that, though: roughly half its emission sites are genuine
+	// pushes, carrying fleet roster churn, fleet invites, docking, attack
+	// results and passenger income. setpoint filters the whole family because it
+	// consumes none of them — ensure-fleet reads membership by querying fleet
+	// status rather than by following roster pushes. If that ever changes, this
+	// is the entry to revisit: `@spacemolt/lib` types both families as of
+	// 14.1.0 (`OkPush` / `FleetPush` in `push-frames.d.ts`, reachable via
+	// `account.on('ok')` and `account.on('fleet')`), so a consumer would branch
+	// on them there rather than through this classifier.
+	//
+	// Note the unions are closed as of gameserver v0.596.2: a variant added
+	// later arrives matching no member, so any switch over them needs a real
+	// default rather than a `never` assertion.
 	"ok",
 ]);
 
