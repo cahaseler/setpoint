@@ -252,6 +252,9 @@ export class FakeLibManagedAccount extends FakeLibGoalAccount implements LibMana
 		if (baseId) this.dropMarketBook(baseId);
 	}
 
+	observationSubscribed = false;
+	observationActiveScan = false;
+
 	/** Mirrors the real lib's `subscribeObservation()` — seeds the observation cache from the dispatched response. */
 	async subscribeObservation(activeScan = false): Promise<SubscribeObservationResponse> {
 		const res = (await this.dispatch(
@@ -271,6 +274,8 @@ export class FakeLibManagedAccount extends FakeLibGoalAccount implements LibMana
 				activeScan: snapshot.active_scan ?? false,
 			});
 		}
+		this.observationSubscribed = true;
+		this.observationActiveScan = activeScan;
 		return snapshot ?? ({} as SubscribeObservationResponse);
 	}
 
@@ -278,6 +283,8 @@ export class FakeLibManagedAccount extends FakeLibGoalAccount implements LibMana
 	async unsubscribeObservation(): Promise<void> {
 		await this.dispatch("unsubscribe_observation");
 		this.setObservation(null);
+		this.observationSubscribed = false;
+		this.observationActiveScan = false;
 	}
 
 	/** Fire the registered onStateChange listeners (for projector wiring tests). */

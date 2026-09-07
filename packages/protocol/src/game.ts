@@ -24,6 +24,19 @@ export type CraftingUpdateEvent = NotificationPayloads["crafting_update"];
  */
 export type PirateRadioEvent = NotificationPayloads["pirate_radio"];
 
+/**
+ * A single `observation_update` push: the change-feed of what is present at
+ * the account's watched POI and system. Carries `*_changed`/`*_departed`
+ * pairs for players (`nearby`/`system`), pirates, creatures, empire NPCs and
+ * prizes, plus the cloaked-contact hints.
+ *
+ * This is the raw frame the game server sends, relayed verbatim by
+ * `GET /accounts/:playerId/observation/events`. It is deliberately not the
+ * same shape as `ObservationSnapshot`, which is the lib's merged
+ * `ObservationView` and today reflects only the player arrays.
+ */
+export type ObservationUpdateEvent = NotificationPayloads["observation_update"];
+
 /** The subset of notification types setpoint's combat detector treats as combat-relevant. */
 export const COMBAT_NOTIFICATION_TYPES = [
 	"battle_alert",

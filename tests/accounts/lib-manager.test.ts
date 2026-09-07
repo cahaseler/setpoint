@@ -721,6 +721,69 @@ describe("LibAccountManager", () => {
 		});
 	});
 
+	describe("observation updates", () => {
+		test("forwards observation_update pushes to onObservationUpdate", async () => {
+			const events: Array<{ playerId: string; tick: number; accountId: string | undefined }> = [];
+			const { client, accounts } = setup([player("Alpha", "pid-a")]);
+			const mgr = new LibAccountManager(
+				client,
+				{ clerkApiKey: "k" },
+				{
+					onObservationUpdate: (playerId, event, account) =>
+						events.push({ playerId, tick: event.tick, accountId: account.id }),
+				},
+			);
+			await mgr.connect();
+
+			accounts.get("Alpha")?.emitNotification("observation_update", {
+				poi_id: "sol_asteroid_belt",
+				system_id: "sol",
+				tick: 12,
+				unknown_signature: false,
+			});
+
+			expect(events).toEqual([{ playerId: "pid-a", tick: 12, accountId: "Alpha" }]);
+		});
+
+		test("a throwing onObservationUpdate handler is caught and logged, not left to escape into the lib", async () => {
+			const { client, accounts } = setup([player("Alpha", "pid-a")]);
+			const mgr = new LibAccountManager(
+				client,
+				{ clerkApiKey: "k" },
+				{
+					onObservationUpdate: () => {
+						throw new Error("controller already closed");
+					},
+				},
+			);
+			await mgr.connect();
+
+			expect(() =>
+				accounts.get("Alpha")?.emitNotification("observation_update", {
+					poi_id: "sol_asteroid_belt",
+					system_id: "sol",
+					tick: 1,
+					unknown_signature: false,
+				}),
+			).not.toThrow();
+		});
+
+		test("is not wired when no onObservationUpdate handler is given", async () => {
+			const { client, accounts } = setup([player("Alpha", "pid-a")]);
+			const mgr = new LibAccountManager(client, { clerkApiKey: "k" });
+			await mgr.connect();
+
+			expect(() =>
+				accounts.get("Alpha")?.emitNotification("observation_update", {
+					poi_id: "sol_asteroid_belt",
+					system_id: "sol",
+					tick: 1,
+					unknown_signature: false,
+				}),
+			).not.toThrow();
+		});
+	});
+
 	describe("server notices", () => {
 		test("logs a system-channel chat message at debug, not info", async () => {
 			// System-channel chat is an NPC/customs firehose in production, so it is

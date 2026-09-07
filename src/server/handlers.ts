@@ -2,6 +2,7 @@ import type {
 	CombatEnvelope,
 	MarketBookSnapshot,
 	ObservationSnapshot,
+	ObservationUpdateEnvelope,
 	PirateRadioEnvelope,
 } from "@setpoint/protocol";
 import { type LoopType, loopPatchSchemas, loopSchemas } from "@setpoint/protocol";
@@ -24,6 +25,7 @@ import { makeFleetAccess } from "../fleet/server-access.js";
 
 import type { CraftingEventsStore } from "../state/crafting-events-store.js";
 import type { EventBuffer } from "../state/event-buffer.js";
+import type { ObservationSubscriptionKeeper } from "../state/observation-subscription.js";
 import { STATE_SECTION_KEYS, type StateSectionKey, type StateStore } from "../state/store.js";
 import { ApiError, HttpError, errorMessage } from "../util/errors.js";
 import { createLogger } from "../util/logger.js";
@@ -62,6 +64,8 @@ export interface HandlerContext {
 	craftingEventsStore: CraftingEventsStore;
 	combatEventsStore: EventBuffer<CombatEnvelope>;
 	pirateRadioStore: EventBuffer<PirateRadioEnvelope>;
+	observationEventsStore: EventBuffer<ObservationUpdateEnvelope>;
+	observationSubscriptions: ObservationSubscriptionKeeper;
 	combatModeStore: CombatModeStore;
 	/** Accounts with a synchronous goal currently executing. Used to prevent races. */
 	executingGoals: Map<string, ExecutingGoalEntry>;
@@ -1822,6 +1826,74 @@ export function handlePirateRadioEvents(
 		},
 		cancel(): void {
 			unsubscribe?.();
+		},
+	});
+
+	return new Response(stream, { headers: SSE_HEADERS });
+}
+
+/**
+ * `GET /accounts/:playerId/observation/events` — Server-Sent Events stream of
+ * `observation_update` pushes: the buffered backlog immediately on connect,
+ * then each new push live as it arrives.
+ *
+ * Unlike crafting, combat and pirate radio, this feed requires a subscription:
+ * the game server sends `observation_update` only while an observation watch
+ * is active, and silently drops the watch when the ship leaves the POI. So
+ * opening this stream subscribes the account if it isn't already, and
+ * `ObservationSubscriptionKeeper` re-establishes the watch after each move for
+ * as long as a subscriber is attached. The subscribe is awaited before the
+ * stream opens: a failure comes back as 409 rather than as a stream that
+ * silently never emits.
+ *
+ * Pass `?activeScan=true` to run an active sensor sweep, which resolves
+ * cloaked contacts at the cost of being detectable. An already-running sweep
+ * satisfies a subscriber that didn't ask for one.
+ *
+ * The events are the server's frames verbatim, so they carry the pirate,
+ * creature, empire-NPC and prize arrays that `GET .../observation` (the lib's
+ * merged player-only view) does not.
+ */
+export async function handleObservationEvents(
+	req: Request,
+	params: RouteParams,
+	ctx: HandlerContext,
+): Promise<Response> {
+	const playerId = params["playerId"];
+	if (!playerId) {
+		return errorResponse("Missing playerId", 400);
+	}
+
+	const account = resolveAccount(ctx, playerId);
+	if (!account) {
+		return errorResponse("Account not found", 404);
+	}
+
+	const actualId = playerIdOf(account);
+	const activeScan = new URL(req.url).searchParams.get("activeScan") === "true";
+
+	let release: () => void;
+	try {
+		release = await ctx.observationSubscriptions.acquire(actualId, account, activeScan);
+	} catch (err) {
+		return errorResponse(`Could not subscribe to the observation watch: ${errorMessage(err)}`, 409);
+	}
+
+	const encoder = new TextEncoder();
+	let unsubscribe: (() => void) | undefined;
+
+	const stream = new ReadableStream<Uint8Array>({
+		start(controller): void {
+			for (const envelope of ctx.observationEventsStore.recent(actualId)) {
+				controller.enqueue(encoder.encode(`data: ${JSON.stringify(envelope)}\n\n`));
+			}
+			unsubscribe = ctx.observationEventsStore.subscribe(actualId, (envelope) => {
+				controller.enqueue(encoder.encode(`data: ${JSON.stringify(envelope)}\n\n`));
+			});
+		},
+		cancel(): void {
+			unsubscribe?.();
+			release();
 		},
 	});
 

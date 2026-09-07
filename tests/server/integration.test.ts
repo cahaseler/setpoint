@@ -1,5 +1,9 @@
 import { afterAll, beforeAll, describe, expect, mock, test } from "bun:test";
-import type { CombatEnvelope, PirateRadioEnvelope } from "@setpoint/protocol";
+import type {
+	CombatEnvelope,
+	ObservationUpdateEnvelope,
+	PirateRadioEnvelope,
+} from "@setpoint/protocol";
 import type { GameState } from "@spacemolt/lib";
 import type { CombatModeStore } from "../../src/combat/combat-mode-store.js";
 import type { HandlerContext } from "../../src/server/handlers.js";
@@ -10,9 +14,11 @@ import { LoopManager } from "../../src/server/loop-manager.js";
 import { CraftingEventsStore } from "../../src/state/crafting-events-store.js";
 import { createMemoryDatabase } from "../../src/state/database.js";
 import { type EventBuffer, createEventBuffer } from "../../src/state/event-buffer.js";
+import { ObservationSubscriptionKeeper } from "../../src/state/observation-subscription.js";
 import type { StateStore } from "../../src/state/store.js";
 import type { StoredGameState } from "../../src/state/store.js";
 import { FakeLibManagedAccount, makeFakeLibManager } from "../dispatcher/lib-fakes.js";
+import { makeObservationUpdateEvent } from "../helpers/observation.js";
 import { makePirateRadioEvent } from "../helpers/pirate-radio.js";
 
 // ── Test Data ────────────────────────────────────────────────────────
@@ -67,6 +73,7 @@ describe("Server integration", () => {
 	let base: string;
 	let handlerCtx: HandlerContext;
 	let pirateRadioStore: EventBuffer<PirateRadioEnvelope>;
+	let observationEventsStore: EventBuffer<ObservationUpdateEnvelope>;
 	// Seed p1's push-fed cache with TEST_STATE so goal execution (which reads
 	// account.state) sees a fueled ship; read handlers get state from the store stub.
 	const accounts = [
@@ -93,6 +100,7 @@ describe("Server integration", () => {
 		const jobManager = new JobManager(createMemoryDatabase());
 
 		pirateRadioStore = createEventBuffer<PirateRadioEnvelope>();
+		observationEventsStore = createEventBuffer<ObservationUpdateEnvelope>();
 
 		const ctx: HandlerContext = {
 			manager,
@@ -107,6 +115,8 @@ describe("Server integration", () => {
 			craftingEventsStore: new CraftingEventsStore(),
 			combatEventsStore: createEventBuffer<CombatEnvelope>(),
 			pirateRadioStore,
+			observationEventsStore,
+			observationSubscriptions: new ObservationSubscriptionKeeper(),
 			combatModeStore: { get: () => "flee" } as unknown as CombatModeStore,
 		};
 
@@ -273,6 +283,25 @@ describe("Server integration", () => {
 
 		const controller = new AbortController();
 		const res = await fetch(`${base}/accounts/p1/pirate-radio/events`, {
+			signal: controller.signal,
+		});
+
+		expect(res.status).toBe(200);
+		expect(res.headers.get("Content-Type")).toBe("text/event-stream");
+		controller.abort();
+	});
+
+	test("GET /accounts/:playerId/observation/events is served as an SSE stream", async () => {
+		// Proves the route is registered at the path the client and docs use.
+		// Seeded so the stream writes a frame — a stream that never flushes a
+		// byte leaves the response headers unsent.
+		observationEventsStore.record("p1", {
+			receivedAt: new Date().toISOString(),
+			event: makeObservationUpdateEvent(),
+		});
+
+		const controller = new AbortController();
+		const res = await fetch(`${base}/accounts/p1/observation/events`, {
 			signal: controller.signal,
 		});
 

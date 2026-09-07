@@ -3,6 +3,7 @@ import type {
 	CraftingUpdateEvent,
 	MarketItem,
 	NotificationPayloads,
+	ObservationUpdateEvent,
 	ObservedPlayer,
 	PirateRadioEvent,
 } from "./game.js";
@@ -289,6 +290,25 @@ export interface PirateRadioEnvelope {
 	/** Wall-clock time setpoint received this push (ISO 8601) — the server payload carries no timestamp of its own. */
 	receivedAt: string;
 	event: PirateRadioEvent;
+}
+
+/**
+ * A single `observation_update` push, timestamped on receipt and delivered
+ * over `GET /accounts/:playerId/observation/events` (SSE) — both as backlog
+ * on connect and live as new pushes arrive.
+ *
+ * Unlike crafting and pirate radio, the game server only sends these while an
+ * observation watch is subscribed, so opening that route subscribes the
+ * account if it isn't already and keeps the watch alive across POI changes.
+ *
+ * The event is the server's frame verbatim, so it carries the pirate,
+ * creature, empire-NPC and prize arrays that `ObservationSnapshot` (the lib's
+ * merged view) does not.
+ */
+export interface ObservationUpdateEnvelope {
+	/** Wall-clock time setpoint received this push (ISO 8601) — the server payload only carries a game tick. */
+	receivedAt: string;
+	event: ObservationUpdateEvent;
 }
 
 /**

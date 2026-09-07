@@ -123,6 +123,7 @@ also accepts a username (case-insensitive).
 | GET | `/accounts/:playerId/crafting/events` | Live crafting progress (SSE) |
 | GET | `/accounts/:playerId/combat/events` | Live combat events (SSE) |
 | GET | `/accounts/:playerId/pirate-radio/events` | Intercepted pirate transmissions (SSE) |
+| GET | `/accounts/:playerId/observation/events` | Live observation change feed (SSE, subscribes for you) |
 | GET | `/accounts/:playerId/battle-log/events` | Tick-by-tick battle log (SSE) |
 | GET/POST | `/log-level` | Get or set the log level |
 

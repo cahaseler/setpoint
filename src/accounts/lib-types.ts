@@ -83,6 +83,15 @@ export interface LibManagedAccount {
 	observation(): ObservationView | null;
 	/** Subscribe to a presence change-feed at your current POI/system; seeds the observation cache read via `observation()`. */
 	subscribeObservation(activeScan?: boolean): Promise<SubscribeObservationResponse>;
+	/**
+	 * Whether an observation watch is currently subscribed. Goes false on its
+	 * own when the ship leaves the watched POI: the server drops the
+	 * subscription silently and the lib mirrors that. `ObservationSubscriptionKeeper`
+	 * reads this to re-establish a watch an event-stream subscriber still wants.
+	 */
+	readonly observationSubscribed: boolean;
+	/** The `activeScan` flag the live watch was subscribed with, if any. */
+	readonly observationActiveScan: boolean;
 	/** Unsubscribe from the observation watch and clear its cache. */
 	unsubscribeObservation(): Promise<void>;
 	/**
