@@ -65,11 +65,17 @@ const SERVER_LIFECYCLE_TYPES: ReadonlySet<string> = new Set(["server_restart_war
 /**
  * Events the server raises on an account that did not ask for anything.
  *
- * The account has no ack to reason from — something happened TO it — so
- * without logging these they are invisible: a ship being captured produced no
- * output at all. `@spacemolt/lib` applies the accompanying delta to the cache,
- * so state stays correct either way; this is about the operator being able to
- * see it happened.
+ * New in game v0.596.2 — before that the server sent nothing here, so there is
+ * no history of these being missed. What they have in common is that each one
+ * MOVES the ship: dying teleports you, as does capture, an Emergency Warp
+ * Stabilizer firing, losing the ship you were riding, or the Mobile Capital
+ * jumping while you are docked at it. That is why they ship together as one
+ * set — they are the cases where position changes with no command behind it.
+ *
+ * `@spacemolt/lib` applies the accompanying delta, so the cache stays correct
+ * without setpoint doing anything. Logging them is purely so an operator can
+ * see that it happened; the account has no ack to reason from, and nothing
+ * else in the daemon reports it.
  */
 const UNSOLICITED_EVENT_LABELS: ReadonlyMap<string, string> = new Map([
 	["player_died", "died"],
