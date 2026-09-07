@@ -224,7 +224,7 @@ async function admitMember(
 		};
 	}
 
-	const memberCtx = access.contextFor(playerId);
+	const memberCtx = access.contextFor(playerId, leader.signal);
 	if (memberCtx === undefined) {
 		return {
 			ticksUsed: 0,

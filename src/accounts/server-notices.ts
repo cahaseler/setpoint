@@ -19,10 +19,14 @@ import { TYPED_NOTIFICATION_TYPES } from "@spacemolt/lib";
 const DOCUMENTED_PUSH_TYPES: ReadonlySet<string> = new Set(TYPED_NOTIFICATION_TYPES);
 
 /**
- * Protocol envelope types, as opposed to server pushes. These reach `onAny`
- * only when the correlator found no pending request to match them to (see
- * `routeFrame` in the lib) — an anomaly, but a request/response one that says
- * nothing about server lifecycle, so it stays out of this classifier.
+ * Protocol envelope types, as opposed to server pushes.
+ *
+ * `action_result` is the exception, and is handled before this set is
+ * consulted: since game v0.596.2 the server sends unsolicited `action_result`
+ * frames with no `request_id`, where `command` names an event rather than a
+ * command the account issued — see UNSOLICITED_EVENT_LABELS. Those are real
+ * notices. An `action_result` that DOES carry a `request_id` is an ordinary
+ * envelope and stays filtered out here.
  */
 const PROTOCOL_FRAME_TYPES: ReadonlySet<string> = new Set([
 	"result",
@@ -32,11 +36,24 @@ const PROTOCOL_FRAME_TYPES: ReadonlySet<string> = new Set([
 	"logged_in",
 	"welcome",
 	"registered",
-	// `ok` carries the per-action acknowledgement for a completed mutation —
+	// `ok` is the v1 response envelope, so most of what arrives on it is the
+	// per-action acknowledgement for a mutation this account issued —
 	// `{"action":"jump","arrival_tick":…,"destination":…}` and the dock/travel
-	// equivalents. It has no published schema, so it would otherwise read as an
-	// undocumented push, but it is an envelope for work this account asked for
-	// rather than anything the server is announcing.
+	// equivalents.
+	//
+	// It is not purely that, though: roughly half its emission sites are genuine
+	// pushes, carrying fleet roster churn, fleet invites, docking, attack
+	// results and passenger income. setpoint filters the whole family because it
+	// consumes none of them — ensure-fleet reads membership by querying fleet
+	// status rather than by following roster pushes. If that ever changes, this
+	// is the entry to revisit: `@spacemolt/lib` types both families as of
+	// 14.1.0 (`OkPush` / `FleetPush` in `push-frames.d.ts`, reachable via
+	// `account.on('ok')` and `account.on('fleet')`), so a consumer would branch
+	// on them there rather than through this classifier.
+	//
+	// Note the unions are closed as of gameserver v0.596.2: a variant added
+	// later arrives matching no member, so any switch over them needs a real
+	// default rather than a `never` assertion.
 	"ok",
 ]);
 
@@ -58,6 +75,31 @@ const SERVER_CHAT_CHANNELS: ReadonlySet<string> = new Set(["system", "admin"]);
  */
 const SERVER_LIFECYCLE_TYPES: ReadonlySet<string> = new Set(["server_restart_warning"]);
 
+/**
+ * Events the server raises on an account that did not ask for anything.
+ *
+ * New in game v0.596.2 — before that the server sent nothing here, so there is
+ * no history of these being missed. What they have in common is that each one
+ * MOVES the ship: dying teleports you, as does capture, an Emergency Warp
+ * Stabilizer firing, losing the ship you were riding, or the Mobile Capital
+ * jumping while you are docked at it. That is why they ship together as one
+ * set — they are the cases where position changes with no command behind it.
+ *
+ * `@spacemolt/lib` applies the accompanying delta, so the cache stays correct
+ * without setpoint doing anything. Logging them is purely so an operator can
+ * see that it happened; the account has no ack to reason from, and nothing
+ * else in the daemon reports it.
+ */
+const UNSOLICITED_EVENT_LABELS: ReadonlyMap<string, string> = new Map([
+	["player_died", "died"],
+	["ship_captured", "ship captured"],
+	["emergency_warp_stabilizer", "emergency warp stabilizer fired"],
+	["passenger_stranded", "stranded — the ship it was riding was destroyed or captured"],
+	["fleet_kicked", "kicked from its fleet"],
+	["fleet_disbanded", "fleet disbanded"],
+	["mobile_capital_transit", "moved by the Mobile Capital jumping while docked"],
+]);
+
 /** A push frame worth logging, and why it was picked out. */
 export interface ServerNotice {
 	/**
@@ -66,8 +108,10 @@ export interface ServerNotice {
 	 * `server-chat` — an announcement on the system/admin chat channel.
 	 * `undocumented-push` — a `msg_type` absent from the generated spec, which
 	 * catches an operational notice the spec doesn't describe yet.
+	 * `unsolicited-event` — something happened TO this account without it
+	 * asking: death, capture, being kicked from a fleet.
 	 */
-	kind: "server-lifecycle" | "server-chat" | "undocumented-push";
+	kind: "server-lifecycle" | "server-chat" | "undocumented-push" | "unsolicited-event";
 	/** The frame's `msg_type`. */
 	type: string;
 	/** Human-readable one-liner for the log. */
@@ -120,7 +164,26 @@ function describeRestartWarning(payload: unknown): string {
  * Returns `null` for the overwhelming majority of frames — ordinary gameplay
  * pushes and player chat.
  */
-export function classifyServerNotice(type: string, payload: unknown): ServerNotice | null {
+export function classifyServerNotice(
+	type: string,
+	payload: unknown,
+	requestId?: string,
+): ServerNotice | null {
+	// An action_result with no request_id is not a stray envelope — nothing of
+	// ours is waiting on it. Since v0.596.2 the server uses that shape to
+	// announce things that happened to the account unprompted.
+	if (type === "action_result" && requestId === undefined) {
+		const command = asString(asRecord(payload)?.["command"]);
+		if (command !== undefined) {
+			const label = UNSOLICITED_EVENT_LABELS.get(command);
+			return {
+				kind: "unsolicited-event",
+				type: command,
+				summary: label ?? `unsolicited ${command}`,
+			};
+		}
+	}
+
 	if (SERVER_LIFECYCLE_TYPES.has(type)) {
 		return { kind: "server-lifecycle", type, summary: describeRestartWarning(payload) };
 	}

@@ -59,6 +59,22 @@ export class JobApi {
 		return result as JobRecord;
 	}
 
+	/**
+	 * Cancels the job.
+	 *
+	 * The per-account abort (`DELETE /accounts/:id/abort`) reaches goals and
+	 * fleet operations through the account they run on. A batch spans accounts,
+	 * so this id-based call is the only way to stop one.
+	 *
+	 * Resolves `{ aborted: false }` with the job's status if it had already
+	 * finished — cancelling a completed job is not an error, just a race the
+	 * caller lost harmlessly.
+	 */
+	async abort(): Promise<{ jobId: string; aborted: boolean; status?: string }> {
+		const result = await this.client.request("DELETE", `/jobs/${encodeURIComponent(this.jobId)}`);
+		return result as { jobId: string; aborted: boolean; status?: string };
+	}
+
 	/** Polls until the job reaches a terminal status, returning the full `JobRecord`. */
 	async wait(opts?: WaitForJobOptions): Promise<JobRecord> {
 		return waitForJob(this.client, this.jobId, opts);

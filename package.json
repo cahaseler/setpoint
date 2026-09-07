@@ -31,6 +31,6 @@
 	},
 	"dependencies": {
 		"@setpoint/protocol": "workspace:*",
-		"@spacemolt/lib": "14.0.1"
+		"@spacemolt/lib": "14.1.0"
 	}
 }

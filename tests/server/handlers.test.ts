@@ -17,8 +17,10 @@ import {
 	handleCraftingEvents,
 	handleDashboardData,
 	handleDeleteAccount,
+	handleEnsureFleetAsync,
 	handleExecuteGoal,
 	handleExecuteGoalAsync,
+	handleFleetMoveAsync,
 	handleGetAccount,
 	handleGetCombatMode,
 	handleGetJob,
@@ -3466,5 +3468,66 @@ describe("handlePirateRadioEvents", () => {
 		const events = await readSseEvents(res, 1);
 		expect(events).toHaveLength(1);
 		expect(events[0]?.event.message).toBe("mine");
+	});
+});
+
+describe("async fleet submissions claim their leader", () => {
+	/** A Request whose body arrives late, the way a real socket delivers one. */
+	function slowBodyRequest(url: string, payload: unknown): Request {
+		const stream = new ReadableStream<Uint8Array>({
+			start(controller) {
+				setTimeout(() => {
+					controller.enqueue(new TextEncoder().encode(JSON.stringify(payload)));
+					controller.close();
+				}, 20);
+			},
+		});
+		return new Request(url, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: stream,
+			// @ts-expect-error duplex is required for a streaming body and is not in the DOM types
+			duplex: "half",
+		});
+	}
+
+	test("two concurrent fleet-move submissions do not both start a job", async () => {
+		// Without a synchronous claim, the body read is a window in which both
+		// requests pass leaderBusyResponse() and two navigate chains interleave
+		// on one ship. The integration harness cannot show this — Bun serialises
+		// handlers on one keep-alive connection — so it is asserted here.
+		const account = new FakeLibManagedAccount({ playerId: "p1", username: "Leader" });
+		const ctx = makeContext({ accounts: [account] });
+
+		const body = { systemId: "sol", poiId: "sol_station", maxWaitMs: 1 };
+		const [a, b] = await Promise.all([
+			handleFleetMoveAsync(
+				slowBodyRequest("http://x/accounts/p1/fleet/move/async", body),
+				{ playerId: "p1" },
+				ctx,
+			),
+			handleFleetMoveAsync(
+				slowBodyRequest("http://x/accounts/p1/fleet/move/async", body),
+				{ playerId: "p1" },
+				ctx,
+			),
+		]);
+
+		const statuses = [a.status, b.status].sort();
+		expect(statuses).toEqual([202, 409]);
+	});
+
+	test("the claim is released so a later submission still works", async () => {
+		const account = new FakeLibManagedAccount({ playerId: "p1", username: "Leader" });
+		const ctx = makeContext({ accounts: [account] });
+
+		const res = await handleEnsureFleetAsync(
+			slowBodyRequest("http://x/accounts/p1/fleet/async", { members: [] }),
+			{ playerId: "p1" },
+			ctx,
+		);
+		expect(res.status).toBe(202);
+		// The durable record is the job, not the transient claim.
+		expect(ctx.claimedAccounts.has("p1")).toBe(false);
 	});
 });

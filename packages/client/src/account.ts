@@ -487,6 +487,17 @@ export class AccountCombatModeApi {
 	}
 }
 
+/** Destination and on-arrival readiness for a fleet move. */
+export interface FleetMoveRequest {
+	systemId: string;
+	poiId: string;
+	/** Dock every ship here on arrival. Refuel and repair default to whether this is set. */
+	baseId?: string;
+	refuel?: boolean;
+	repair?: boolean;
+	maxWaitMs?: number;
+}
+
 /**
  * Fleet sub-API for an account, over `POST /accounts/:id/fleet`.
  *
@@ -501,6 +512,41 @@ export class AccountFleetApi {
 		private readonly client: SetpointClient,
 		private readonly id: string,
 	) {}
+
+	/**
+	 * Submits {@link move} as a background job and returns its id immediately.
+	 *
+	 * Prefer {@link moveToCompletion} unless you want to poll yourself.
+	 */
+	async moveAsync(options: FleetMoveRequest): Promise<{ job_id: string }> {
+		const result = await this.client.request(
+			"POST",
+			`/accounts/${encodeURIComponent(this.id)}/fleet/move/async`,
+			{ body: options },
+		);
+		return result as { job_id: string };
+	}
+
+	/**
+	 * Submits {@link move} in the background and polls until it finishes.
+	 *
+	 * This is the one to reach for. A large fleet crossing a region runs for
+	 * many minutes — longer than a caller should hold a connection open, and
+	 * longer than some runtimes will keep one open regardless. Submitting and
+	 * polling means the answer survives a dropped connection, and the move
+	 * survives the caller restarting entirely.
+	 */
+	async moveToCompletion(
+		options: FleetMoveRequest,
+		opts?: WaitForJobOptions,
+	): Promise<FleetOperationResult> {
+		const { job_id } = await this.moveAsync(options);
+		const job = await waitForJob(this.client, job_id, opts);
+		if (job.status === "failed") {
+			throw new Error(job.error ?? `Job ${job_id} failed`);
+		}
+		return job.result as unknown as FleetOperationResult;
+	}
 
 	/**
 	 * Moves the fleet by moving its leader, then brings every member to
@@ -525,6 +571,37 @@ export class AccountFleetApi {
 			{ body: options },
 		);
 		return result as FleetOperationResult;
+	}
+
+	/**
+	 * Submits {@link ensure} as a background job and returns its id immediately.
+	 *
+	 * Prefer {@link ensureToCompletion} unless you want to poll yourself.
+	 */
+	async ensureAsync(members: string[]): Promise<{ job_id: string }> {
+		const result = await this.client.request(
+			"POST",
+			`/accounts/${encodeURIComponent(this.id)}/fleet/async`,
+			{ body: { members } },
+		);
+		return result as { job_id: string };
+	}
+
+	/**
+	 * Submits {@link ensure} in the background and polls until it finishes.
+	 *
+	 * The polled reads are short GETs, which the client retries; the submission
+	 * itself is a POST, which it deliberately does not. So a dropped connection
+	 * costs a retry rather than the answer, and the daemon finishes the work
+	 * whether or not the caller is still listening.
+	 */
+	async ensureToCompletion(members: string[], opts?: WaitForJobOptions): Promise<ReconcileResult> {
+		const { job_id } = await this.ensureAsync(members);
+		const job = await waitForJob(this.client, job_id, opts);
+		if (job.status === "failed") {
+			throw new Error(job.error ?? `Job ${job_id} failed`);
+		}
+		return job.result as unknown as ReconcileResult;
 	}
 
 	/**

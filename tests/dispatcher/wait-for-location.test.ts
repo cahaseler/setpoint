@@ -88,3 +88,50 @@ describe("waitForLocation deadline", () => {
 		expect(Date.now() - started).toBeLessThan(1_000);
 	});
 });
+
+describe("waitForLocation cache mode", () => {
+	/** Counts live reads while the predicate stays false for a fixed number of polls. */
+	async function pollsBeforeArrival(
+		opts: { useCache?: boolean; liveReadIntervalMs?: number },
+		polls: number,
+	): Promise<{ refreshCalls: number }> {
+		const account = new FakeLibGoalAccount({
+			location: { system_id: "sol", poi_id: "origin", in_transit: false },
+		});
+		let seen = 0;
+		await waitForLocation(
+			makeLibGoalContext(account),
+			() => {
+				seen++;
+				return seen > polls;
+			},
+			{ pollIntervalMs: 1, maxWaitMs: 5_000, ...opts },
+		);
+		return { refreshCalls: account.refreshCalls };
+	}
+
+	test("cache mode does not query on every poll", async () => {
+		// The saving is the point: a fleet member's arrival is pushed, so
+		// querying each ship every poll is traffic the push already carries.
+		const cached = await pollsBeforeArrival({ useCache: true }, 8);
+		const forced = await pollsBeforeArrival({}, 8);
+
+		expect(forced.refreshCalls).toBeGreaterThanOrEqual(8);
+		// One baseline read, then the cache — not one per poll.
+		expect(cached.refreshCalls).toBe(1);
+	});
+
+	test("cache mode still takes a live read periodically", async () => {
+		// isStateStale cannot be the backstop: markStateFresh fires on EVERY
+		// state section, so a cargo delta keeps `location` looking fresh while
+		// it is wrong. Without this, a dropped location push would go unseen for
+		// the whole wait and report a ship as never having arrived.
+		const { refreshCalls } = await pollsBeforeArrival({ useCache: true, liveReadIntervalMs: 1 }, 8);
+		expect(refreshCalls).toBeGreaterThan(4);
+	});
+
+	test("the first read is always live, in either mode", async () => {
+		const cached = await pollsBeforeArrival({ useCache: true }, 0);
+		expect(cached.refreshCalls).toBe(1);
+	});
+});

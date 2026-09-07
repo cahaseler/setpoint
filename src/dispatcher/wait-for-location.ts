@@ -16,9 +16,34 @@ export const DEFAULT_MAX_WAIT_MS = 600_000;
 /** Delay between polls. */
 const DEFAULT_POLL_INTERVAL_MS = 5_000;
 
+/**
+ * How often cache mode still takes a live read, so a dropped push is caught
+ * within one window instead of costing the whole wait.
+ */
+export const CACHE_MODE_LIVE_READ_MS = 30_000;
+
 export interface LocationWaitOptions {
 	maxWaitMs?: number;
 	pollIntervalMs?: number;
+	/**
+	 * Read position from the push-fed cache between periodic live reads, rather
+	 * than forcing a `get_status` on every poll.
+	 *
+	 * Safe only where the server actually pushes the transition being waited
+	 * for. Since game v0.596.2 a fleet follower receives its arrival state
+	 * directly, so waiting on a member no longer needs a query per poll per
+	 * ship.
+	 *
+	 * A live read is still forced every `CACHE_MODE_LIVE_READ_MS`, and that
+	 * backstop is not optional: `isStateStale` cannot serve as one here,
+	 * because `markStateFresh` is called on EVERY state-section change — a
+	 * cargo delta or hull damage resets the freshness clock while `location`
+	 * stays wrong. Relying on it would let a dropped location push go unseen
+	 * for the whole wait and report `did_not_arrive` for a ship that arrived.
+	 */
+	useCache?: boolean;
+	/** How often cache mode still takes a live read. Defaults to `CACHE_MODE_LIVE_READ_MS`. */
+	liveReadIntervalMs?: number;
 }
 
 /**
@@ -43,7 +68,18 @@ export async function waitForLocation(
 	const maxWaitMs = opts.maxWaitMs ?? DEFAULT_MAX_WAIT_MS;
 	const pollIntervalMs = opts.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
 	const deadline = Date.now() + maxWaitMs;
+	let lastLiveRead = Date.now();
+	const read = (): Promise<Readonly<GameState>> => {
+		if (opts.useCache !== true) return ctx.refreshState({ force: true });
+		if (Date.now() - lastLiveRead >= (opts.liveReadIntervalMs ?? CACHE_MODE_LIVE_READ_MS)) {
+			lastLiveRead = Date.now();
+			return ctx.refreshState({ force: true });
+		}
+		return ctx.refreshState();
+	};
 
+	// The first read is always live: it establishes the baseline the cached
+	// polls are trusted against.
 	let state = await ctx.refreshState({ force: true });
 	while (!predicate(state) && !ctx.signal?.aborted && Date.now() < deadline) {
 		// Never sleep past the deadline. A full poll interval with only
@@ -53,7 +89,7 @@ export async function waitForLocation(
 		if (wait <= 0) break;
 		log.info(`Location unresolved, waiting ${wait / 1000}s before re-checking`);
 		await new Promise<void>((resolve) => setTimeout(resolve, wait));
-		state = await ctx.refreshState({ force: true });
+		state = await read();
 	}
 	return state;
 }

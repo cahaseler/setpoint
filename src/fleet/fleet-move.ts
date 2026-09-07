@@ -7,6 +7,7 @@ import { LibEnsureRepaired } from "../dispatcher/lib-primitives/ensure-repaired.
 import { fleetStatus } from "../dispatcher/lib-primitives/fleet-ops.js";
 import { LibGoToPoi } from "../dispatcher/lib-primitives/go-to-poi.js";
 import { LibNavigateToSystem } from "../dispatcher/lib-primitives/navigate-to-system.js";
+import type { LocationWaitOptions } from "../dispatcher/wait-for-location.js";
 import { waitForLocation } from "../dispatcher/wait-for-location.js";
 import { createLogger } from "../util/logger.js";
 import type { FleetAccess } from "./fleet-access.js";
@@ -57,6 +58,14 @@ export async function fleetMove(
 	};
 
 	const waitOpts = options.maxWaitMs === undefined ? {} : { maxWaitMs: options.maxWaitMs };
+
+	// Members are carried by the fleet and never ack anything, so their arrival
+	// used to be observable only by querying each of them on every poll. Since
+	// game v0.596.2 the server pushes a follower its arrival state directly.
+	//
+	// Deliberately NOT applied to the leader wait below: that justification is
+	// about followers, and the leader is the ship issuing its own movement.
+	const memberWaitOpts = { ...waitOpts, useCache: true };
 	let waitedForLeader = false;
 
 	if (leader.state.location?.in_transit === true) {
@@ -87,7 +96,7 @@ export async function fleetMove(
 	let ticks = leaderResult.ticksUsed;
 
 	for (const id of memberIds) {
-		const result = await settleMember(access, id, settle, waitOpts);
+		const result = await settleMember(access, id, leader.signal, settle, memberWaitOpts);
 		ticks += result.ticksUsed;
 		accounts[id] = result;
 	}
@@ -140,10 +149,11 @@ async function moveLeader(leader: LibGoalContext, options: SettleOptions): Promi
 async function settleMember(
 	access: FleetAccess,
 	playerId: string,
+	leaderSignal: AbortSignal | undefined,
 	options: SettleOptions,
-	waitOpts: { maxWaitMs?: number },
+	waitOpts: LocationWaitOptions,
 ): Promise<GoalResult> {
-	const ctx = access.contextFor(playerId);
+	const ctx = access.contextFor(playerId, leaderSignal);
 	if (ctx === undefined) {
 		return failed("not_connected", 0);
 	}

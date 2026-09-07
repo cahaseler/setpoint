@@ -16,6 +16,7 @@ export type {
 	AccountShipSummary,
 	AccountSummary,
 	AccountsListResult,
+	FleetMoveRequest,
 	AddAccountResult,
 	ConnectedAccountDetail,
 	ConnectedAccountSummary,

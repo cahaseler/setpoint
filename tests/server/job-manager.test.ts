@@ -202,3 +202,91 @@ describe("job outcome", () => {
 		expect(jm.get(jobId)?.outcome).toBeUndefined();
 	});
 });
+
+describe("terminal job records are not resurrected", () => {
+	test("a completion arriving after an abort does not overwrite it", () => {
+		// The abort marks the job failed, but the underlying work keeps running
+		// until its awaits unwind. Without a guard the operator sees the job
+		// they just released report success minutes later.
+		const jm = makeJobManager();
+		const { jobId } = jm.create("acct-1", "fleet-move", {});
+		jm.failAllRunning("acct-1");
+
+		jm.complete(jobId, { success: true, message: "done", alreadySatisfied: false, ticksUsed: 9 });
+
+		const record = jm.get(jobId);
+		expect(record?.status).toBe("failed");
+		expect(record?.outcome).toBe("aborted");
+	});
+
+	test("a late failure does not overwrite an abort either", () => {
+		const jm = makeJobManager();
+		const { jobId } = jm.create("acct-1", "fleet-move", {});
+		jm.failAllRunning("acct-1");
+
+		jm.fail(jobId, "some later error");
+
+		expect(jm.get(jobId)?.error).toBe("Aborted by user");
+	});
+
+	test("a normal completion still records", () => {
+		const jm = makeJobManager();
+		const { jobId } = jm.create("acct-1", "dock-at", {});
+		jm.complete(jobId, { success: true, message: "ok", alreadySatisfied: false, ticksUsed: 1 });
+		expect(jm.get(jobId)?.outcome).toBe("succeeded");
+	});
+});
+
+describe("aborting a job by id", () => {
+	test("cancels a running job and marks it aborted", () => {
+		// The account-scoped abort reaches goals and fleet ops through their
+		// account. A batch records a synthetic owner, so this is its only handle.
+		const jm = makeJobManager();
+		const { jobId } = jm.create("*batch*", "batch:ensure-magazines", {});
+		const controller = new AbortController();
+		jm.registerExecution(
+			jobId,
+			controller,
+			{ goalType: "x", completedSteps: [], remainingSteps: [] },
+			Promise.resolve(),
+		);
+
+		expect(jm.abort(jobId)).toBe(true);
+		expect(controller.signal.aborted).toBe(true);
+		const record = jm.get(jobId);
+		expect(record?.status).toBe("failed");
+		expect(record?.outcome).toBe("aborted");
+	});
+
+	test("returns false for a job that is not running", () => {
+		const jm = makeJobManager();
+		const { jobId } = jm.create("acct-1", "dock-at", {});
+		expect(jm.abort(jobId)).toBe(false);
+	});
+});
+
+describe("jobs orphaned by a restart", () => {
+	test("a fleet job is failed, not left pending forever", () => {
+		// Resumption goes through createGoal and runs per connected account, so a
+		// job whose type is not a goal would sit pending for ever and a client
+		// polling it would never see a terminal state.
+		const db = createMemoryDatabase();
+		const first = new JobManager(db);
+		const { jobId } = first.create("leader", "fleet-move", { systemId: "sol", poiId: "arena" });
+
+		const afterRestart = new JobManager(db);
+		const record = afterRestart.get(jobId);
+
+		expect(record?.status).toBe("failed");
+		expect(record?.error).toContain("Daemon restarted");
+	});
+
+	test("a real goal job is still marked pending for resumption", () => {
+		const db = createMemoryDatabase();
+		const first = new JobManager(db);
+		const { jobId } = first.create("p1", "navigate-to-system", { targetSystemId: "sol" });
+
+		const afterRestart = new JobManager(db);
+		expect(afterRestart.get(jobId)?.status).toBe("pending");
+	});
+});

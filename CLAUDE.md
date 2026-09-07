@@ -396,6 +396,12 @@ smctl job status <jobId>                  # Poll async goal status
 
 Use `smctl help goals` for a complete list of goal types and their options.
 
+**Cancelling async work.** `DELETE /accounts/:playerId/abort` reaches goals and fleet operations through the account they run on. A batch spans accounts and records a synthetic owner, so it is reachable only by `DELETE /jobs/:jobId`. Both are idempotent.
+
+**Jobs that cannot be resumed are failed on restart, not left pending.** Resumption goes through `createGoal` and runs per connected account, so a job whose type is not a goal — a fleet operation, a batch — would otherwise sit `pending` for ever and a client polling it would never see a terminal state. `RESUMABLE_TYPES` in `job-manager.ts` is the gate.
+
+**Every long-running operation has an async sibling, and it is the one to reach for.** Goals, fleet reconciles, fleet moves and batches all offer `POST .../async` returning a `job_id` to poll at `GET /jobs/:jobId`. The point of the daemon is that a caller should not have to think about timeouts, and that submitted work completes even if the caller's own tooling restarts underneath it. Holding a connection open for minutes is fragile at any timeout value: a drop loses the answer, and the client deliberately does not retry POST because a resubmitted mutation can double-execute. Polling is short retryable GETs instead.
+
 **Use `--async` for any goal that takes more than ~4 minutes.** The sync (blocking) endpoint holds an open HTTP connection; Bun's server-level idle timeout closes connections after 255 seconds regardless of the per-request timeout setting. Goals still complete server-side, but smctl drops with `connection_failed` (exit code 3). The async endpoint returns a `job_id` in <1s and closes the connection immediately — no timeout risk. This applies to `fuel-rescue` routes of 20+ hops, long `navigate-to-system` chains, and any other multi-hop navigation.
 
 A goal cannot be submitted while a loop is running on the same account (returns 409). Async goals also block if another async job is already running on the account.
@@ -483,6 +489,7 @@ The daemon listens on `http://127.0.0.1:7580` by default. All responses are JSON
 | `POST` | `/accounts/:playerId/goal` | Execute goal (sync) | `smctl goal` |
 | `POST` | `/accounts/:playerId/goal/async` | Execute goal (async, 202) | `smctl goal --async` |
 | `GET` | `/jobs/:jobId` | Get async job status | `smctl job status` |
+| `DELETE` | `/jobs/:jobId` | Cancel a running job by id (idempotent) | — (use `client.job(id).abort()`) |
 | `POST` | `/accounts/:playerId/loop` | Start loop (201) | `smctl loop start` |
 | `GET` | `/accounts/:playerId/loop` | Get loop status | `smctl loop status` |
 | `PATCH` | `/accounts/:playerId/loop` | Update loop options live (no restart) | `smctl loop update` |
@@ -493,6 +500,9 @@ The daemon listens on `http://127.0.0.1:7580` by default. All responses are JSON
 | `POST` | `/accounts/:playerId/fleet` | Reconcile the fleet this account leads to an exact membership | — (use `account.fleet.ensure()`) |
 | `POST` | `/accounts/:playerId/fleet/move` | Move the fleet and bring every member to readiness | — (use `account.fleet.move()`) |
 | `POST` | `/goals/batch` | Run one goal across many accounts, keyed by player id | — (use `client.batchGoal()`) |
+| `POST` | `/accounts/:playerId/fleet/async` | Reconcile the fleet in the background (202, returns `job_id`) | — (use `account.fleet.ensureToCompletion()`) |
+| `POST` | `/accounts/:playerId/fleet/move/async` | Move the fleet in the background (202, returns `job_id`) | — (use `account.fleet.moveToCompletion()`) |
+| `POST` | `/goals/batch/async` | Run a batch in the background (202, returns `job_id`) | — (use `client.batchGoalToCompletion()`) |
 | `GET` | `/accounts/:playerId/battle-log/events` | Live tick-by-tick battle log (Server-Sent Events) | — (use `account.battleLog()`) |
 | `DELETE` | `/accounts/:playerId/abort` | Release account from all in-progress work | `smctl abort` |
 | `POST` | `/accounts/:playerId/raw` | Raw API passthrough | `smctl raw` |

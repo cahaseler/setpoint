@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import { randomBytes } from "node:crypto";
 import type { JobOutcome, JobRecord } from "@setpoint/protocol";
 import type { GoalResult, ProgressRef } from "../dispatcher/goals.js";
+import { getGoalTypes } from "./goal-registry.js";
 
 export type { JobRecord };
 
@@ -11,6 +12,16 @@ export type { JobRecord };
  * it exactly, rather than sniffing the message text.
  */
 export const ABORTED_BY_USER = "Aborted by user";
+
+/**
+ * Job types the daemon can rebuild and re-run after a restart.
+ *
+ * Resumption goes through `createGoal`, which only knows goal types, and runs
+ * per connected account. Anything else — a fleet operation, a batch — cannot
+ * be reconstructed that way, so it must be failed on restart rather than left
+ * `pending` for a poller that will wait for ever.
+ */
+const RESUMABLE_TYPES: readonly string[] = getGoalTypes();
 
 interface JobRow {
 	job_id: string;
@@ -85,16 +96,20 @@ export class JobManager {
 	 */
 	private markOrphanedJobs(): void {
 		const now = new Date().toISOString();
-		// Can resume: options are stored
+		// Can resume: options are stored AND the type is one `createGoal` can
+		// rebuild. Resumption is driven per connected account, so a job whose
+		// type is not a goal — a fleet operation, a batch — would sit `pending`
+		// for ever, and a client polling it would never see a terminal state.
 		this.db.run(
 			`UPDATE jobs SET status = 'pending', completed_at = ?
-			 WHERE status = 'running' AND goal_options IS NOT NULL`,
-			[now],
+			 WHERE status = 'running' AND goal_options IS NOT NULL AND goal_type IN (${RESUMABLE_TYPES.map(() => "?").join(", ")})`,
+			[now, ...RESUMABLE_TYPES],
 		);
-		// Cannot resume: no options stored
+		// Everything else terminates now, saying what actually happened rather
+		// than leaving a caller to poll a row nothing will ever advance.
 		this.db.run(
 			`UPDATE jobs SET status = 'failed', completed_at = ?, error = ?
-			 WHERE status = 'running' AND goal_options IS NULL`,
+			 WHERE status = 'running'`,
 			[now, "Daemon restarted before job completed"],
 		);
 	}
@@ -139,6 +154,26 @@ export class JobManager {
 		return this.jobExecution.get(jobId);
 	}
 
+	/**
+	 * Cancel a running job by its own id, whatever account it belongs to.
+	 *
+	 * `forceReleaseAccount` reaches jobs through the account they run on, which
+	 * covers goals and fleet operations. A batch spans accounts and records a
+	 * synthetic owner, so it is reachable only this way — without it a batch of
+	 * forty ships could not be stopped by anything once submitted.
+	 *
+	 * Returns false if the job is unknown or already finished.
+	 */
+	abort(jobId: string): boolean {
+		const execution = this.jobExecution.get(jobId);
+		if (execution === undefined) return false;
+		execution.controller.abort();
+		this.fail(jobId, ABORTED_BY_USER);
+		this.jobExecution.delete(jobId);
+		this.runningJobs.delete(jobId);
+		return true;
+	}
+
 	/** Get the execution info for a running job on a given account. */
 	getExecutionForAccount(
 		accountId: string,
@@ -150,21 +185,27 @@ export class JobManager {
 	}
 
 	/** Mark a job as completed with its result. */
+	/**
+	 * Record a successful result — unless the job already reached a terminal
+	 * state. An aborted job's work keeps running until its own awaits unwind, so
+	 * without the status guard a job an operator just released would flip back
+	 * to "completed / succeeded" minutes later and report success.
+	 */
 	complete(jobId: string, result: GoalResult): void {
 		this.db.run(
 			`UPDATE jobs SET status = 'completed', completed_at = ?, result = ?
-			 WHERE job_id = ?`,
+			 WHERE job_id = ? AND status = 'running'`,
 			[new Date().toISOString(), JSON.stringify(result), jobId],
 		);
 		this.runningJobs.delete(jobId);
 		this.jobExecution.delete(jobId);
 	}
 
-	/** Mark a job as failed with an error message. */
+	/** Mark a job failed. Same terminal-state guard as `complete`. */
 	fail(jobId: string, error: string): void {
 		this.db.run(
 			`UPDATE jobs SET status = 'failed', completed_at = ?, error = ?
-			 WHERE job_id = ?`,
+			 WHERE job_id = ? AND status = 'running'`,
 			[new Date().toISOString(), error, jobId],
 		);
 		this.runningJobs.delete(jobId);

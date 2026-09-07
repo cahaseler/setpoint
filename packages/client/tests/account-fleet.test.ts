@@ -171,3 +171,118 @@ describe("fleet move and batch goals", () => {
 		expect(got.accounts["leader"]?.ticksUsed).toBe(3);
 	});
 });
+
+describe("async fleet and batch submission", () => {
+	const originalFetch = globalThis.fetch;
+	let calls: Array<{ url: string; method: string | undefined; body: unknown }>;
+
+	function mockSequence(responses: Array<{ status: number; body: unknown }>): void {
+		calls = [];
+		let i = 0;
+		globalThis.fetch = ((url: string | URL | Request, init?: RequestInit) => {
+			calls.push({
+				url: url.toString(),
+				method: init?.method,
+				body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
+			});
+			const next = responses[Math.min(i, responses.length - 1)];
+			i++;
+			return Promise.resolve(
+				new Response(JSON.stringify(next?.body), {
+					status: next?.status ?? 200,
+					headers: { "Content-Type": "application/json" },
+				}),
+			);
+		}) as typeof fetch;
+	}
+
+	afterEach(() => {
+		globalThis.fetch = originalFetch;
+	});
+
+	test("moveAsync POSTs to the async route and returns a job id", async () => {
+		mockSequence([{ status: 202, body: { job_id: "job-1" } }]);
+		const sp = new SetpointClient({ baseUrl: "http://localhost:7580" });
+
+		const got = await sp
+			.account("leader")
+			.fleet.moveAsync({ systemId: "keelbreak", poiId: "arena" });
+
+		expect(calls[0]?.url).toBe("http://localhost:7580/accounts/leader/fleet/move/async");
+		expect(calls[0]?.method).toBe("POST");
+		expect(got.job_id).toBe("job-1");
+	});
+
+	test("moveToCompletion submits once, then polls the job", async () => {
+		// The submission is a POST (not retried, since a resubmitted mutation can
+		// double-execute); the polls are GETs, which are.
+		mockSequence([
+			{ status: 202, body: { job_id: "job-2" } },
+			{
+				status: 200,
+				body: {
+					jobId: "job-2",
+					accountId: "leader",
+					submittedAt: "now",
+					status: "completed",
+					outcome: "succeeded",
+					result: { success: true, message: "ok", summary: { total: 2, succeeded: 2, failed: 0 } },
+				},
+			},
+		]);
+		const sp = new SetpointClient({ baseUrl: "http://localhost:7580" });
+
+		const result = await sp
+			.account("leader")
+			.fleet.moveToCompletion({ systemId: "keelbreak", poiId: "arena" });
+
+		expect(calls[0]?.method).toBe("POST");
+		expect(calls[1]?.url).toContain("/jobs/job-2");
+		expect(result.summary.succeeded).toBe(2);
+	});
+
+	test("a failed job throws rather than returning a bad result", async () => {
+		mockSequence([
+			{ status: 202, body: { job_id: "job-3" } },
+			{
+				status: 200,
+				body: {
+					jobId: "job-3",
+					accountId: "leader",
+					submittedAt: "now",
+					status: "failed",
+					error: "leader_did_not_arrive",
+				},
+			},
+		]);
+		const sp = new SetpointClient({ baseUrl: "http://localhost:7580" });
+
+		await expect(
+			sp.account("leader").fleet.moveToCompletion({ systemId: "x", poiId: "y" }),
+		).rejects.toThrow("leader_did_not_arrive");
+	});
+
+	test("batchGoalAsync POSTs to /goals/batch/async", async () => {
+		mockSequence([{ status: 202, body: { job_id: "job-4" } }]);
+		const sp = new SetpointClient({ baseUrl: "http://localhost:7580" });
+
+		await sp.batchGoalAsync(["a", "b"], "ensure-magazines", { policy: "half" });
+
+		expect(calls[0]?.url).toBe("http://localhost:7580/goals/batch/async");
+		expect(calls[0]?.body).toEqual({
+			playerIds: ["a", "b"],
+			type: "ensure-magazines",
+			options: { policy: "half" },
+		});
+	});
+
+	test("ensureAsync POSTs to the fleet async route", async () => {
+		mockSequence([{ status: 202, body: { job_id: "job-5" } }]);
+		const sp = new SetpointClient({ baseUrl: "http://localhost:7580" });
+
+		await sp.account("leader").fleet.ensureAsync(["alpha"]);
+
+		expect(calls[0]?.url).toBe("http://localhost:7580/accounts/leader/fleet/async");
+		expect(calls[0]?.body).toEqual({ members: ["alpha"] });
+	});
+});
