@@ -265,6 +265,52 @@ After finishing a set of changes, run `bun run deploy`. It bumps the patch versi
 - **Free the port if needed:** `npx kill-port 7580` — avoid broad `pkill` that kills unrelated processes.
 - **NEVER restart the daemon (or kill its process) without explicit, in-the-moment instruction from Craig.** This holds even mid-incident, even when a fix clearly requires a restart to complete, even when it seems obviously implied by the conversation. Diagnose, explain what's wrong and why a restart would fix it, and ask — then wait for an explicit go-ahead before touching the process. The live daemon manages real, active accounts and other automation (patrols, loops, external scripts) depends on it staying up on Craig's own schedule, not whenever a fix is ready.
 
+#### The restart procedure
+
+Once Craig has given that go-ahead, this is the whole procedure. Do not
+substitute a different launcher.
+
+```bash
+kill -TERM <pid>                              # graceful: drains HTTP, then disconnects accounts
+# wait for "[main] Goodbye." in logs/daemon.log — takes ~20s, most of it the 10s server drain
+nohup bun run src/index.ts > /dev/null 2>&1 & # from the repo root
+```
+
+Then verify, in this order:
+
+1. `curl -s http://localhost:7580/health` — the HTTP server comes up before any
+   account connects, so this answers within a second or two.
+2. Poll that same endpoint until `accounts` reaches its full count. The lib
+   staggers connects, so a full fleet takes several minutes. This is expected;
+   see the rate-limit table above.
+3. `curl -s http://localhost:7580/dashboard/data` and check every running loop's
+   `consecutiveFailures`. A loop that resumed before its account's socket was up
+   logs `cannot send on a closed socket` and retries; those counters climbing is
+   normal during the ramp, but they must stop climbing. The counter only clears
+   on a *completed* iteration, so a frozen non-zero count with fresh
+   `mining-iteration` lines in the log is a healthy loop, not a stuck one.
+
+**The launch must be detached — `ppid` 1, stdout and stderr to `/dev/null`,
+file logging handles the rest.** Confirm with
+`ps -eo pid,ppid,cmd | grep src/index.ts`. Two ways of starting it that look
+equivalent and are not:
+
+- **Never start it as a background task of the agent session** (Claude Code's
+  `run_in_background`, or any runner whose lifetime is the conversation). The
+  harness terminates the task when the turn or session ends and the daemon dies
+  with it. This happened on 2026-09-07: the daemon ran for six minutes, the
+  background task was killed, and all 261 accounts dropped.
+- **Never invent a different supervisor** (a new `tmux` session, a systemd unit,
+  `pm2`). Nothing else on this box expects the daemon there, and it makes the
+  process tree lie about how the service is run.
+
+If the `nohup` line is refused by a permission check, stop and say so rather
+than reaching for a substitute. Ask Craig to run it himself — in Claude Code he
+can prefix a command with `!` to run it in the session.
+
+**Avoid repeated restarts in a short window.** Each one re-authenticates the
+whole fleet, and `SETUP.md` warns this can trip the game's auth rate limit.
+
 ### Important Patterns
 - **Never hardcode API types** — always use the types exported by `@spacemolt/lib`
 - **The lib's push-fed cache is the source of truth** — the SQLite store is a read-only mirror of it (via `StateProjector`), kept current by wiring every account's `onStateChange` to the projector. No code path should read stale state by bypassing `account.state`.
