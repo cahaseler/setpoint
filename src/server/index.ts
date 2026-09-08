@@ -1,5 +1,9 @@
 import type { Database } from "bun:sqlite";
-import type { CombatEnvelope, PirateRadioEnvelope } from "@setpoint/protocol";
+import type {
+	CombatEnvelope,
+	ObservationUpdateEnvelope,
+	PirateRadioEnvelope,
+} from "@setpoint/protocol";
 import type { SpacemoltClient } from "@spacemolt/lib";
 import type { LibAccountManager } from "../accounts/lib-manager.js";
 import type { CombatHeartbeatStore } from "../combat/combat-heartbeat.js";
@@ -7,6 +11,7 @@ import type { CombatModeStore } from "../combat/combat-mode-store.js";
 
 import type { CraftingEventsStore } from "../state/crafting-events-store.js";
 import type { EventBuffer } from "../state/event-buffer.js";
+import type { ObservationSubscriptionKeeper } from "../state/observation-subscription.js";
 import type { StateStore } from "../state/store.js";
 import { errorMessage } from "../util/errors.js";
 import { createLogger } from "../util/logger.js";
@@ -42,6 +47,7 @@ import {
 	handleGetSystem,
 	handleHealth,
 	handleListAccounts,
+	handleObservationEvents,
 	handlePatchLoop,
 	handlePirateRadioEvents,
 	handleRawAction,
@@ -80,7 +86,7 @@ export function resolveBindHost(env: Record<string, string | undefined> = proces
 export function isUnboundedRequest(req: Request): boolean {
 	const { pathname } = new URL(req.url);
 	if (req.method === "GET") {
-		return /\/(crafting|combat|pirate-radio|battle-log)\/events$/.test(pathname);
+		return /\/(crafting|combat|pirate-radio|battle-log|observation)\/events$/.test(pathname);
 	}
 	if (req.method === "POST") {
 		return (
@@ -114,6 +120,8 @@ export interface ServerOptions {
 	craftingEventsStore: CraftingEventsStore;
 	combatEventsStore: EventBuffer<CombatEnvelope>;
 	pirateRadioStore: EventBuffer<PirateRadioEnvelope>;
+	observationEventsStore: EventBuffer<ObservationUpdateEnvelope>;
+	observationSubscriptions: ObservationSubscriptionKeeper;
 	combatModeStore: CombatModeStore;
 	combatHeartbeats?: CombatHeartbeatStore | undefined;
 	/** Whether an account is mid-battle. Late-bound: the combat reactor is built after the server. */
@@ -323,6 +331,10 @@ export function buildRoutes(ctx: HandlerContext): RouteTable {
 		// Also push-only with no subscribe step: the server sends pirate_radio
 		// to any account in range to intercept a transmission.
 		"/accounts/:playerId/pirate-radio/events": { GET: r(handlePirateRadioEvents) },
+		// Observation change feed (SSE) — the one push stream here that DOES need
+		// a subscription; opening it establishes and maintains the watch, so
+		// callers still have no subscribe-first step to remember.
+		"/accounts/:playerId/observation/events": { GET: r(handleObservationEvents) },
 	};
 }
 
@@ -351,6 +363,8 @@ export function startServer(options: ServerOptions): DispatcherServer {
 		craftingEventsStore: options.craftingEventsStore,
 		combatEventsStore: options.combatEventsStore,
 		pirateRadioStore: options.pirateRadioStore,
+		observationEventsStore: options.observationEventsStore,
+		observationSubscriptions: options.observationSubscriptions,
 		combatModeStore: options.combatModeStore,
 		combatHeartbeats: options.combatHeartbeats,
 		isInCombat: options.isInCombat,

@@ -4,6 +4,8 @@ import type {
 	CombatEnvelope,
 	CombatNotificationType,
 	CraftingUpdateEvent,
+	ObservationUpdateEnvelope,
+	ObservationUpdateEvent,
 	PirateRadioEnvelope,
 	PirateRadioEvent,
 } from "@setpoint/protocol";
@@ -31,6 +33,7 @@ import { createDatabase } from "./state/database.js";
 import { logDrift } from "./state/drift-logger.js";
 import { startDriftSweep } from "./state/drift-sweep.js";
 import { createEventBuffer } from "./state/event-buffer.js";
+import { ObservationSubscriptionKeeper } from "./state/observation-subscription.js";
 import { StateProjector } from "./state/projector.js";
 import { diffGameState } from "./state/state-diff.js";
 import { StateStore } from "./state/store.js";
@@ -71,6 +74,11 @@ async function main(): Promise<void> {
 	const store = new StateStore(db);
 	const projector = new StateProjector(store);
 
+	// Keeps an observation watch alive for accounts with a live event-stream
+	// subscriber. Declared before onStateChange, which re-establishes a watch the
+	// server dropped on a move.
+	const observationSubscriptions = new ObservationSubscriptionKeeper();
+
 	// Project every lib state change into SQLite, then log the changed sections.
 	const projectOnChange = makeProjectingOnStateChange(projector);
 	const onStateChange = (
@@ -79,6 +87,12 @@ async function main(): Promise<void> {
 		account: LibManagedAccount,
 	): void => {
 		projectOnChange(playerId, changed, account);
+		// A move silently voids the account's observation watch server-side. Only
+		// accounts with a live event-stream subscriber are affected; the keeper
+		// returns immediately for everyone else.
+		if (changed.includes("location")) {
+			observationSubscriptions.resubscribeIfDropped(playerId, account);
+		}
 		log.info(`[${playerId}] State updated: ${changed.join(", ")}`);
 	};
 
@@ -106,6 +120,15 @@ async function main(): Promise<void> {
 	const pirateRadioStore = createEventBuffer<PirateRadioEnvelope>();
 	const onPirateRadio = (playerId: string, event: PirateRadioEvent): void => {
 		pirateRadioStore.record(playerId, { receivedAt: new Date().toISOString(), event });
+	};
+
+	// Buffers observation_update pushes per account for
+	// GET /accounts/:id/observation/events (SSE). Unlike the two above, the
+	// server only sends these while a watch is subscribed, so the keeper
+	// establishes one when a stream opens and re-establishes it after each move.
+	const observationEventsStore = createEventBuffer<ObservationUpdateEnvelope>();
+	const onObservationUpdate = (playerId: string, event: ObservationUpdateEvent): void => {
+		observationEventsStore.record(playerId, { receivedAt: new Date().toISOString(), event });
 	};
 
 	// Per-account combat-response override (flee vs. externally-driven combat
@@ -166,6 +189,7 @@ async function main(): Promise<void> {
 		onCraftingUpdate,
 		onCombatUpdate,
 		onPirateRadio,
+		onObservationUpdate,
 	});
 
 	// Periodically force a refresh() across the whole fleet so idle accounts
@@ -191,6 +215,8 @@ async function main(): Promise<void> {
 		craftingEventsStore,
 		combatEventsStore,
 		pirateRadioStore,
+		observationEventsStore,
+		observationSubscriptions,
 		combatModeStore,
 		executingGoals,
 		claimedAccounts,

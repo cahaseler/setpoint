@@ -252,6 +252,9 @@ export class FakeLibManagedAccount extends FakeLibGoalAccount implements LibMana
 		if (baseId) this.dropMarketBook(baseId);
 	}
 
+	observationSubscribed = false;
+	observationActiveScan = false;
+
 	/** Mirrors the real lib's `subscribeObservation()` — seeds the observation cache from the dispatched response. */
 	async subscribeObservation(activeScan = false): Promise<SubscribeObservationResponse> {
 		const res = (await this.dispatch(
@@ -266,11 +269,17 @@ export class FakeLibManagedAccount extends FakeLibGoalAccount implements LibMana
 				tick: 0,
 				nearby: indexBy(snapshot.nearby, (p) => p.player_id),
 				system: indexBy(snapshot.system_agents, (p) => p.player_id),
+				pirates: indexBy(snapshot.pirates, (p) => p.pirate_id),
+				empireNpcs: indexBy(snapshot.empire_npcs, (n) => n.npc_id),
+				creatures: indexBy(snapshot.creatures, (c) => c.creature_id),
+				prizes: indexBy(snapshot.prizes, (p) => p.prize_id),
 				cloaked: indexBy(snapshot.cloaked_contacts, (c) => c.target_id),
 				unknownSignature: snapshot.unknown_signature ?? false,
 				activeScan: snapshot.active_scan ?? false,
 			});
 		}
+		this.observationSubscribed = true;
+		this.observationActiveScan = activeScan;
 		return snapshot ?? ({} as SubscribeObservationResponse);
 	}
 
@@ -278,6 +287,8 @@ export class FakeLibManagedAccount extends FakeLibGoalAccount implements LibMana
 	async unsubscribeObservation(): Promise<void> {
 		await this.dispatch("unsubscribe_observation");
 		this.setObservation(null);
+		this.observationSubscribed = false;
+		this.observationActiveScan = false;
 	}
 
 	/** Fire the registered onStateChange listeners (for projector wiring tests). */

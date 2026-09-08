@@ -122,12 +122,36 @@ export class FakeAccount implements LibManagedAccount {
 	setObservation(view: ObservationView | null): void {
 		this._observation = view;
 	}
-	/** No response fidelity needed here — tests seed the cache directly via `setObservation`. */
-	subscribeObservation(): Promise<SubscribeObservationResponse> {
+	observationSubscribed = false;
+	observationActiveScan = false;
+	/** Every `subscribeObservation` call this fake has seen, in order. */
+	readonly observationSubscribeCalls: boolean[] = [];
+	/** Set to make `subscribeObservation` reject, for testing the failure path. */
+	observationSubscribeError: Error | null = null;
+
+	/**
+	 * Tracks subscription state so the observation keeper can be tested, but no
+	 * response fidelity — tests seed the cache directly via `setObservation`.
+	 */
+	subscribeObservation(activeScan = false): Promise<SubscribeObservationResponse> {
+		this.observationSubscribeCalls.push(activeScan);
+		if (this.observationSubscribeError) return Promise.reject(this.observationSubscribeError);
+		this.observationSubscribed = true;
+		this.observationActiveScan = activeScan;
 		return Promise.resolve({} as SubscribeObservationResponse);
 	}
 	unsubscribeObservation(): Promise<void> {
+		this.observationSubscribed = false;
+		this.observationActiveScan = false;
 		return Promise.resolve();
+	}
+	/**
+	 * Simulates the server silently dropping the watch when the ship leaves the
+	 * watched POI — the lib mirrors this by clearing `observationSubscribed`.
+	 */
+	dropObservationSubscription(): void {
+		this.observationSubscribed = false;
+		this.observationActiveScan = false;
 	}
 	on(type: string, handler: (payload: Record<string, unknown>) => void): () => void {
 		let handlers = this.notificationHandlers.get(type);

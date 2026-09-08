@@ -2,6 +2,7 @@ import {
 	COMBAT_NOTIFICATION_TYPES,
 	type CombatNotificationType,
 	type CraftingUpdateEvent,
+	type ObservationUpdateEvent,
 	type PirateRadioEvent,
 } from "@setpoint/protocol";
 import {
@@ -78,6 +79,19 @@ export interface LibAccountManagerOptions {
 	 * intercept. Wired once per account in `indexAndWire`.
 	 */
 	onPirateRadio?: (playerId: string, event: PirateRadioEvent, account: LibManagedAccount) => void;
+	/**
+	 * Called on every `observation_update` push for an account — the
+	 * change-feed of players, pirates, creatures, empire NPCs and prizes at
+	 * the watched POI. Unlike every other push wired here, the server only
+	 * sends these while an observation watch is subscribed; wiring the
+	 * listener once per account in `indexAndWire` is still right, but keeping
+	 * a watch alive is `ObservationSubscriptionKeeper`'s job.
+	 */
+	onObservationUpdate?: (
+		playerId: string,
+		event: ObservationUpdateEvent,
+		account: LibManagedAccount,
+	) => void;
 }
 
 /**
@@ -229,6 +243,18 @@ export class LibAccountManager {
 					onPirateRadio(playerId, event, account);
 				} catch (err) {
 					log.error(`[${playerId}] onPirateRadio handler threw: ${errorMessage(err)}`);
+				}
+			});
+		}
+		const onObservationUpdate = this.opts.onObservationUpdate;
+		if (onObservationUpdate) {
+			// Same isolation rationale as the handlers above — a throwing
+			// handler must never escape back into the lib's frame routing.
+			account.on("observation_update", (event) => {
+				try {
+					onObservationUpdate(playerId, event, account);
+				} catch (err) {
+					log.error(`[${playerId}] onObservationUpdate handler threw: ${errorMessage(err)}`);
 				}
 			});
 		}

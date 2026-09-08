@@ -4,6 +4,7 @@ import type {
 	CombatMode,
 	CraftingUpdateEnvelope,
 	CraftingUpdateEvent,
+	ObservationUpdateEnvelope,
 	PirateRadioEnvelope,
 } from "@setpoint/protocol";
 import type { ClerkPlayer, GameState } from "@spacemolt/lib";
@@ -33,6 +34,7 @@ import {
 	handleGetSystem,
 	handleHealth,
 	handleListAccounts,
+	handleObservationEvents,
 	handlePatchLoop,
 	handlePirateRadioEvents,
 	handleRawAction,
@@ -47,6 +49,7 @@ import type { LoopManager, LoopStatus } from "../../src/server/loop-manager.js";
 import { CraftingEventsStore } from "../../src/state/crafting-events-store.js";
 import { createMemoryDatabase } from "../../src/state/database.js";
 import { createEventBuffer } from "../../src/state/event-buffer.js";
+import { ObservationSubscriptionKeeper } from "../../src/state/observation-subscription.js";
 import type { StateStore } from "../../src/state/store.js";
 import type { StoredGameState } from "../../src/state/store.js";
 import {
@@ -55,6 +58,7 @@ import {
 	makeFakeLibManager,
 } from "../dispatcher/lib-fakes.js";
 import type { DeepPartial } from "../helpers/deep-partial.js";
+import { makeObservationUpdateEvent } from "../helpers/observation.js";
 import { makePirateRadioEvent } from "../helpers/pirate-radio.js";
 
 // ── Mock Factories ───────────────────────────────────────────────────
@@ -213,6 +217,8 @@ function makeContext(
 		craftingEventsStore: new CraftingEventsStore(),
 		combatEventsStore: createEventBuffer<CombatEnvelope>(),
 		pirateRadioStore: createEventBuffer<PirateRadioEnvelope>(),
+		observationEventsStore: createEventBuffer<ObservationUpdateEnvelope>(),
+		observationSubscriptions: new ObservationSubscriptionKeeper(),
 		combatModeStore: new FakeCombatModeStore() as unknown as CombatModeStore,
 	};
 }
@@ -2802,6 +2808,10 @@ describe("handleRawAction", () => {
 			tick: 0,
 			nearby: new Map(),
 			system: new Map(),
+			pirates: new Map(),
+			empireNpcs: new Map(),
+			creatures: new Map(),
+			prizes: new Map(),
 			cloaked: new Map(),
 			unknownSignature: false,
 			activeScan: false,
@@ -3055,6 +3065,10 @@ describe("handleGetObservation", () => {
 			tick: 3,
 			nearby: new Map([["p2", { player_id: "p2", username: "Other", in_combat: false }]]),
 			system: new Map(),
+			pirates: new Map(),
+			empireNpcs: new Map(),
+			creatures: new Map(),
+			prizes: new Map(),
 			cloaked: new Map(),
 			unknownSignature: false,
 			activeScan: true,
@@ -3076,6 +3090,56 @@ describe("handleGetObservation", () => {
 		expect(body.poi_id).toBe("sol_station");
 		expect(body.activeScan).toBe(true);
 		expect(body.nearby).toEqual([{ player_id: "p2", username: "Other", in_combat: false }]);
+	});
+
+	test("serializes every presence class the watch tracks, not just players", async () => {
+		// Before @spacemolt/lib 14.2.0 the cache merged only the player arrays, so
+		// a pirate arriving at a watched POI was invisible to this route. These
+		// four assertions are the whole point of the bump.
+		const account = makeAccount("p1");
+		account.setObservation({
+			poi_id: "sol_asteroid_belt",
+			system_id: "sol",
+			tick: 9,
+			nearby: new Map(),
+			system: new Map(),
+			pirates: new Map([
+				[
+					"pirate_1",
+					{
+						pirate_id: "pirate_1",
+						name: "Raider",
+						is_boss: false,
+						status: "hostile",
+						tier: "raider",
+					},
+				],
+			]),
+			empireNpcs: new Map([["npc_1", { npc_id: "npc_1", name: "Customs Patrol" }]]),
+			creatures: new Map([["cr_1", { creature_id: "cr_1", name: "Void Drifter" }]]),
+			prizes: new Map([["pz_1", { prize_id: "pz_1", name: "Derelict Hauler" }]]),
+			cloaked: new Map(),
+			unknownSignature: false,
+			activeScan: false,
+		} as unknown as Parameters<typeof account.setObservation>[0]);
+		const ctx = makeContext({ accounts: [account] });
+
+		const res = handleGetObservation(
+			new Request("http://localhost/accounts/p1/observation"),
+			{ playerId: "p1" },
+			ctx,
+		);
+		const body = (await res.json()) as {
+			pirates: Array<{ pirate_id: string }>;
+			empireNpcs: Array<{ npc_id: string }>;
+			creatures: Array<{ creature_id: string }>;
+			prizes: Array<{ prize_id: string }>;
+		};
+
+		expect(body.pirates.map((p) => p.pirate_id)).toEqual(["pirate_1"]);
+		expect(body.empireNpcs.map((n) => n.npc_id)).toEqual(["npc_1"]);
+		expect(body.creatures.map((c) => c.creature_id)).toEqual(["cr_1"]);
+		expect(body.prizes.map((p) => p.prize_id)).toEqual(["pz_1"]);
 	});
 
 	test("returns 404 when not subscribed", () => {
@@ -3468,6 +3532,190 @@ describe("handlePirateRadioEvents", () => {
 		const events = await readSseEvents(res, 1);
 		expect(events).toHaveLength(1);
 		expect(events[0]?.event.message).toBe("mine");
+	});
+});
+
+describe("handleObservationEvents", () => {
+	function observationEvent(tick: number): ObservationUpdateEnvelope {
+		return {
+			receivedAt: new Date().toISOString(),
+			event: makeObservationUpdateEvent({ tick }),
+		};
+	}
+
+	async function readSseEvents(res: Response, count: number): Promise<ObservationUpdateEnvelope[]> {
+		const reader = res.body?.getReader();
+		if (!reader) throw new Error("Response has no body");
+		const decoder = new TextDecoder();
+		let buffered = "";
+		const events: ObservationUpdateEnvelope[] = [];
+		while (events.length < count) {
+			const { value, done } = await reader.read();
+			if (done) break;
+			buffered += decoder.decode(value, { stream: true });
+			let boundary = buffered.indexOf("\n\n");
+			while (boundary !== -1) {
+				const frame = buffered.slice(0, boundary);
+				buffered = buffered.slice(boundary + 2);
+				if (frame.startsWith("data: ")) {
+					events.push(JSON.parse(frame.slice("data: ".length)));
+				}
+				boundary = buffered.indexOf("\n\n");
+			}
+		}
+		await reader.cancel();
+		return events;
+	}
+
+	test("returns 404 for an unknown account", async () => {
+		const ctx = makeContext({ accounts: [] });
+		const res = await handleObservationEvents(
+			new Request("http://localhost/accounts/nope/observation/events"),
+			{ playerId: "nope" },
+			ctx,
+		);
+		expect(res.status).toBe(404);
+	});
+
+	test("subscribes the observation watch when opening the stream", async () => {
+		const account = makeAccount("p1");
+		const ctx = makeContext({ accounts: [account] });
+
+		const res = await handleObservationEvents(
+			new Request("http://localhost/accounts/p1/observation/events"),
+			{ playerId: "p1" },
+			ctx,
+		);
+
+		expect(res.status).toBe(200);
+		expect(account.observationSubscribed).toBe(true);
+		await res.body?.cancel();
+	});
+
+	test("passes activeScan=true through to the subscribe call", async () => {
+		const account = makeAccount("p1");
+		const ctx = makeContext({ accounts: [account] });
+
+		const res = await handleObservationEvents(
+			new Request("http://localhost/accounts/p1/observation/events?activeScan=true"),
+			{ playerId: "p1" },
+			ctx,
+		);
+
+		expect(res.status).toBe(200);
+		expect(account.observationActiveScan).toBe(true);
+		await res.body?.cancel();
+	});
+
+	test("returns 409 rather than a stream that can never emit when the subscribe fails", async () => {
+		const account = makeAccount("p1", "TestPlayer", {} as GameState);
+		account.subscribeObservation = (): Promise<never> => Promise.reject(new Error("not at a POI"));
+		const ctx = makeContext({ accounts: [account] });
+
+		const res = await handleObservationEvents(
+			new Request("http://localhost/accounts/p1/observation/events"),
+			{ playerId: "p1" },
+			ctx,
+		);
+
+		expect(res.status).toBe(409);
+		const body = (await res.json()) as { error: string };
+		expect(body.error).toContain("not at a POI");
+		expect(ctx.observationSubscriptions.hasSubscribers("p1")).toBe(false);
+	});
+
+	test("sets SSE headers", async () => {
+		const account = makeAccount("p1");
+		const ctx = makeContext({ accounts: [account] });
+		const res = await handleObservationEvents(
+			new Request("http://localhost/accounts/p1/observation/events"),
+			{ playerId: "p1" },
+			ctx,
+		);
+		expect(res.headers.get("Content-Type")).toBe("text/event-stream");
+		expect(res.headers.get("Cache-Control")).toBe("no-cache");
+		expect(res.headers.get("Connection")).toBe("keep-alive");
+		await res.body?.cancel();
+	});
+
+	test("streams the buffered backlog immediately on connect", async () => {
+		const account = makeAccount("p1");
+		const ctx = makeContext({ accounts: [account] });
+		ctx.observationEventsStore.record("p1", observationEvent(1));
+		ctx.observationEventsStore.record("p1", observationEvent(2));
+
+		const res = await handleObservationEvents(
+			new Request("http://localhost/accounts/p1/observation/events"),
+			{ playerId: "p1" },
+			ctx,
+		);
+
+		const events = await readSseEvents(res, 2);
+		expect(events.map((e) => e.event.tick)).toEqual([1, 2]);
+	});
+
+	test("relays the pirate arrays the merged snapshot drops", async () => {
+		const account = makeAccount("p1");
+		const ctx = makeContext({ accounts: [account] });
+		ctx.observationEventsStore.record("p1", observationEvent(7));
+
+		const res = await handleObservationEvents(
+			new Request("http://localhost/accounts/p1/observation/events"),
+			{ playerId: "p1" },
+			ctx,
+		);
+
+		const events = await readSseEvents(res, 1);
+		expect(events[0]?.event.pirates_changed).toEqual([
+			{ pirate_id: "pirate_1", name: "Raider", is_boss: false, status: "hostile", tier: "raider" },
+		]);
+	});
+
+	test("streams live events recorded after connecting", async () => {
+		const account = makeAccount("p1");
+		const ctx = makeContext({ accounts: [account] });
+
+		const res = await handleObservationEvents(
+			new Request("http://localhost/accounts/p1/observation/events"),
+			{ playerId: "p1" },
+			ctx,
+		);
+
+		ctx.observationEventsStore.record("p1", observationEvent(42));
+		const events = await readSseEvents(res, 1);
+		expect(events[0]?.event.tick).toBe(42);
+	});
+
+	test("does not deliver another account's observations", async () => {
+		const account = makeAccount("p1");
+		const ctx = makeContext({ accounts: [account] });
+
+		const res = await handleObservationEvents(
+			new Request("http://localhost/accounts/p1/observation/events"),
+			{ playerId: "p1" },
+			ctx,
+		);
+		ctx.observationEventsStore.record("p2", observationEvent(1));
+		ctx.observationEventsStore.record("p1", observationEvent(2));
+
+		const events = await readSseEvents(res, 1);
+		expect(events).toHaveLength(1);
+		expect(events[0]?.event.tick).toBe(2);
+	});
+
+	test("releases the subscriber reference when the stream closes", async () => {
+		const account = makeAccount("p1");
+		const ctx = makeContext({ accounts: [account] });
+
+		const res = await handleObservationEvents(
+			new Request("http://localhost/accounts/p1/observation/events"),
+			{ playerId: "p1" },
+			ctx,
+		);
+		expect(ctx.observationSubscriptions.hasSubscribers("p1")).toBe(true);
+
+		await res.body?.cancel();
+		expect(ctx.observationSubscriptions.hasSubscribers("p1")).toBe(false);
 	});
 });
 
