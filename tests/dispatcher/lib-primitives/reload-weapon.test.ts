@@ -2,7 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { makeLibGoalContext } from "../../../src/dispatcher/lib-goal-context.js";
 import {
 	LibReloadWeapon,
+	MAX_BATCH_RELOAD,
 	reloadWeapon,
+	reloadWeapons,
 } from "../../../src/dispatcher/lib-primitives/reload-weapon.js";
 import { FakeLibGoalAccount } from "../lib-fakes.js";
 
@@ -113,5 +115,130 @@ describe("LibReloadWeapon", () => {
 		);
 		expect(result.success).toBe(false);
 		expect(result.message).toContain("does not take ammo");
+	});
+});
+
+describe("reloadWeapons", () => {
+	interface Entry {
+		weapon_instance_id: string;
+		ammo_item_id: string;
+	}
+
+	/** A game that loads every entry and reports each by its request index. */
+	const loadEverything = (params?: unknown) => {
+		const { weapons } = params as { weapons: Entry[] };
+		return {
+			command: "reload",
+			tick: 0,
+			delta: {
+				details: {
+					action: "reload",
+					mode: "bulk",
+					summary: {},
+					results: weapons.map((w, index) => ({
+						index,
+						weapon_id: w.weapon_instance_id,
+						success: true,
+						result: {
+							action: "reload",
+							weapon_id: w.weapon_instance_id,
+							weapon_name: "Railgun II",
+							ammo_id: w.ammo_item_id,
+							ammo_name: "Slug",
+							current_ammo: 7,
+							magazine_size: 7,
+						},
+					})),
+				},
+			},
+		};
+	};
+
+	test("sends every gun in one call with the game's entry shape", async () => {
+		const account = new FakeLibGoalAccount({}, { reload: loadEverything });
+
+		const { outcomes, ticksUsed } = await reloadWeapons(makeLibGoalContext(account), [
+			{ moduleId: "mod-1", ammoItemId: "slug" },
+			{ moduleId: "mod-2", ammoItemId: "slug" },
+		]);
+
+		expect(ticksUsed).toBe(1);
+		expect(account.calls).toEqual([
+			{
+				action: "reload",
+				params: {
+					weapons: [
+						{ weapon_instance_id: "mod-1", ammo_item_id: "slug" },
+						{ weapon_instance_id: "mod-2", ammo_item_id: "slug" },
+					],
+				},
+			},
+		]);
+		expect(outcomes.map((o) => o.success)).toEqual([true, true]);
+	});
+
+	test("splits more than the game's maximum into consecutive batches", async () => {
+		const account = new FakeLibGoalAccount({}, { reload: loadEverything });
+		const entries = Array.from({ length: MAX_BATCH_RELOAD + 3 }, (_, i) => ({
+			moduleId: `mod-${i}`,
+			ammoItemId: "slug",
+		}));
+
+		const { outcomes, ticksUsed } = await reloadWeapons(makeLibGoalContext(account), entries);
+
+		expect(ticksUsed).toBe(2);
+		expect(account.calls.map((c) => (c.params as { weapons: Entry[] }).weapons.length)).toEqual([
+			MAX_BATCH_RELOAD,
+			3,
+		]);
+		expect(outcomes.map((o) => o.moduleId)).toEqual(entries.map((e) => e.moduleId));
+	});
+
+	test("matches results by index, not by position in the response", async () => {
+		// A response listing results out of order must not swap two guns' verdicts.
+		const account = new FakeLibGoalAccount(
+			{},
+			{
+				reload: () => ({
+					command: "reload",
+					tick: 0,
+					delta: {
+						details: {
+							action: "reload",
+							mode: "bulk",
+							summary: {},
+							results: [
+								{
+									index: 1,
+									weapon_id: "mod-2",
+									success: false,
+									error_code: "no_ammo",
+									error: "none",
+								},
+								{ index: 0, weapon_id: "mod-1", success: true },
+							],
+						},
+					},
+				}),
+			},
+		);
+
+		const { outcomes } = await reloadWeapons(makeLibGoalContext(account), [
+			{ moduleId: "mod-1", ammoItemId: "slug" },
+			{ moduleId: "mod-2", ammoItemId: "slug" },
+		]);
+
+		expect(outcomes[0]).toMatchObject({ moduleId: "mod-1", success: true });
+		expect(outcomes[1]).toMatchObject({ moduleId: "mod-2", success: false, errorCode: "no_ammo" });
+	});
+
+	test("reports roundsDiscarded as undefined when the game omits it", async () => {
+		const account = new FakeLibGoalAccount({}, { reload: loadEverything });
+
+		const { outcomes } = await reloadWeapons(makeLibGoalContext(account), [
+			{ moduleId: "mod-1", ammoItemId: "slug" },
+		]);
+
+		expect(outcomes[0]).toMatchObject({ success: true, roundsDiscarded: undefined });
 	});
 });

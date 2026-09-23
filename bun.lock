@@ -6,7 +6,7 @@
       "name": "sm-dispatcher",
       "dependencies": {
         "@setpoint/protocol": "workspace:*",
-        "@spacemolt/lib": "14.2.0",
+        "@spacemolt/lib": "15.0.0",
       },
       "devDependencies": {
         "@biomejs/biome": "^1.9.0",
@@ -61,7 +61,7 @@
 
     "@setpoint/protocol": ["@setpoint/protocol@workspace:packages/protocol"],
 
-    "@spacemolt/lib": ["@spacemolt/lib@14.2.0", "", { "peerDependencies": { "typescript": "^5.5" } }, "sha512-wVrlZ/YU8EaAW2ERc65t9MdOg3dzxeD+GzqcDvkgumy3dDr+T19xdufDmqF26NzTGV1ayEzAtqRu9UUbSxHkRQ=="],
+    "@spacemolt/lib": ["@spacemolt/lib@15.0.0", "", { "peerDependencies": { "typescript": "^5.5" } }, "sha512-9iRGZekG9nibJHdJqh8X+BtNCk2/NbqBuSDi+8856kfgBMjARUJYFfA7efw/HHDn19I7jP3CFPTix0MM30vt+A=="],
 
     "@types/bun": ["@types/bun@1.3.9", "", { "dependencies": { "bun-types": "1.3.9" } }, "sha512-KQ571yULOdWJiMH+RIWIOZ7B2RXQGpL1YQrBtLIV3FqDcCu6FsbFUBwhdKUlCKUpS3PJDsHlJ1QKlpxoVR+xtw=="],
 
