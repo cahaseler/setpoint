@@ -56,6 +56,13 @@ export interface LibManagedAccount {
 	/** Run a mutation; resolves when the action executes on a later tick. */
 	mutate(tool: string, action: string, payload?: Record<string, unknown>): Promise<MutationResult>;
 	onStateChange(listener: (changed: StateSection[]) => void): void;
+	/**
+	 * Fires when this account's socket closes other than by our own `close()`,
+	 * carrying the close code and reason. For a client-managed account this is
+	 * the moment the connection is lost — the client then decides whether to
+	 * reconnect — and it fires again for each reconnect attempt that fails.
+	 */
+	onDisconnected(listener: (err: ConnectionClosedError) => void): () => void;
 	close(): void;
 	/**
 	 * The cached order book for a base, if subscribed. The initial baseline is

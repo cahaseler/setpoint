@@ -1,4 +1,4 @@
-import { describe, expect, mock, test } from "bun:test";
+import { describe, expect, mock, spyOn, test } from "bun:test";
 import type {
 	CombatEnvelope,
 	CombatMode,
@@ -2538,6 +2538,34 @@ describe("handleGetJob", () => {
 // ── Raw Action ──────────────────────────────────────────────────────
 
 describe("handleRawAction", () => {
+	test("logs a failed call as well as returning it, so the daemon keeps a record", async () => {
+		const account = new FakeLibManagedAccount({
+			playerId: "p1",
+			username: "TestPlayer",
+			handlers: {
+				view: () => {
+					throw new Error("No response to spacemolt_storage/view within 15000ms");
+				},
+			},
+		});
+		const ctx = makeContext({ accounts: [account] });
+		const req = new Request("http://localhost/accounts/p1/raw", {
+			method: "POST",
+			body: JSON.stringify({ toolGroup: "storage", action: "view" }),
+			headers: { "Content-Type": "application/json" },
+		});
+
+		const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+		const res = await handleRawAction(req, { playerId: "p1" }, ctx);
+		const warnLines = warnSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		warnSpy.mockRestore();
+
+		expect(res.status).toBe(500);
+		expect(warnLines).toContain(
+			"[p1] Raw spacemolt_storage/view failed: No response to spacemolt_storage/view within 15000ms",
+		);
+	});
+
 	test("returns 404 for unknown account", async () => {
 		const ctx = makeContext();
 		const req = new Request("http://localhost/accounts/unknown/raw", {

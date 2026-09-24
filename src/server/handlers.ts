@@ -876,6 +876,14 @@ export async function handleRawAction(
 		);
 	} catch (err) {
 		const apiErr = err instanceof ApiError ? ` [code: ${err.code}]` : "";
+		// Logged as well as returned: the caller sees the error, but without a
+		// daemon-side record a failure can only be investigated from the
+		// caller's own logs. A "No response to …" timeout is ambiguous — the
+		// request may have run — while a closed-socket error means it was never
+		// sent, so the message is kept verbatim.
+		log.warn(
+			`[${playerIdOf(account)}] Raw ${resolvedToolGroup}/${action} failed: ${errorMessage(err)}${apiErr}`,
+		);
 		return errorResponse(`API call failed: ${errorMessage(err)}${apiErr}`, 500);
 	}
 }
