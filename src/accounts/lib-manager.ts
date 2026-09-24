@@ -167,6 +167,16 @@ export class LibAccountManager {
 		if (typeof account.id === "string") {
 			this.usernameToPlayerId.set(account.id.toLowerCase(), playerId);
 		}
+		// The start of an outage, with the server's close code and reason. The
+		// client logs only the reconnect, so without this a stall shows up as a
+		// bare "Account reconnected" with no record of when the connection died
+		// or why — which hid a days-long single-account drop cycle.
+		const label = account.id ?? playerId;
+		account.onDisconnected((err) => {
+			log.warn(
+				`[${label}] Connection lost (code=${err.code ?? "?"}${err.reason ? `, reason=${err.reason}` : ""}): ${err.message}`,
+			);
+		});
 		const onChange = this.opts.onStateChange;
 		if (onChange) {
 			// A throwing onChange (e.g. the SQLite projector) must never escape into the

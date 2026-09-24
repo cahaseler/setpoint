@@ -1,6 +1,7 @@
 import type {
 	ClerkPlayer,
 	Commands,
+	ConnectionClosedError,
 	GameState,
 	MarketBook,
 	MarketItem,
@@ -281,6 +282,16 @@ export class FakeLibManagedAccount extends FakeLibGoalAccount implements LibMana
 		this.observationSubscribed = true;
 		this.observationActiveScan = activeScan;
 		return snapshot ?? ({} as SubscribeObservationResponse);
+	}
+
+	private readonly disconnectedListeners = new Set<(err: ConnectionClosedError) => void>();
+	onDisconnected(listener: (err: ConnectionClosedError) => void): () => void {
+		this.disconnectedListeners.add(listener);
+		return () => this.disconnectedListeners.delete(listener);
+	}
+	/** Simulates the socket closing unexpectedly, as the lib reports it. */
+	emitDisconnected(err: ConnectionClosedError): void {
+		for (const listener of this.disconnectedListeners) listener(err);
 	}
 
 	/** Mirrors the real lib's `unsubscribeObservation()` — clears the observation cache. */

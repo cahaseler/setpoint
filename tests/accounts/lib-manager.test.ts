@@ -721,6 +721,38 @@ describe("LibAccountManager", () => {
 		});
 	});
 
+	describe("connection loss", () => {
+		test("logs the moment a socket closes, with the server's close code and reason", async () => {
+			const { client, accounts } = setup([player("Alpha", "pid-a")]);
+			const mgr = new LibAccountManager(client, { clerkApiKey: "k" });
+			await mgr.connect();
+
+			const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+			accounts
+				.get("Alpha")
+				?.emitDisconnected(new ConnectionClosedError("WebSocket closed", 1011, "internal error"));
+			const warnLines = warnSpy.mock.calls.map((c) => String(c[0])).join("\n");
+			warnSpy.mockRestore();
+
+			expect(warnLines).toContain(
+				"[Alpha] Connection lost (code=1011, reason=internal error): WebSocket closed",
+			);
+		});
+
+		test("still logs a close that carries no code", async () => {
+			const { client, accounts } = setup([player("Alpha", "pid-a")]);
+			const mgr = new LibAccountManager(client, { clerkApiKey: "k" });
+			await mgr.connect();
+
+			const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+			accounts.get("Alpha")?.emitDisconnected(new ConnectionClosedError("socket error"));
+			const warnLines = warnSpy.mock.calls.map((c) => String(c[0])).join("\n");
+			warnSpy.mockRestore();
+
+			expect(warnLines).toContain("[Alpha] Connection lost (code=?): socket error");
+		});
+	});
+
 	describe("observation updates", () => {
 		test("forwards observation_update pushes to onObservationUpdate", async () => {
 			const events: Array<{ playerId: string; tick: number; accountId: string | undefined }> = [];

@@ -140,6 +140,16 @@ export class FakeAccount implements LibManagedAccount {
 		this.observationActiveScan = activeScan;
 		return Promise.resolve({} as SubscribeObservationResponse);
 	}
+	private readonly disconnectedListeners = new Set<(err: ConnectionClosedError) => void>();
+	onDisconnected(listener: (err: ConnectionClosedError) => void): () => void {
+		this.disconnectedListeners.add(listener);
+		return () => this.disconnectedListeners.delete(listener);
+	}
+	/** Simulates the socket closing unexpectedly, as the lib reports it. */
+	emitDisconnected(err: ConnectionClosedError): void {
+		for (const listener of this.disconnectedListeners) listener(err);
+	}
+
 	unsubscribeObservation(): Promise<void> {
 		this.observationSubscribed = false;
 		this.observationActiveScan = false;
