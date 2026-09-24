@@ -1,8 +1,13 @@
+import { errorMessage } from "../../util/errors.js";
 import { createLogger } from "../../util/logger.js";
 import type { ReconcileResult, ReconcileSubject } from "../goals.js";
 import { reconciled } from "../goals.js";
 import type { LibGoal, LibGoalContext } from "../lib-goal-context.js";
-import { reloadWeapon } from "../lib-primitives/reload-weapon.js";
+import {
+	type BatchReloadEntry,
+	type BatchReloadOutcome,
+	reloadWeapons,
+} from "../lib-primitives/reload-weapon.js";
 
 const log = createLogger("goal:ensure-magazines");
 
@@ -31,16 +36,28 @@ interface WeaponModule {
 	loaded_ammo_id: string | undefined;
 }
 
+/** A gun that needs loading, waiting on the batch reload. */
+interface PendingReload {
+	weapon: WeaponModule;
+	base: { id: string; kind: "weapon"; desired?: { ammo: number; ammoType: string } };
+	entry: BatchReloadEntry;
+}
+
+/** A gun either already settled without a reload, or queued for one. */
+type Plan = ReconcileSubject | PendingReload;
+
 /**
  * Bring every ammo-fed gun on the ship to a full magazine.
  *
  * Works per module instance, not per weapon type: a hull carrying five of the
- * same railgun gets five subjects and five reloads. Energy weapons are omitted
- * from the result entirely rather than padded in as trivially-satisfied rows,
- * so `summary.total` is the number of guns that can actually be loaded.
+ * same railgun gets five subjects. Energy weapons are omitted from the result
+ * entirely rather than padded in as trivially-satisfied rows, so
+ * `summary.total` is the number of guns that can actually be loaded.
  *
- * Guns are filled emptiest-first, so a run that runs out of cases leaves the
- * ship in the best state the available ammo allowed rather than starving
+ * Every gun that needs loading goes into one batch reload, so the whole ship
+ * costs one tick rather than one per gun. Entries are ordered emptiest-first
+ * and the game processes them in order, so a run that runs out of cases leaves
+ * the ship in the best state the available ammo allowed rather than starving
  * whichever gun happened to sort last.
  */
 export class LibEnsureMagazines implements LibGoal {
@@ -59,21 +76,59 @@ export class LibEnsureMagazines implements LibGoal {
 		// Emptiest first: if cargo runs short, the guns that benefit most are the
 		// ones that get fed.
 		const ordered = [...weapons].sort((a, b) => a.current_ammo - b.current_ammo);
+		// Every gun is planned before anything is sent, so cases are handed out
+		// here as they are assigned — one per reload — rather than each gun seeing
+		// the whole hold and the batch promising more cases than exist.
+		const casesLeft = new Map(
+			(ctx.state.cargo ?? []).map((item) => [item.item_id, item.quantity] as const),
+		);
+		const plans = ordered.map((weapon) => this.plan(weapon, weapons, policy, casesLeft));
 
-		const subjects: ReconcileSubject[] = [];
-		let ticksUsed = 0;
+		const pending = plans.filter((p): p is PendingReload => "entry" in p);
+		const settled = new Map<string, ReconcileSubject>();
 
-		for (const weapon of ordered) {
-			if (ctx.signal?.aborted) {
-				subjects.push(this.abortedSubject(weapon));
-				continue;
-			}
-			const subject = await this.reconcileWeapon(ctx, weapon, policy);
-			if (subject.action === "updated") ticksUsed++;
-			subjects.push(subject);
+		if (pending.length > 0 && ctx.signal?.aborted) {
+			for (const p of pending) settled.set(p.weapon.module_id, this.abortedSubject(p.weapon));
+			return reconciled(this.inOrder(plans, settled), 0);
 		}
 
-		return reconciled(subjects, ticksUsed);
+		let ticksUsed = 0;
+		if (pending.length > 0) {
+			try {
+				const batch = await reloadWeapons(
+					ctx,
+					pending.map((p) => p.entry),
+				);
+				ticksUsed = batch.ticksUsed;
+				await ctx.refreshState();
+				for (const [i, p] of pending.entries()) {
+					const outcome = batch.outcomes[i];
+					settled.set(p.weapon.module_id, this.settle(ctx, p, outcome));
+				}
+			} catch (err) {
+				// The whole call failed, so no gun can be assumed loaded. Every
+				// pending gun reports the failure against the state it was seen in.
+				log.warn(`Batch reload failed: ${errorMessage(err)}`);
+				for (const p of pending) {
+					settled.set(p.weapon.module_id, {
+						...p.base,
+						ok: false,
+						action: "none",
+						message: `reload_failed: ${errorMessage(err)}`,
+						before: this.before(p.weapon),
+					});
+				}
+			}
+		}
+
+		return reconciled(this.inOrder(plans, settled), ticksUsed);
+	}
+
+	/** Subjects in the emptiest-first order the guns were planned in. */
+	private inOrder(plans: Plan[], settled: Map<string, ReconcileSubject>): ReconcileSubject[] {
+		return plans.map((p) =>
+			"entry" in p ? (settled.get(p.weapon.module_id) as ReconcileSubject) : p,
+		);
 	}
 
 	private ammoFedWeapons(ctx: LibGoalContext): WeaponModule[] {
@@ -141,13 +196,18 @@ export class LibEnsureMagazines implements LibGoal {
 		};
 	}
 
-	private async reconcileWeapon(
-		ctx: LibGoalContext,
+	/**
+	 * Decide what one gun needs, without touching the game: a finished subject
+	 * when nothing should be sent, or the batch entry to send when it should.
+	 */
+	private plan(
 		weapon: WeaponModule,
+		weapons: WeaponModule[],
 		policy: "always" | "half",
-	): Promise<ReconcileSubject> {
+		casesLeft: Map<string, number>,
+	): Plan {
 		const shortfall = weapon.magazine_size - weapon.current_ammo;
-		const desired = this.desiredAmmo(weapon, this.ammoFedWeapons(ctx));
+		const desired = this.desiredAmmo(weapon, weapons);
 
 		const base = {
 			id: weapon.module_id,
@@ -181,8 +241,8 @@ export class LibEnsureMagazines implements LibGoal {
 			};
 		}
 
-		const inCargo = (ctx.state.cargo ?? []).find((item) => item.item_id === desired);
-		if (inCargo === undefined || inCargo.quantity <= 0) {
+		const cases = casesLeft.get(desired) ?? 0;
+		if (cases <= 0) {
 			return {
 				...base,
 				ok: false,
@@ -192,27 +252,65 @@ export class LibEnsureMagazines implements LibGoal {
 			};
 		}
 
-		const outcome = await reloadWeapon(ctx, { moduleId: weapon.module_id, ammoItemId: desired });
-		await ctx.refreshState();
+		casesLeft.set(desired, cases - 1);
+		return { weapon, base, entry: { moduleId: weapon.module_id, ammoItemId: desired } };
+	}
+
+	/** Turn the game's verdict on one batch entry into that gun's subject. */
+	private settle(
+		ctx: LibGoalContext,
+		pending: PendingReload,
+		outcome: BatchReloadOutcome | undefined,
+	): ReconcileSubject {
+		const { weapon, base } = pending;
+
+		if (outcome === undefined || !outcome.success) {
+			const code = outcome === undefined ? "missing_result" : outcome.errorCode;
+			// The game refuses a full magazine and spends nothing, so a gun that
+			// filled between our read and the reload is already where we wanted it.
+			if (code === "magazine_full") {
+				return {
+					...base,
+					ok: true,
+					action: "none",
+					before: this.before(weapon),
+					message: "already full",
+				};
+			}
+			const detail = outcome === undefined || outcome.success ? "" : `: ${outcome.error}`;
+			return {
+				...base,
+				ok: false,
+				action: "none",
+				message: `${code}${detail}`,
+				before: this.before(weapon),
+			};
+		}
+
+		// The batch result usually carries the new magazine, but fall back to the
+		// refreshed cache rather than guess when it does not.
+		const refreshed = this.ammoFedWeapons(ctx).find((w) => w.module_id === weapon.module_id);
+		const ammo = outcome.currentAmmo ?? refreshed?.current_ammo ?? 0;
+		const capacity = outcome.magazineSize ?? refreshed?.magazine_size ?? weapon.magazine_size;
 
 		const after = {
-			ammo: outcome.currentAmmo,
-			capacity: outcome.magazineSize,
+			ammo,
+			capacity,
 			ammoType: outcome.ammoId,
 			casesConsumed: 1,
-			roundsDiscarded: outcome.roundsDiscarded,
+			...(outcome.roundsDiscarded !== undefined
+				? { roundsDiscarded: outcome.roundsDiscarded }
+				: {}),
 			name: outcome.weaponName,
 		};
 
-		if (outcome.currentAmmo < outcome.magazineSize) {
-			log.warn(
-				`[${weapon.module_id}] Reload left magazine short: ${outcome.currentAmmo}/${outcome.magazineSize}`,
-			);
+		if (ammo < capacity) {
+			log.warn(`[${weapon.module_id}] Reload left magazine short: ${ammo}/${capacity}`);
 			return {
 				...base,
 				ok: false,
 				action: "updated",
-				message: `magazine_short: ${outcome.currentAmmo}/${outcome.magazineSize}`,
+				message: `magazine_short: ${ammo}/${capacity}`,
 				before: this.before(weapon),
 				after,
 			};

@@ -22,12 +22,26 @@ const cargo = (quantity: number) => [
 	{ item_id: "tungsten_slug_case", item_name: "Tungsten Slug Case", quantity, size: 1 },
 ];
 
+interface BatchEntry {
+	weapon_instance_id: string;
+	ammo_item_id: string;
+}
+
 /**
- * An account whose `reload` handler simulates the game: the magazine fills and
- * one case leaves cargo, so a run that outlasts the ammo supply behaves the way
- * it would in flight.
+ * How the fake game answers one batch entry. Defaults to loading the gun;
+ * a test can instead make the game refuse it with a given error code.
  */
-const makeAccount = (state: Record<string, unknown>): FakeLibGoalAccount => {
+type EntryVerdict = { refuse: string } | undefined;
+
+/**
+ * An account whose `reload` handler simulates the game's batch reload: each
+ * entry fills its magazine and takes one case from cargo, and the per-gun
+ * results come back under `details`, indexed by position in the request.
+ */
+const makeAccount = (
+	state: Record<string, unknown>,
+	verdict: (entry: BatchEntry) => EntryVerdict = () => undefined,
+): FakeLibGoalAccount => {
 	// The reload handler has to read and mutate the account it belongs to, so it
 	// resolves it through a ref filled in immediately after construction.
 	const ref: { current?: FakeLibGoalAccount } = {};
@@ -35,42 +49,74 @@ const makeAccount = (state: Record<string, unknown>): FakeLibGoalAccount => {
 		reload: (params?: unknown) => {
 			const target = ref.current;
 			if (target === undefined) throw new Error("account not constructed yet");
-			return reloadHandler(target)(params);
+			return batchReloadHandler(target, verdict)(params);
 		},
 	});
 	ref.current = account;
 	return account;
 };
 
-const reloadHandler = (account: FakeLibGoalAccount) => (params?: unknown) => {
-	const { id } = params as { id: string };
-	const state = account.state as {
-		modules?: Array<Record<string, unknown>>;
-		cargo?: Array<Record<string, unknown>>;
+const batchReloadHandler =
+	(account: FakeLibGoalAccount, verdict: (entry: BatchEntry) => EntryVerdict) =>
+	(params?: unknown) => {
+		const { weapons } = params as { weapons: BatchEntry[] };
+		const results = weapons.map((entry, index) => {
+			const refusal = verdict(entry);
+			if (refusal !== undefined) {
+				return {
+					index,
+					weapon_id: entry.weapon_instance_id,
+					success: false,
+					error_code: refusal.refuse,
+					error: `refused: ${refusal.refuse}`,
+				};
+			}
+			const state = account.state as {
+				modules?: Array<Record<string, unknown>>;
+				cargo?: Array<Record<string, unknown>>;
+			};
+			// Simulate the game: the magazine fills, one case leaves cargo.
+			account.setState({
+				modules: (state.modules ?? []).map((m) =>
+					m["module_id"] === entry.weapon_instance_id ? { ...m, current_ammo: 7 } : m,
+				),
+				cargo: (state.cargo ?? []).map((c) =>
+					c["item_id"] === entry.ammo_item_id
+						? { ...c, quantity: (c["quantity"] as number) - 1 }
+						: c,
+				),
+			} as never);
+			return {
+				index,
+				weapon_id: entry.weapon_instance_id,
+				success: true,
+				// Batch results omit rounds_discarded, as the live game does.
+				result: {
+					action: "reload",
+					weapon_id: entry.weapon_instance_id,
+					weapon_name: "Railgun II",
+					ammo_id: entry.ammo_item_id,
+					ammo_name: "Tungsten Slug Case",
+					current_ammo: 7,
+					magazine_size: 7,
+				},
+			};
+		});
+		return {
+			command: "reload",
+			tick: 0,
+			delta: { details: { action: "reload", mode: "bulk", results, summary: {} } },
+		};
 	};
-	// Simulate the game: the magazine fills, one case leaves cargo.
-	account.setState({
-		modules: (state.modules ?? []).map((m) =>
-			m["module_id"] === id ? { ...m, current_ammo: 7 } : m,
-		),
-		cargo: (state.cargo ?? []).map((c) => ({ ...c, quantity: (c["quantity"] as number) - 1 })),
-	} as never);
-	return {
-		command: "reload",
-		tick: 0,
-		delta: {
-			details: {
-				action: "reload",
-				weapon_id: id,
-				weapon_name: "Railgun II",
-				ammo_id: "tungsten_slug_case",
-				ammo_name: "Tungsten Slug Case",
-				current_ammo: 7,
-				magazine_size: 7,
-			},
-		},
-	};
-};
+
+/** Every batch entry sent across all reload calls, in order. */
+const sentEntries = (account: FakeLibGoalAccount): BatchEntry[] =>
+	account.calls
+		.filter((c) => c.action === "reload")
+		.flatMap((c) => (c.params as { weapons: BatchEntry[] }).weapons);
+
+const reloadCalls = (account: FakeLibGoalAccount) =>
+	account.calls.filter((c) => c.action === "reload");
 
 describe("LibEnsureMagazines", () => {
 	test("reloads EVERY instance of a repeated weapon type, not just the first", async () => {
@@ -85,8 +131,10 @@ describe("LibEnsureMagazines", () => {
 
 		expect(result.success).toBe(true);
 		expect(result.summary).toEqual({ total: 5, changed: 5, unchanged: 0, failed: 0 });
-		expect(result.ticksUsed).toBe(5);
-		expect(account.calls.filter((c) => c.action === "reload")).toHaveLength(5);
+		// One batch, one tick — not one per gun.
+		expect(result.ticksUsed).toBe(1);
+		expect(reloadCalls(account)).toHaveLength(1);
+		expect(sentEntries(account)).toHaveLength(5);
 		expect(new Set(result.subjects.map((s) => s.id))).toEqual(
 			new Set(["mod-1", "mod-2", "mod-3", "mod-4", "mod-5"]),
 		);
@@ -120,9 +168,7 @@ describe("LibEnsureMagazines", () => {
 
 		await new LibEnsureMagazines().execute(makeLibGoalContext(account));
 
-		const reloads = account.calls.filter((c) => c.action === "reload");
-		expect(reloads).toHaveLength(1);
-		expect((reloads[0]?.params as { id: string }).id).toBe("empty");
+		expect(sentEntries(account).map((e) => e.weapon_instance_id)).toEqual(["empty"]);
 	});
 
 	test("omits energy weapons entirely rather than padding the result", async () => {
@@ -151,7 +197,7 @@ describe("LibEnsureMagazines", () => {
 		);
 
 		expect(result.alreadySatisfied).toBe(true);
-		expect(account.calls.filter((c) => c.action === "reload")).toHaveLength(0);
+		expect(reloadCalls(account)).toHaveLength(0);
 		expect(result.subjects[0]?.message).toContain("would discard 2");
 	});
 
@@ -178,7 +224,7 @@ describe("LibEnsureMagazines", () => {
 
 		expect(result.success).toBe(false);
 		expect(result.subjects[0]?.message).toBe("ambiguous_ammo");
-		expect(account.calls.filter((c) => c.action === "reload")).toHaveLength(0);
+		expect(reloadCalls(account)).toHaveLength(0);
 	});
 
 	test("an empty gun takes its cue from a loaded sibling of the same type", async () => {
@@ -193,9 +239,9 @@ describe("LibEnsureMagazines", () => {
 		const result = await new LibEnsureMagazines().execute(makeLibGoalContext(account));
 
 		expect(result.success).toBe(true);
-		const reloads = account.calls.filter((c) => c.action === "reload");
-		expect(reloads).toHaveLength(1);
-		expect((reloads[0]?.params as { target: string }).target).toBe("tungsten_slug_case");
+		expect(sentEntries(account)).toEqual([
+			{ weapon_instance_id: "mod-1", ammo_item_id: "tungsten_slug_case" },
+		]);
 	});
 
 	test("explicit ammo can address one specific gun by module_id", async () => {
@@ -211,11 +257,13 @@ describe("LibEnsureMagazines", () => {
 			makeLibGoalContext(account),
 		);
 
-		const targets = account.calls
-			.filter((c) => c.action === "reload")
-			.map((c) => c.params as { id: string; target: string });
-		expect(targets.find((t) => t.id === "mod-2")?.target).toBe("depleted_slug_case");
-		expect(targets.find((t) => t.id === "mod-1")?.target).toBe("tungsten_slug_case");
+		const targets = sentEntries(account);
+		expect(targets.find((t) => t.weapon_instance_id === "mod-2")?.ammo_item_id).toBe(
+			"depleted_slug_case",
+		);
+		expect(targets.find((t) => t.weapon_instance_id === "mod-1")?.ammo_item_id).toBe(
+			"tungsten_slug_case",
+		);
 	});
 
 	test("full magazines are a satisfied no-op", async () => {
@@ -228,6 +276,104 @@ describe("LibEnsureMagazines", () => {
 		expect(result.alreadySatisfied).toBe(true);
 		expect(result.success).toBe(true);
 		expect(account.calls).toHaveLength(0);
+	});
+
+	test("never promises more cases than the hold carries", async () => {
+		// Every gun is planned before the batch is sent, so the planner has to
+		// spend cases as it assigns them. Three guns, two cases: two entries.
+		const account = makeAccount({
+			modules: [gun("mod-1"), gun("mod-2"), gun("mod-3")],
+			cargo: cargo(2),
+		});
+
+		await new LibEnsureMagazines().execute(makeLibGoalContext(account));
+
+		expect(sentEntries(account)).toHaveLength(2);
+	});
+
+	test("a gun the game refuses fails with the game's own reason", async () => {
+		const account = makeAccount(
+			{ modules: [gun("mod-1"), gun("mod-2")], cargo: cargo(5) },
+			(entry) => (entry.weapon_instance_id === "mod-2" ? { refuse: "wrong_ammo_type" } : undefined),
+		);
+
+		const result = await new LibEnsureMagazines().execute(makeLibGoalContext(account));
+
+		expect(result.success).toBe(false);
+		expect(result.summary).toEqual({ total: 2, changed: 1, unchanged: 1, failed: 1 });
+		const refused = result.subjects.find((s) => s.id === "mod-2");
+		expect(refused?.message).toBe("wrong_ammo_type: refused: wrong_ammo_type");
+		expect(refused?.before).toMatchObject({ ammo: 0, capacity: 7 });
+	});
+
+	test("magazine_full from the game is a satisfied gun, not a failure", async () => {
+		// The gun filled between our read and the reload; the game spends nothing.
+		const account = makeAccount({ modules: [gun("mod-1")], cargo: cargo(5) }, () => ({
+			refuse: "magazine_full",
+		}));
+
+		const result = await new LibEnsureMagazines().execute(makeLibGoalContext(account));
+
+		expect(result.success).toBe(true);
+		expect(result.subjects[0]).toMatchObject({ ok: true, action: "none", message: "already full" });
+	});
+
+	test("a gun the batch response omits is failed, never assumed loaded", async () => {
+		const account = new FakeLibGoalAccount({ modules: [gun("mod-1")], cargo: cargo(5) } as never, {
+			reload: () => ({
+				command: "reload",
+				tick: 0,
+				delta: { details: { action: "reload", mode: "bulk", results: [], summary: {} } },
+			}),
+		});
+
+		const result = await new LibEnsureMagazines().execute(makeLibGoalContext(account));
+
+		expect(result.success).toBe(false);
+		expect(result.subjects[0]?.message).toContain("missing_result");
+	});
+
+	test("a whole-batch failure fails every pending gun with its observed state", async () => {
+		const account = new FakeLibGoalAccount(
+			{ modules: [gun("mod-1"), gun("mod-2", { current_ammo: 2 })], cargo: cargo(5) } as never,
+			{
+				reload: () => {
+					throw new Error("in_battle: cannot perform this action while in combat");
+				},
+			},
+		);
+
+		const result = await new LibEnsureMagazines().execute(makeLibGoalContext(account));
+
+		expect(result.success).toBe(false);
+		expect(result.summary.failed).toBe(2);
+		for (const subject of result.subjects) {
+			expect(subject.message).toContain("reload_failed: in_battle");
+			expect(subject.before).toBeDefined();
+		}
+	});
+
+	test("omits roundsDiscarded when the game did not report it, rather than claiming zero", async () => {
+		const account = makeAccount({ modules: [gun("mod-1")], cargo: cargo(5) });
+
+		const result = await new LibEnsureMagazines().execute(makeLibGoalContext(account));
+
+		const after = result.subjects[0]?.after as Record<string, unknown> | undefined;
+		expect(after).toMatchObject({ ammo: 7, capacity: 7, ammoType: "tungsten_slug_case" });
+		expect(after && "roundsDiscarded" in after).toBe(false);
+	});
+
+	test("an abort before the batch is sent fails the pending guns and sends nothing", async () => {
+		const account = makeAccount({ modules: [gun("mod-1")], cargo: cargo(5) });
+		const controller = new AbortController();
+		controller.abort();
+
+		const result = await new LibEnsureMagazines().execute(
+			makeLibGoalContext(account, controller.signal),
+		);
+
+		expect(reloadCalls(account)).toHaveLength(0);
+		expect(result.subjects[0]?.message).toBe("aborted");
 	});
 
 	test("a ship with no ammo-fed weapons is a no-op, not a failure", async () => {
