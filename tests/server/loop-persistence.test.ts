@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { connectAccounts, resumeLoopConfig } from "../../src/index.js";
@@ -210,6 +210,65 @@ describe("loop-persistence", () => {
 
 			expect(calls.length).toBe(1);
 			expect(calls[0]?.playerId).toBe("player-roamer");
+		});
+
+		test("retries the fleet connect with backoff while the game is unavailable", async () => {
+			const account = new FakeLibManagedAccount({ playerId: "player-a", username: "Alpha" });
+			const manager = makeFakeLibManager([account]);
+			const realConnect = manager.connect.bind(manager);
+			let attempts = 0;
+			manager.connect = (onAccountReady) => {
+				attempts++;
+				if (attempts < 4) {
+					return Promise.reject(new Error("503 Service Unavailable: SpaceMolt is restarting"));
+				}
+				return realConnect(onAccountReady);
+			};
+			const sleeps: number[] = [];
+
+			const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+			await connectAccounts(
+				manager,
+				{ getState: mock(() => null) } as unknown as StateStore,
+				{ loopManager: new LoopManager(), jobManager: new JobManager(createMemoryDatabase()) },
+				tempDir,
+				{
+					initialDelayMs: 1000,
+					maxDelayMs: 3000,
+					sleep: (ms) => {
+						sleeps.push(ms);
+						return Promise.resolve();
+					},
+				},
+			);
+			warnSpy.mockRestore();
+
+			expect(attempts).toBe(4);
+			// Doubles each time, held at the cap.
+			expect(sleeps).toEqual([1000, 2000, 3000]);
+		});
+
+		test("does not retry a connect that failed after accounts had already connected", async () => {
+			// Re-running the fleet connect over live sessions would fight them.
+			const account = new FakeLibManagedAccount({ playerId: "player-a", username: "Alpha" });
+			const manager = makeFakeLibManager([account]);
+			let attempts = 0;
+			manager.connect = (onAccountReady) => {
+				attempts++;
+				onAccountReady?.(account);
+				return Promise.reject(new Error("partway failure"));
+			};
+
+			await expect(
+				connectAccounts(
+					manager,
+					{ getState: mock(() => null) } as unknown as StateStore,
+					{ loopManager: new LoopManager(), jobManager: new JobManager(createMemoryDatabase()) },
+					tempDir,
+					{ sleep: () => Promise.resolve() },
+				),
+			).rejects.toThrow("partway failure");
+			expect(attempts).toBe(1);
 		});
 
 		test("does not throw when a connected account has no player_id yet", async () => {

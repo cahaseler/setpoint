@@ -71,6 +71,14 @@ export function createDatabase(path: string): Database {
 		"CREATE INDEX IF NOT EXISTS idx_jobs_account_submitted ON jobs(account_id, submitted_at DESC)",
 	);
 
+	// Serves two queries that otherwise scan the whole table. The startup
+	// orphan sweep (JobManager.markOrphanedJobs) filters on status alone, and
+	// unindexed it read every row from a cold disk on each start — about a
+	// minute once job history reached 800k rows and 1.2GB. The retention prune
+	// (job-pruner.ts) filters on status and age together, which this reads as
+	// a range per status rather than every finished job.
+	db.run("CREATE INDEX IF NOT EXISTS idx_jobs_status_submitted ON jobs(status, submitted_at)");
+
 	log.info("Database schema initialized");
 	return db;
 }
