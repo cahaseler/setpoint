@@ -26,6 +26,7 @@ import type { ExecutingGoalEntry } from "./server/account-release.js";
 import { createGoal } from "./server/goal-registry.js";
 import { startServer } from "./server/index.js";
 import type { JobManager } from "./server/job-manager.js";
+import { startJobPruner } from "./server/job-pruner.js";
 import { LoopManager } from "./server/loop-manager.js";
 import { makeProjectingOnStateChange } from "./state/attach-projector.js";
 import { CraftingEventsStore } from "./state/crafting-events-store.js";
@@ -223,6 +224,10 @@ async function main(): Promise<void> {
 	});
 	log.info(`Dispatcher running on port ${server.port}. Press Ctrl+C to stop.`);
 
+	// Bound job history: finished jobs past the retention window are deleted
+	// in the background. See server/job-pruner.ts.
+	const jobPruner = startJobPruner(server.jobManager);
+
 	reactorRef.current = new CombatReactor({
 		manager,
 		loopManager: server.loopManager,
@@ -264,6 +269,7 @@ async function main(): Promise<void> {
 		shuttingDown = true;
 		log.info("Shutting down...");
 		driftSweep.stop();
+		jobPruner.stop();
 		reactorRef.current?.stop();
 		try {
 			await server.stop();
@@ -291,11 +297,26 @@ type LoopConfigEntry = Awaited<ReturnType<typeof LoopManager.loadLoopConfigs>>[n
  * that window for no reason. Runs in the background so the HTTP server can
  * serve health/queries while accounts come online.
  */
+/**
+ * How the startup connect retries when the fleet-wide connect fails before a
+ * single account came up. Exported for tests, which pass a no-op sleep.
+ */
+export interface ConnectRetryOptions {
+	initialDelayMs?: number;
+	maxDelayMs?: number;
+	sleep?: (ms: number) => Promise<void>;
+}
+
 export async function connectAccounts(
 	manager: LibAccountManager,
 	store: StateStore,
 	server: { loopManager: LoopManager; jobManager: JobManager },
 	configDir: string,
+	{
+		initialDelayMs = 15_000,
+		maxDelayMs = 300_000,
+		sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+	}: ConnectRetryOptions = {},
 ): Promise<void> {
 	const loopConfigs = await LoopManager.loadLoopConfigs(configDir);
 	const pendingLoopConfigs = new Map(loopConfigs.map((config) => [config.playerId, config]));
@@ -306,7 +327,7 @@ export async function connectAccounts(
 	}
 
 	let connectedCount = 0;
-	await manager.connect((account) => {
+	const onAccountReady = (account: LibManagedAccount): void => {
 		connectedCount++;
 		if (!account.player?.id) {
 			// The client's own onAccountConnected listener already warns and
@@ -323,7 +344,28 @@ export async function connectAccounts(
 			pendingLoopConfigs.delete(playerId);
 			resumeLoopConfig(server.loopManager, manager, loopConfig);
 		}
-	});
+	};
+
+	// The fleet-wide connect starts by listing owned accounts over HTTP, and that
+	// fails outright while the game is restarting for a deploy. A daemon that
+	// gave up there would serve no accounts until someone restarted it — which
+	// happened on 2026-10-13, when setpoint started inside a game deploy window.
+	// Retry with backoff for as long as it takes, but only while nothing has
+	// connected: a failure after some accounts came up is not a "game is down"
+	// failure, and re-running the fleet connect over live sessions would fight
+	// them.
+	for (let delayMs = initialDelayMs; ; delayMs = Math.min(delayMs * 2, maxDelayMs)) {
+		try {
+			await manager.connect(onAccountReady);
+			break;
+		} catch (err) {
+			if (connectedCount > 0) throw err;
+			log.warn(
+				`Fleet connect failed before any account connected (${errorMessage(err)}); retrying in ${Math.round(delayMs / 1000)}s`,
+			);
+			await sleep(delayMs);
+		}
+	}
 
 	if (connectedCount === 0) {
 		log.warn("No accounts connected at startup. The server is up; add accounts via the API.");
