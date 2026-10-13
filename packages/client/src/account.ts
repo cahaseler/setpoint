@@ -211,17 +211,12 @@ export class AccountObservationApi {
 
 	/**
 	 * Gets the cached observation-watch view: players, pirates, empire NPCs,
-	 * wildlife and intact prizes at the watched POI. There is no subscribe
+	 * wildlife, intact prizes and arena enemies at the watched POI, plus
+	 * scanner ship counts for the rest of the system. There is no subscribe
 	 * method here — subscribe first via
 	 * `account.raw.spacemolt.subscribe_observation()`, or open `events()`,
 	 * which subscribes and maintains the watch for you (throws
 	 * `SetpointHttpError` 404 if not subscribed / no data cached yet).
-	 *
-	 * Covers five of `get_nearby`'s six presence classes; arena NPCs are in
-	 * neither the baseline nor any update. Follow an arena match with
-	 * `account.battleLog()` rather than working around that — the battle log
-	 * carries absolute hull, shield, zone, stance and target for every
-	 * participant, which is strictly more than presence.
 	 */
 	async get(): Promise<ObservationSnapshot> {
 		const result = await this.client.request(

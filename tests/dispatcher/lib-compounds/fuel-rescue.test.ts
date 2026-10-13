@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { SpacemoltError } from "@spacemolt/lib";
 import { LibFuelRescue } from "../../../src/dispatcher/lib-compounds/fuel-rescue.js";
 import { makeLibGoalContext } from "../../../src/dispatcher/lib-goal-context.js";
 import { FakeLibGoalAccount, fakeMutationResult } from "../lib-fakes.js";
@@ -68,7 +69,7 @@ describe("LibFuelRescue", () => {
 				refuel: () => {
 					refuelCalls++;
 					if (refuelCalls === 1) {
-						throw new Error("Target player Stranded is not at POI poi-1");
+						throw new SpacemoltError("player_not_found", "Player not found");
 					}
 					return fakeMutationResult("refuel");
 				},
@@ -82,12 +83,12 @@ describe("LibFuelRescue", () => {
 		expect(refuelCalls).toBe(2);
 	});
 
-	test("fails if the retry also rejects with 'not at POI'", async () => {
+	test("fails if the retry also rejects with player_not_found", async () => {
 		const account = new FakeLibGoalAccount(
 			{ location: { system_id: "sol", poi_id: "poi-1" } },
 			{
 				refuel: () => {
-					throw new Error("Target player Stranded is not at POI poi-1");
+					throw new SpacemoltError("player_not_found", "Player not found");
 				},
 			},
 		);
@@ -96,7 +97,26 @@ describe("LibFuelRescue", () => {
 			5,
 		).execute(makeLibGoalContext(account));
 		expect(result.success).toBe(false);
-		expect(result.message).toContain("is not at POI");
+		expect(result.message).toContain("Player not found");
+	});
+
+	test("does not retry a refusal other than player_not_found", async () => {
+		let refuelCalls = 0;
+		const account = new FakeLibGoalAccount(
+			{ location: { system_id: "sol", poi_id: "poi-1" } },
+			{
+				refuel: () => {
+					refuelCalls++;
+					throw new SpacemoltError("insufficient_fuel", "Not enough fuel to transfer");
+				},
+			},
+		);
+		const result = await new LibFuelRescue(
+			{ systemId: "sol", poiId: "poi-1", targetUsername: "Stranded" },
+			5,
+		).execute(makeLibGoalContext(account));
+		expect(result.success).toBe(false);
+		expect(refuelCalls).toBe(1);
 	});
 
 	test("fails when navigation cannot find a route", async () => {

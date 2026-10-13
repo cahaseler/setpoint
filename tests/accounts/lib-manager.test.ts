@@ -739,6 +739,23 @@ describe("LibAccountManager", () => {
 			);
 		});
 
+		test("logs each automatic rate-limit retry with its command and wait", async () => {
+			const { client, accounts } = setup([player("Alpha", "pid-a")]);
+			const mgr = new LibAccountManager(client, { clerkApiKey: "k" });
+			await mgr.connect();
+
+			const infoSpy = spyOn(console, "info").mockImplementation(() => {});
+			accounts
+				.get("Alpha")
+				?.emitRateLimited({ command: "spacemolt.get_status", attempt: 2, delayMs: 1234.6 });
+			const infoLines = infoSpy.mock.calls.map((c) => String(c[0])).join("\n");
+			infoSpy.mockRestore();
+
+			expect(infoLines).toContain(
+				"[Alpha] Rate limited on spacemolt.get_status: retry 2 in 1235ms",
+			);
+		});
+
 		test("still logs a close that carries no code", async () => {
 			const { client, accounts } = setup([player("Alpha", "pid-a")]);
 			const mgr = new LibAccountManager(client, { clerkApiKey: "k" });

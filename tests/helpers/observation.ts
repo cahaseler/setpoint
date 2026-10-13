@@ -14,7 +14,17 @@ export function makeObservationUpdateEvent(
 		tick: 1,
 		unknown_signature: false,
 		pirates_changed: [
-			{ pirate_id: "pirate_1", name: "Raider", is_boss: false, status: "hostile", tier: "raider" },
+			{
+				pirate_id: "pirate_1",
+				name: "Raider",
+				is_boss: false,
+				status: "hostile",
+				tier: "raider",
+				hull: 100,
+				max_hull: 100,
+				shield: 50,
+				max_shield: 50,
+			},
 		],
 		...overrides,
 	} as ObservationUpdateEvent;

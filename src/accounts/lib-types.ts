@@ -8,6 +8,7 @@ import type {
 	NotificationPayloads,
 	ObservationView,
 	QueryResult,
+	RateLimitedInfo,
 	RawFrame,
 	RegisterParams,
 	RegisterResult,
@@ -63,6 +64,13 @@ export interface LibManagedAccount {
 	 * reconnect — and it fires again for each reconnect attempt that fails.
 	 */
 	onDisconnected(listener: (err: ConnectionClosedError) => void): () => void;
+	/**
+	 * Fires before each automatic retry of a `rate_limited` call, with the
+	 * command, the attempt number and the wait (jitter included). The lib
+	 * retries these silently, so this is the only record that a slow call was
+	 * slow because the game throttled it.
+	 */
+	onRateLimited(listener: (info: RateLimitedInfo) => void): () => void;
 	close(): void;
 	/**
 	 * The cached order book for a base, if subscribed. The initial baseline is

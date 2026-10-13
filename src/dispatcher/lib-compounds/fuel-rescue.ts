@@ -1,3 +1,4 @@
+import { SpacemoltError } from "@spacemolt/lib";
 import { createLogger } from "../../util/logger.js";
 import type { GoalResult } from "../goals.js";
 import { failed, succeeded } from "../goals.js";
@@ -17,7 +18,7 @@ export interface FuelRescueOptions {
 	targetUsername: string;
 }
 
-/** How long to wait before retrying a "target not at POI" refuel() rejection. */
+/** How long to wait before retrying a `player_not_found` refuel() rejection. */
 const NOT_AT_POI_RETRY_DELAY_MS = 5_000;
 
 /**
@@ -32,7 +33,7 @@ const NOT_AT_POI_RETRY_DELAY_MS = 5_000;
  * refuel() itself is the authoritative check for reachability; its own
  * failure (if the target truly isn't there) is reported as-is.
  *
- * refuel()'s own "target not at POI" rejection has been observed as a
+ * refuel()'s own `player_not_found` rejection has been observed as a
  * false negative too — a manual retry moments later succeeds against the
  * same stationary target, suggesting the server's own reachability check
  * can lag the target's actual position. One retry after a short delay
@@ -70,7 +71,10 @@ export class LibFuelRescue implements LibGoal {
 			await ctx.account.commands.spacemolt.refuel({ target: this.options.targetUsername });
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
-			if (!msg.includes("is not at POI")) {
+			// The game refuses a target it cannot see — one at another POI, in
+			// transit, or cloaked — as `player_not_found`, the same as a player who
+			// does not exist (game v0.618.0 stopped revealing which).
+			if (!(err instanceof SpacemoltError && err.code === "player_not_found")) {
 				return failed(`Refuel of ${this.options.targetUsername} failed: ${msg}`, ticksUsed);
 			}
 
