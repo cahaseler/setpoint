@@ -4,6 +4,7 @@ import type {
 	MarketItem,
 	NotificationPayloads,
 	ObservationUpdateEvent,
+	ObservedArenaNpc,
 	ObservedCreature,
 	ObservedEmpireNpc,
 	ObservedPirate,
@@ -263,22 +264,23 @@ export interface MarketBookSnapshot {
  * read the event stream instead — the merged view cannot tell you that a
  * contact left, only that it is no longer here.
  *
- * The watch covers five of `get_nearby`'s six presence classes; arena NPCs are
- * in neither the baseline nor any update. That is not a gap worth working
- * around, because a ship in an arena match should be following
- * `GET /accounts/:playerId/battle-log/events` instead — the battle log carries
- * absolute hull, shield, zone, stance and target for every participant, which
- * is strictly more than presence.
+ * The watch is POI-scoped: it carries all six of `get_nearby`'s presence
+ * classes at the ship's own POI and nothing about ships elsewhere in the
+ * system. The one exception is `shipCounts`, which needs a working ship
+ * scanner.
  */
 export interface ObservationSnapshot {
 	poi_id?: string;
 	system_id?: string;
 	/** Tick of the most recent update (0 if only the initial baseline has been seen). */
 	tick: number;
-	/** Uncloaked players at the watched POI. */
+	/** Uncloaked players at the watched POI: online first, at most 50. */
 	nearby: ObservedPlayer[];
-	/** Uncloaked players elsewhere in the system. */
-	system: ObservedPlayer[];
+	/**
+	 * Offline players at the watched POI that `nearby` leaves out — the game
+	 * folds them into a count once more than 10 are present. 0 when all are listed.
+	 */
+	offlineCollapsed: number;
 	/** Pirate NPCs at the watched POI. */
 	pirates: ObservedPirate[];
 	/** Empire NPCs at the watched POI. */
@@ -287,6 +289,15 @@ export interface ObservationSnapshot {
 	creatures: ObservedCreature[];
 	/** Intact captured ships at the watched POI. */
 	prizes: ObservedPrize[];
+	/** Arena challenge enemies at the watched POI. */
+	arenaNpcs: ObservedArenaNpc[];
+	/**
+	 * Ships at each charted POI in the system, keyed by POI ID: players, pirates,
+	 * empire NPC ships and leviathans, excluding your own ship and wildlife.
+	 * Empty without a working ship scanner. The only view this watch offers of
+	 * POIs other than your own.
+	 */
+	shipCounts: Record<string, number>;
 	/** Cloaked contacts resolved by an active sensor sweep. */
 	cloaked: CloakedContact[];
 	unknownSignature: boolean;

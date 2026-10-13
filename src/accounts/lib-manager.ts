@@ -177,6 +177,11 @@ export class LibAccountManager {
 				`[${label}] Connection lost (code=${err.code ?? "?"}${err.reason ? `, reason=${err.reason}` : ""}): ${err.message}`,
 			);
 		});
+		account.onRateLimited((info) => {
+			log.info(
+				`[${label}] Rate limited on ${info.command}: retry ${info.attempt} in ${Math.round(info.delayMs)}ms`,
+			);
+		});
 		const onChange = this.opts.onStateChange;
 		if (onChange) {
 			// A throwing onChange (e.g. the SQLite projector) must never escape into the

@@ -12,6 +12,7 @@ export type {
 } from "@spacemolt/lib";
 
 import type {
+	ArenaNpcInfo,
 	CreatureInfo,
 	EmpireNpcInfo,
 	NotificationPayloads,
@@ -51,6 +52,8 @@ export type ObservedEmpireNpc = EmpireNpcInfo;
 export type ObservedCreature = CreatureInfo;
 /** An intact captured ship present at a watched POI. */
 export type ObservedPrize = PrizeInfo;
+/** An arena challenge enemy present at a watched POI. */
+export type ObservedArenaNpc = ArenaNpcInfo;
 
 /** The subset of notification types setpoint's combat detector treats as combat-relevant. */
 export const COMBAT_NOTIFICATION_TYPES = [

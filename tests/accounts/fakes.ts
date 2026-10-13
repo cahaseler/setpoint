@@ -7,6 +7,7 @@ import type {
 	MutationResult,
 	ObservationView,
 	QueryResult,
+	RateLimitedInfo,
 	RawFrame,
 	RegisterParams,
 	RegisterResult,
@@ -144,6 +145,15 @@ export class FakeAccount implements LibManagedAccount {
 	onDisconnected(listener: (err: ConnectionClosedError) => void): () => void {
 		this.disconnectedListeners.add(listener);
 		return () => this.disconnectedListeners.delete(listener);
+	}
+	private readonly rateLimitedListeners = new Set<(info: RateLimitedInfo) => void>();
+	onRateLimited(listener: (info: RateLimitedInfo) => void): () => void {
+		this.rateLimitedListeners.add(listener);
+		return () => this.rateLimitedListeners.delete(listener);
+	}
+	/** Simulates the lib about to retry a rate-limited call. */
+	emitRateLimited(info: RateLimitedInfo): void {
+		for (const listener of this.rateLimitedListeners) listener(info);
 	}
 	/** Simulates the socket closing unexpectedly, as the lib reports it. */
 	emitDisconnected(err: ConnectionClosedError): void {

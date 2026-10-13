@@ -8,6 +8,7 @@ import type {
 	MutationResult,
 	ObservationView,
 	QueryResult,
+	RateLimitedInfo,
 	RawFrame,
 	RegisterResult,
 	StateSection,
@@ -269,11 +270,13 @@ export class FakeLibManagedAccount extends FakeLibGoalAccount implements LibMana
 				...(snapshot.system_id !== undefined ? { system_id: snapshot.system_id } : {}),
 				tick: 0,
 				nearby: indexBy(snapshot.nearby, (p) => p.player_id),
-				system: indexBy(snapshot.system_agents, (p) => p.player_id),
 				pirates: indexBy(snapshot.pirates, (p) => p.pirate_id),
 				empireNpcs: indexBy(snapshot.empire_npcs, (n) => n.npc_id),
 				creatures: indexBy(snapshot.creatures, (c) => c.creature_id),
 				prizes: indexBy(snapshot.prizes, (p) => p.prize_id),
+				arenaNpcs: indexBy(snapshot.arena_npcs, (n) => n.npc_id),
+				offlineCollapsed: snapshot.offline_collapsed ?? 0,
+				shipCounts: new Map(Object.entries(snapshot.ship_counts ?? {})),
 				cloaked: indexBy(snapshot.cloaked_contacts, (c) => c.target_id),
 				unknownSignature: snapshot.unknown_signature ?? false,
 				activeScan: snapshot.active_scan ?? false,
@@ -288,6 +291,15 @@ export class FakeLibManagedAccount extends FakeLibGoalAccount implements LibMana
 	onDisconnected(listener: (err: ConnectionClosedError) => void): () => void {
 		this.disconnectedListeners.add(listener);
 		return () => this.disconnectedListeners.delete(listener);
+	}
+	private readonly rateLimitedListeners = new Set<(info: RateLimitedInfo) => void>();
+	onRateLimited(listener: (info: RateLimitedInfo) => void): () => void {
+		this.rateLimitedListeners.add(listener);
+		return () => this.rateLimitedListeners.delete(listener);
+	}
+	/** Simulates the lib about to retry a rate-limited call. */
+	emitRateLimited(info: RateLimitedInfo): void {
+		for (const listener of this.rateLimitedListeners) listener(info);
 	}
 	/** Simulates the socket closing unexpectedly, as the lib reports it. */
 	emitDisconnected(err: ConnectionClosedError): void {
