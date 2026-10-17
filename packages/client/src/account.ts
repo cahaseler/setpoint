@@ -15,6 +15,7 @@ import type {
 	LoopStatus,
 	LoopType,
 	MarketBookSnapshot,
+	MarketUpdateEnvelope,
 	ObservationSnapshot,
 	ObservationUpdateEnvelope,
 	PirateRadioEnvelope,
@@ -186,8 +187,9 @@ export class AccountMarketApi {
 
 	/**
 	 * Gets the cached order book for a base. There is no subscribe method here —
-	 * subscribe first via `account.raw.spacemolt_market.subscribe_market()`
-	 * (throws `SetpointHttpError` 404 if not subscribed / no data cached yet).
+	 * subscribe first via `account.raw.spacemolt_market.subscribe_market()`,
+	 * or open `events()`, which subscribes for you (throws `SetpointHttpError`
+	 * 404 if not subscribed / no data cached yet).
 	 */
 	async get(baseId: string): Promise<MarketBookSnapshot> {
 		const result = await this.client.request(
@@ -195,6 +197,59 @@ export class AccountMarketApi {
 			`/accounts/${encodeURIComponent(this.id)}/market/${encodeURIComponent(baseId)}`,
 		);
 		return result as MarketBookSnapshot;
+	}
+	/**
+	 * Streams `market_update` pushes for this account: the daemon's buffered
+	 * backlog (last 500 events) immediately, then each new push live. The
+	 * generator runs until the connection closes or `signal` aborts — consume
+	 * with `for await (const envelope of account.market.events())`.
+	 *
+	 * Needs no subscribe-first step, unlike `get()`. The daemon subscribes
+	 * whenever the account is docked and again on each new dock, because the
+	 * game drops a market subscription on undock. An account that is in flight
+	 * when the stream opens starts emitting at its next dock; each event's
+	 * `base_id` names the station. Throws `SetpointHttpError` 409 if the
+	 * subscription fails while docked.
+	 *
+	 * Events report price levels, not individual orders: there are no order
+	 * IDs and no fill events, so a quantity drop at a steady price is either a
+	 * fill or a cancellation.
+	 */
+	async *events(opts?: { signal?: AbortSignal }): AsyncGenerator<MarketUpdateEnvelope, void, void> {
+		const url = `${this.client.baseUrl}/accounts/${encodeURIComponent(this.id)}/market/events`;
+		const response = await fetch(url, opts?.signal ? { signal: opts.signal } : {});
+
+		if (!response.ok || !response.body) {
+			let body: { error?: string } = {};
+			try {
+				body = (await response.json()) as { error?: string };
+			} catch {
+				/* non-JSON error body */
+			}
+			throw new SetpointHttpError(response.status, body);
+		}
+
+		const reader = response.body.getReader();
+		const decoder = new TextDecoder();
+		let buffered = "";
+		try {
+			while (true) {
+				const { value, done } = await reader.read();
+				if (done) return;
+				buffered += decoder.decode(value, { stream: true });
+				let boundary = buffered.indexOf("\n\n");
+				while (boundary !== -1) {
+					const frame = buffered.slice(0, boundary);
+					buffered = buffered.slice(boundary + 2);
+					if (frame.startsWith("data: ")) {
+						yield JSON.parse(frame.slice("data: ".length)) as MarketUpdateEnvelope;
+					}
+					boundary = buffered.indexOf("\n\n");
+				}
+			}
+		} finally {
+			await reader.cancel().catch(() => {});
+		}
 	}
 }
 

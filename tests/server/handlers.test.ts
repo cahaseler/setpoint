@@ -4,6 +4,7 @@ import type {
 	CombatMode,
 	CraftingUpdateEnvelope,
 	CraftingUpdateEvent,
+	MarketUpdateEnvelope,
 	ObservationUpdateEnvelope,
 	PirateRadioEnvelope,
 } from "@setpoint/protocol";
@@ -34,6 +35,7 @@ import {
 	handleGetSystem,
 	handleHealth,
 	handleListAccounts,
+	handleMarketEvents,
 	handleObservationEvents,
 	handlePatchLoop,
 	handlePirateRadioEvents,
@@ -49,6 +51,7 @@ import type { LoopManager, LoopStatus } from "../../src/server/loop-manager.js";
 import { CraftingEventsStore } from "../../src/state/crafting-events-store.js";
 import { createMemoryDatabase } from "../../src/state/database.js";
 import { createEventBuffer } from "../../src/state/event-buffer.js";
+import { MarketSubscriptionKeeper } from "../../src/state/market-subscription.js";
 import { ObservationSubscriptionKeeper } from "../../src/state/observation-subscription.js";
 import type { StateStore } from "../../src/state/store.js";
 import type { StoredGameState } from "../../src/state/store.js";
@@ -219,6 +222,8 @@ function makeContext(
 		pirateRadioStore: createEventBuffer<PirateRadioEnvelope>(),
 		observationEventsStore: createEventBuffer<ObservationUpdateEnvelope>(),
 		observationSubscriptions: new ObservationSubscriptionKeeper(),
+		marketEventsStore: createEventBuffer<MarketUpdateEnvelope>(),
+		marketSubscriptions: new MarketSubscriptionKeeper(),
 		combatModeStore: new FakeCombatModeStore() as unknown as CombatModeStore,
 	};
 }
@@ -3775,6 +3780,139 @@ describe("handleObservationEvents", () => {
 
 		await res.body?.cancel();
 		expect(ctx.observationSubscriptions.hasSubscribers("p1")).toBe(false);
+	});
+});
+
+describe("handleMarketEvents", () => {
+	function marketEvent(tick: number): MarketUpdateEnvelope {
+		return {
+			receivedAt: new Date().toISOString(),
+			event: {
+				base_id: "sol_base",
+				tick,
+				items: [
+					{
+						item_id: "iron_ore",
+						buy_orders: [{ price_each: 10, quantity: 50 }],
+						sell_orders: [],
+					},
+				],
+			} as MarketUpdateEnvelope["event"],
+		};
+	}
+
+	async function readSseEvents(res: Response, count: number): Promise<MarketUpdateEnvelope[]> {
+		const reader = res.body?.getReader();
+		if (!reader) throw new Error("Response has no body");
+		const decoder = new TextDecoder();
+		let buffered = "";
+		const events: MarketUpdateEnvelope[] = [];
+		while (events.length < count) {
+			const { value, done } = await reader.read();
+			if (done) break;
+			buffered += decoder.decode(value, { stream: true });
+			let boundary = buffered.indexOf("\n\n");
+			while (boundary !== -1) {
+				const frame = buffered.slice(0, boundary);
+				buffered = buffered.slice(boundary + 2);
+				if (frame.startsWith("data: ")) events.push(JSON.parse(frame.slice("data: ".length)));
+				boundary = buffered.indexOf("\n\n");
+			}
+		}
+		await reader.cancel();
+		return events;
+	}
+
+	const docked = (baseId: string) => ({ location: { docked_at: baseId } }) as unknown as GameState;
+
+	test("returns 404 for an unknown account", async () => {
+		const ctx = makeContext({ accounts: [] });
+		const res = await handleMarketEvents(
+			new Request("http://localhost/accounts/nope/market/events"),
+			{ playerId: "nope" },
+			ctx,
+		);
+		expect(res.status).toBe(404);
+	});
+
+	test("subscribes to the station market when the account is docked", async () => {
+		const account = makeAccount("p1", "TestPlayer", docked("sol_base"));
+		const ctx = makeContext({ accounts: [account] });
+
+		const res = await handleMarketEvents(
+			new Request("http://localhost/accounts/p1/market/events"),
+			{ playerId: "p1" },
+			ctx,
+		);
+
+		expect(res.status).toBe(200);
+		expect(res.headers.get("Content-Type")).toBe("text/event-stream");
+		expect(account.marketSubscribed).toBe(true);
+		await res.body?.cancel();
+	});
+
+	test("opens the stream for an undocked account without subscribing yet", async () => {
+		const account = makeAccount("p1");
+		const ctx = makeContext({ accounts: [account] });
+
+		const res = await handleMarketEvents(
+			new Request("http://localhost/accounts/p1/market/events"),
+			{ playerId: "p1" },
+			ctx,
+		);
+
+		expect(res.status).toBe(200);
+		expect(account.marketSubscribed).toBe(false);
+		expect(ctx.marketSubscriptions.hasSubscribers("p1")).toBe(true);
+		await res.body?.cancel();
+	});
+
+	test("returns 409 when the subscribe fails while docked", async () => {
+		const account = makeAccount("p1", "TestPlayer", docked("sol_base"));
+		account.subscribeMarket = (): Promise<never> => Promise.reject(new Error("no market here"));
+		const ctx = makeContext({ accounts: [account] });
+
+		const res = await handleMarketEvents(
+			new Request("http://localhost/accounts/p1/market/events"),
+			{ playerId: "p1" },
+			ctx,
+		);
+
+		expect(res.status).toBe(409);
+		expect(((await res.json()) as { error: string }).error).toContain("no market here");
+		expect(ctx.marketSubscriptions.hasSubscribers("p1")).toBe(false);
+	});
+
+	test("streams the backlog, then live events, for this account only", async () => {
+		const account = makeAccount("p1", "TestPlayer", docked("sol_base"));
+		const ctx = makeContext({ accounts: [account] });
+		ctx.marketEventsStore.record("p1", marketEvent(1));
+
+		const res = await handleMarketEvents(
+			new Request("http://localhost/accounts/p1/market/events"),
+			{ playerId: "p1" },
+			ctx,
+		);
+		ctx.marketEventsStore.record("p2", marketEvent(99));
+		ctx.marketEventsStore.record("p1", marketEvent(2));
+
+		const events = await readSseEvents(res, 2);
+		expect(events.map((e) => e.event.tick)).toEqual([1, 2]);
+		expect(events[0]?.event.items[0]?.buy_orders[0]).toEqual({ price_each: 10, quantity: 50 });
+	});
+
+	test("releases the subscriber when the stream closes", async () => {
+		const account = makeAccount("p1", "TestPlayer", docked("sol_base"));
+		const ctx = makeContext({ accounts: [account] });
+
+		const res = await handleMarketEvents(
+			new Request("http://localhost/accounts/p1/market/events"),
+			{ playerId: "p1" },
+			ctx,
+		);
+		await res.body?.cancel();
+
+		expect(ctx.marketSubscriptions.hasSubscribers("p1")).toBe(false);
 	});
 });
 

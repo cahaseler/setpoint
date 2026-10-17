@@ -1,6 +1,7 @@
 import type {
 	CombatEnvelope,
 	MarketBookSnapshot,
+	MarketUpdateEnvelope,
 	ObservationSnapshot,
 	ObservationUpdateEnvelope,
 	PirateRadioEnvelope,
@@ -25,6 +26,7 @@ import { makeFleetAccess } from "../fleet/server-access.js";
 
 import type { CraftingEventsStore } from "../state/crafting-events-store.js";
 import type { EventBuffer } from "../state/event-buffer.js";
+import type { MarketSubscriptionKeeper } from "../state/market-subscription.js";
 import type { ObservationSubscriptionKeeper } from "../state/observation-subscription.js";
 import { STATE_SECTION_KEYS, type StateSectionKey, type StateStore } from "../state/store.js";
 import { ApiError, HttpError, errorMessage } from "../util/errors.js";
@@ -66,6 +68,8 @@ export interface HandlerContext {
 	pirateRadioStore: EventBuffer<PirateRadioEnvelope>;
 	observationEventsStore: EventBuffer<ObservationUpdateEnvelope>;
 	observationSubscriptions: ObservationSubscriptionKeeper;
+	marketEventsStore: EventBuffer<MarketUpdateEnvelope>;
+	marketSubscriptions: MarketSubscriptionKeeper;
 	combatModeStore: CombatModeStore;
 	/** Accounts with a synchronous goal currently executing. Used to prevent races. */
 	executingGoals: Map<string, ExecutingGoalEntry>;
@@ -2610,4 +2614,65 @@ export async function handleBatchGoalAsync(
 		{ playerIds: parsed.playerIds, type: parsed.type, options: parsed.options },
 		(signal) => runBatchGoal(ctx, parsed.playerIds, parsed.type, parsed.options, signal),
 	);
+}
+
+/**
+ * `GET /accounts/:playerId/market/events` — Server-Sent Events stream of
+ * `market_update` pushes: the buffered backlog (last 500) immediately on
+ * connect, then each new push live as it arrives.
+ *
+ * The game only sends market updates while a subscription is active, and the
+ * subscription belongs to the station the ship is docked at — it lapses on
+ * undock. So opening this stream subscribes if the account is docked, and
+ * `MarketSubscriptionKeeper` re-subscribes on each dock while a subscriber is
+ * attached. An account opened while undocked gets a stream that starts
+ * emitting at its next dock; a subscribe that fails while docked comes back as
+ * 409 rather than as a stream that silently never emits.
+ *
+ * Each event is the server's frame verbatim. It reports price levels, not
+ * orders: no order IDs and no fill events.
+ */
+export async function handleMarketEvents(
+	_req: Request,
+	params: RouteParams,
+	ctx: HandlerContext,
+): Promise<Response> {
+	const playerId = params["playerId"];
+	if (!playerId) {
+		return errorResponse("Missing playerId", 400);
+	}
+
+	const account = resolveAccount(ctx, playerId);
+	if (!account) {
+		return errorResponse("Account not found", 404);
+	}
+
+	const actualId = playerIdOf(account);
+
+	let release: () => void;
+	try {
+		release = await ctx.marketSubscriptions.acquire(actualId, account);
+	} catch (err) {
+		return errorResponse(`Could not subscribe to the station market: ${errorMessage(err)}`, 409);
+	}
+
+	const encoder = new TextEncoder();
+	let unsubscribe: (() => void) | undefined;
+
+	const stream = new ReadableStream<Uint8Array>({
+		start(controller): void {
+			for (const envelope of ctx.marketEventsStore.recent(actualId)) {
+				controller.enqueue(encoder.encode(`data: ${JSON.stringify(envelope)}\n\n`));
+			}
+			unsubscribe = ctx.marketEventsStore.subscribe(actualId, (envelope) => {
+				controller.enqueue(encoder.encode(`data: ${JSON.stringify(envelope)}\n\n`));
+			});
+		},
+		cancel(): void {
+			unsubscribe?.();
+			release();
+		},
+	});
+
+	return new Response(stream, { headers: SSE_HEADERS });
 }

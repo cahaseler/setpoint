@@ -4,6 +4,8 @@ import type {
 	CombatEnvelope,
 	CombatNotificationType,
 	CraftingUpdateEvent,
+	MarketUpdateEnvelope,
+	MarketUpdateEvent,
 	ObservationUpdateEnvelope,
 	ObservationUpdateEvent,
 	PirateRadioEnvelope,
@@ -33,6 +35,7 @@ import { createDatabase } from "./state/database.js";
 import { logDrift } from "./state/drift-logger.js";
 import { startDriftSweep } from "./state/drift-sweep.js";
 import { createEventBuffer } from "./state/event-buffer.js";
+import { MarketSubscriptionKeeper } from "./state/market-subscription.js";
 import { ObservationSubscriptionKeeper } from "./state/observation-subscription.js";
 import { StateProjector } from "./state/projector.js";
 import { diffGameState } from "./state/state-diff.js";
@@ -78,6 +81,8 @@ async function main(): Promise<void> {
 	// subscriber. Declared before onStateChange, which re-establishes a watch the
 	// server dropped on a move.
 	const observationSubscriptions = new ObservationSubscriptionKeeper();
+	// The same for market subscriptions, which the server drops on every undock.
+	const marketSubscriptions = new MarketSubscriptionKeeper();
 
 	// Project every lib state change into SQLite, then log the changed sections.
 	const projectOnChange = makeProjectingOnStateChange(projector);
@@ -92,6 +97,7 @@ async function main(): Promise<void> {
 		// returns immediately for everyone else.
 		if (changed.includes("location")) {
 			observationSubscriptions.resubscribeIfDropped(playerId, account);
+			marketSubscriptions.resubscribeIfDropped(playerId, account);
 		}
 		log.info(`[${playerId}] State updated: ${changed.join(", ")}`);
 	};
@@ -126,6 +132,15 @@ async function main(): Promise<void> {
 	// GET /accounts/:id/observation/events (SSE). Unlike the two above, the
 	// server only sends these while a watch is subscribed, so the keeper
 	// establishes one when a stream opens and re-establishes it after each move.
+	// Buffers market_update pushes per account for
+	// GET /accounts/:id/market/events (SSE). Larger than the default buffer:
+	// a busy station pushes most ticks, and a reconnecting consumer measuring
+	// order lifetimes needs the gap covered.
+	const marketEventsStore = createEventBuffer<MarketUpdateEnvelope>(500);
+	const onMarketUpdate = (playerId: string, event: MarketUpdateEvent): void => {
+		marketEventsStore.record(playerId, { receivedAt: new Date().toISOString(), event });
+	};
+
 	const observationEventsStore = createEventBuffer<ObservationUpdateEnvelope>();
 	const onObservationUpdate = (playerId: string, event: ObservationUpdateEvent): void => {
 		observationEventsStore.record(playerId, { receivedAt: new Date().toISOString(), event });
@@ -190,6 +205,7 @@ async function main(): Promise<void> {
 		onCombatUpdate,
 		onPirateRadio,
 		onObservationUpdate,
+		onMarketUpdate,
 	});
 
 	// Periodically force a refresh() across the whole fleet so idle accounts
@@ -217,6 +233,8 @@ async function main(): Promise<void> {
 		pirateRadioStore,
 		observationEventsStore,
 		observationSubscriptions,
+		marketEventsStore,
+		marketSubscriptions,
 		combatModeStore,
 		executingGoals,
 		claimedAccounts,

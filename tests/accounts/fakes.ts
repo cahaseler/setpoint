@@ -110,10 +110,13 @@ export class FakeAccount implements LibManagedAccount {
 		this.marketBooks.set(baseId, book);
 	}
 	/** No response fidelity needed here — tests seed the cache directly via `setMarketBook`. */
+	marketSubscribed = false;
 	subscribeMarket(): Promise<SubscribeMarketResponse> {
+		this.marketSubscribed = true;
 		return Promise.resolve({} as SubscribeMarketResponse);
 	}
 	unsubscribeMarket(): Promise<void> {
+		this.marketSubscribed = false;
 		return Promise.resolve();
 	}
 	observation(): ObservationView | null {
