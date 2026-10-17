@@ -44,6 +44,17 @@ export type PirateRadioEvent = NotificationPayloads["pirate_radio"];
  */
 export type ObservationUpdateEvent = NotificationPayloads["observation_update"];
 
+/**
+ * A single `market_update` push: the order book changes at one station, as
+ * per-item price levels. Each item carries its full `buy_orders` and
+ * `sell_orders` as `{ price_each, quantity, source? }` levels.
+ *
+ * Levels, not orders: the game sends no order IDs and no fill events, so a
+ * quantity drop at a steady price cannot be told apart from a cancellation,
+ * and two orders at one price are one level.
+ */
+export type MarketUpdateEvent = NotificationPayloads["market_update"];
+
 /** A pirate NPC present at a watched POI. */
 export type ObservedPirate = PirateInfo;
 /** An empire NPC present at a watched POI. */

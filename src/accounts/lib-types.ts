@@ -85,6 +85,13 @@ export interface LibManagedAccount {
 	market(baseId: string): MarketBook | undefined;
 	/** Subscribe to the order book of the station you're docked at; seeds the market cache read via `market()`. */
 	subscribeMarket(): Promise<SubscribeMarketResponse>;
+	/**
+	 * Whether a market subscription is currently active. Goes false on its own
+	 * when the ship undocks: the server drops the subscription silently and the
+	 * lib mirrors that. `MarketSubscriptionKeeper` reads this to re-establish a
+	 * subscription an event-stream subscriber still wants.
+	 */
+	readonly marketSubscribed: boolean;
 	/** Unsubscribe from the current station's market and drop its cached book. */
 	unsubscribeMarket(): Promise<void>;
 	/**

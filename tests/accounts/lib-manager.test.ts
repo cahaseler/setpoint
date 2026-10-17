@@ -770,6 +770,49 @@ describe("LibAccountManager", () => {
 		});
 	});
 
+	describe("market updates", () => {
+		test("forwards market_update pushes to onMarketUpdate", async () => {
+			const events: Array<{ playerId: string; baseId: string }> = [];
+			const { client, accounts } = setup([player("Alpha", "pid-a")]);
+			const mgr = new LibAccountManager(
+				client,
+				{ clerkApiKey: "k" },
+				{ onMarketUpdate: (playerId, event) => events.push({ playerId, baseId: event.base_id }) },
+			);
+			await mgr.connect();
+
+			accounts.get("Alpha")?.emitNotification("market_update", {
+				base_id: "sol_base",
+				tick: 3,
+				items: [],
+			});
+
+			expect(events).toEqual([{ playerId: "pid-a", baseId: "sol_base" }]);
+		});
+
+		test("a throwing onMarketUpdate handler is caught, not left to escape into the lib", async () => {
+			const { client, accounts } = setup([player("Alpha", "pid-a")]);
+			const mgr = new LibAccountManager(
+				client,
+				{ clerkApiKey: "k" },
+				{
+					onMarketUpdate: () => {
+						throw new Error("controller already closed");
+					},
+				},
+			);
+			await mgr.connect();
+
+			expect(() =>
+				accounts.get("Alpha")?.emitNotification("market_update", {
+					base_id: "sol_base",
+					tick: 3,
+					items: [],
+				}),
+			).not.toThrow();
+		});
+	});
+
 	describe("observation updates", () => {
 		test("forwards observation_update pushes to onObservationUpdate", async () => {
 			const events: Array<{ playerId: string; tick: number; accountId: string | undefined }> = [];

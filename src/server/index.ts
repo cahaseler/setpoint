@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import type {
 	CombatEnvelope,
+	MarketUpdateEnvelope,
 	ObservationUpdateEnvelope,
 	PirateRadioEnvelope,
 } from "@setpoint/protocol";
@@ -11,6 +12,7 @@ import type { CombatModeStore } from "../combat/combat-mode-store.js";
 
 import type { CraftingEventsStore } from "../state/crafting-events-store.js";
 import type { EventBuffer } from "../state/event-buffer.js";
+import type { MarketSubscriptionKeeper } from "../state/market-subscription.js";
 import type { ObservationSubscriptionKeeper } from "../state/observation-subscription.js";
 import type { StateStore } from "../state/store.js";
 import { errorMessage } from "../util/errors.js";
@@ -47,6 +49,7 @@ import {
 	handleGetSystem,
 	handleHealth,
 	handleListAccounts,
+	handleMarketEvents,
 	handleObservationEvents,
 	handlePatchLoop,
 	handlePirateRadioEvents,
@@ -86,7 +89,7 @@ export function resolveBindHost(env: Record<string, string | undefined> = proces
 export function isUnboundedRequest(req: Request): boolean {
 	const { pathname } = new URL(req.url);
 	if (req.method === "GET") {
-		return /\/(crafting|combat|pirate-radio|battle-log|observation)\/events$/.test(pathname);
+		return /\/(crafting|combat|pirate-radio|battle-log|observation|market)\/events$/.test(pathname);
 	}
 	if (req.method === "POST") {
 		return (
@@ -122,6 +125,8 @@ export interface ServerOptions {
 	pirateRadioStore: EventBuffer<PirateRadioEnvelope>;
 	observationEventsStore: EventBuffer<ObservationUpdateEnvelope>;
 	observationSubscriptions: ObservationSubscriptionKeeper;
+	marketEventsStore: EventBuffer<MarketUpdateEnvelope>;
+	marketSubscriptions: MarketSubscriptionKeeper;
 	combatModeStore: CombatModeStore;
 	combatHeartbeats?: CombatHeartbeatStore | undefined;
 	/** Whether an account is mid-battle. Late-bound: the combat reactor is built after the server. */
@@ -335,6 +340,9 @@ export function buildRoutes(ctx: HandlerContext): RouteTable {
 		// a subscription; opening it establishes and maintains the watch, so
 		// callers still have no subscribe-first step to remember.
 		"/accounts/:playerId/observation/events": { GET: r(handleObservationEvents) },
+		// Market change feed (SSE) — subscribes whenever the account is docked and
+		// re-subscribes on each dock, since the server drops it on every undock.
+		"/accounts/:playerId/market/events": { GET: r(handleMarketEvents) },
 	};
 }
 
@@ -365,6 +373,8 @@ export function startServer(options: ServerOptions): DispatcherServer {
 		pirateRadioStore: options.pirateRadioStore,
 		observationEventsStore: options.observationEventsStore,
 		observationSubscriptions: options.observationSubscriptions,
+		marketEventsStore: options.marketEventsStore,
+		marketSubscriptions: options.marketSubscriptions,
 		combatModeStore: options.combatModeStore,
 		combatHeartbeats: options.combatHeartbeats,
 		isInCombat: options.isInCombat,

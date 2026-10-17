@@ -2,6 +2,7 @@ import {
 	COMBAT_NOTIFICATION_TYPES,
 	type CombatNotificationType,
 	type CraftingUpdateEvent,
+	type MarketUpdateEvent,
 	type ObservationUpdateEvent,
 	type PirateRadioEvent,
 } from "@setpoint/protocol";
@@ -92,6 +93,13 @@ export interface LibAccountManagerOptions {
 		event: ObservationUpdateEvent,
 		account: LibManagedAccount,
 	) => void;
+	/**
+	 * Called on every `market_update` push for an account — order book changes
+	 * at the station it is docked at. Like observation, the server only sends
+	 * these while a subscription is active; keeping one alive is
+	 * `MarketSubscriptionKeeper`'s job.
+	 */
+	onMarketUpdate?: (playerId: string, event: MarketUpdateEvent, account: LibManagedAccount) => void;
 }
 
 /**
@@ -258,6 +266,18 @@ export class LibAccountManager {
 					onPirateRadio(playerId, event, account);
 				} catch (err) {
 					log.error(`[${playerId}] onPirateRadio handler threw: ${errorMessage(err)}`);
+				}
+			});
+		}
+		const onMarketUpdate = this.opts.onMarketUpdate;
+		if (onMarketUpdate) {
+			// Same isolation rationale as the handlers above — a throwing
+			// handler must never escape back into the lib's frame routing.
+			account.on("market_update", (event) => {
+				try {
+					onMarketUpdate(playerId, event, account);
+				} catch (err) {
+					log.error(`[${playerId}] onMarketUpdate handler threw: ${errorMessage(err)}`);
 				}
 			});
 		}

@@ -2,6 +2,7 @@ import type {
 	CloakedContact,
 	CraftingUpdateEvent,
 	MarketItem,
+	MarketUpdateEvent,
 	NotificationPayloads,
 	ObservationUpdateEvent,
 	ObservedArenaNpc,
@@ -348,6 +349,24 @@ export interface ObservationUpdateEnvelope {
 	/** Wall-clock time setpoint received this push (ISO 8601) — the server payload only carries a game tick. */
 	receivedAt: string;
 	event: ObservationUpdateEvent;
+}
+
+/**
+ * A single `market_update` push, timestamped on receipt and delivered over
+ * `GET /accounts/:playerId/market/events` (SSE) — both as backlog on connect
+ * and live as new pushes arrive.
+ *
+ * The game only sends these while a market subscription is active, and that
+ * subscription is tied to the station the ship is docked at: it lapses on
+ * undock. Opening the route subscribes whenever the account is docked and
+ * re-subscribes on each dock for as long as a subscriber is attached, so an
+ * account that moves between stations streams each station in turn. The
+ * event's `base_id` says which station a push is for.
+ */
+export interface MarketUpdateEnvelope {
+	/** Wall-clock time setpoint received this push (ISO 8601) — the server payload only carries a game tick. */
+	receivedAt: string;
+	event: MarketUpdateEvent;
 }
 
 /**

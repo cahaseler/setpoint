@@ -226,6 +226,8 @@ export class FakeLibManagedAccount extends FakeLibGoalAccount implements LibMana
 
 	close(): void {}
 
+	marketSubscribed = false;
+
 	/** Mirrors the real lib's `subscribeMarket()` — seeds the market cache from the dispatched response. */
 	async subscribeMarket(): Promise<SubscribeMarketResponse> {
 		const res = (await this.dispatch("subscribe_market")) as
@@ -244,6 +246,7 @@ export class FakeLibManagedAccount extends FakeLibGoalAccount implements LibMana
 				items,
 			});
 		}
+		this.marketSubscribed = true;
 		return snapshot ?? ({} as SubscribeMarketResponse);
 	}
 
@@ -252,6 +255,7 @@ export class FakeLibManagedAccount extends FakeLibGoalAccount implements LibMana
 		const baseId = this.state.location?.docked_at ?? this.marketBaseIds()[0];
 		await this.dispatch("unsubscribe_market");
 		if (baseId) this.dropMarketBook(baseId);
+		this.marketSubscribed = false;
 	}
 
 	observationSubscribed = false;
