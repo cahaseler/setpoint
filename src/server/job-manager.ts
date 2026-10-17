@@ -114,6 +114,24 @@ export class JobManager {
 		);
 	}
 
+	/**
+	 * Delete up to `limit` finished jobs (completed or failed) submitted before
+	 * `cutoff`, and return how many went. Pending and running
+	 * jobs are never touched, whatever their age. Bounded per call so a large
+	 * backlog is cleared in short statements rather than one long one that
+	 * would hold the database — and, with a synchronous driver, the event loop.
+	 */
+	pruneFinishedBefore(cutoff: Date, limit: number): number {
+		return this.db.run(
+			`DELETE FROM jobs WHERE rowid IN (
+				SELECT rowid FROM jobs
+				WHERE status IN ('completed', 'failed') AND submitted_at < ?
+				LIMIT ?
+			)`,
+			[cutoff.toISOString(), limit],
+		).changes;
+	}
+
 	/** Create a new job record in "running" state and return it. */
 	create(accountId: string, goalType?: string, goalOptions?: unknown): JobRecord {
 		const jobId = randomBytes(8).toString("hex");
