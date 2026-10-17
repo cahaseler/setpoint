@@ -100,6 +100,15 @@ const UNSOLICITED_EVENT_LABELS: ReadonlyMap<string, string> = new Map([
 	["mobile_capital_transit", "moved by the Mobile Capital jumping while docked"],
 ]);
 
+/**
+ * Unsolicited `action_result` commands that are routine gameplay, not
+ * something that happened to the account. The lib applies their deltas like
+ * any other; they are left out of the log because they arrive at gameplay
+ * volume. `mission_objective_completed` (game v0.630.4) fires for every
+ * objective kill, finished crafting job and exchange fill.
+ */
+const ROUTINE_UNSOLICITED_COMMANDS: ReadonlySet<string> = new Set(["mission_objective_completed"]);
+
 /** A push frame worth logging, and why it was picked out. */
 export interface ServerNotice {
 	/**
@@ -174,6 +183,7 @@ export function classifyServerNotice(
 	// announce things that happened to the account unprompted.
 	if (type === "action_result" && requestId === undefined) {
 		const command = asString(asRecord(payload)?.["command"]);
+		if (command !== undefined && ROUTINE_UNSOLICITED_COMMANDS.has(command)) return null;
 		if (command !== undefined) {
 			const label = UNSOLICITED_EVENT_LABELS.get(command);
 			return {

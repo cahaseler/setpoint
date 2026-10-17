@@ -200,6 +200,18 @@ describe("unsolicited server events (game v0.596.2)", () => {
 		expect(notice?.summary).toContain("abducted");
 	});
 
+	test("mission_objective_completed is routine gameplay, not a notice", () => {
+		// Game v0.630.4 sends one for every objective kill, crafting job and
+		// exchange fill — at that volume it would bury the events this logs for.
+		expect(
+			classifyServerNotice(
+				"action_result",
+				{ command: "mission_objective_completed", delta: {} },
+				undefined,
+			),
+		).toBeNull();
+	});
+
 	test("an action_result with no command at all is ignored", () => {
 		expect(classifyServerNotice("action_result", { result: {} }, undefined)).toBeNull();
 	});
