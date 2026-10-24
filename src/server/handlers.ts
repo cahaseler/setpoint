@@ -7,7 +7,12 @@ import type {
 	PirateRadioEnvelope,
 } from "@setpoint/protocol";
 import { type LoopType, loopPatchSchemas, loopSchemas } from "@setpoint/protocol";
-import type { MarketBook, ObservationView, SpacemoltClient } from "@spacemolt/lib";
+import {
+	type MarketBook,
+	type ObservationView,
+	type SpacemoltClient,
+	SpacemoltError,
+} from "@spacemolt/lib";
 import { loadRegistrationConfig } from "../accounts/config.js";
 import type { LibAccountManager } from "../accounts/lib-manager.js";
 import { type LibManagedAccount, playerId as playerIdOf } from "../accounts/lib-types.js";
@@ -24,6 +29,7 @@ import { fleetMove } from "../fleet/fleet-move.js";
 import type { FleetAccessDeps } from "../fleet/server-access.js";
 import { makeFleetAccess } from "../fleet/server-access.js";
 
+import type { GameCallGate } from "../accounts/game-call-gate.js";
 import type { CraftingEventsStore } from "../state/crafting-events-store.js";
 import type { EventBuffer } from "../state/event-buffer.js";
 import type { MarketSubscriptionKeeper } from "../state/market-subscription.js";
@@ -70,6 +76,7 @@ export interface HandlerContext {
 	observationSubscriptions: ObservationSubscriptionKeeper;
 	marketEventsStore: EventBuffer<MarketUpdateEnvelope>;
 	marketSubscriptions: MarketSubscriptionKeeper;
+	gameCallGate: GameCallGate;
 	combatModeStore: CombatModeStore;
 	/** Accounts with a synchronous goal currently executing. Used to prevent races. */
 	executingGoals: Map<string, ExecutingGoalEntry>;
@@ -831,6 +838,25 @@ export async function handleRawAction(
 		? toolGroup
 		: `spacemolt_${toolGroup}`;
 
+	// While the game has the IP blocked, refuse at once rather than holding the
+	// caller's connection open until it lifts. The gate would hold the call
+	// anyway; this tells the caller how long to wait instead.
+	const blockedMs = ctx.gameCallGate.ipBlockRemainingMs();
+	if (blockedMs > 0) {
+		const retryAfterSeconds = Math.ceil(blockedMs / 1000);
+		return new Response(
+			JSON.stringify({
+				error: `The game has this IP blocked for excessive rate-limit violations; retry in ${retryAfterSeconds}s`,
+				code: "ip_blocked",
+				retry_after: retryAfterSeconds,
+			}),
+			{
+				status: 503,
+				headers: { "Content-Type": "application/json", "Retry-After": String(retryAfterSeconds) },
+			},
+		);
+	}
+
 	try {
 		// subscribe_market/unsubscribe_market and subscribe_observation/unsubscribe_observation
 		// must go through the lib's typed wrapper methods rather than the generic
@@ -879,7 +905,8 @@ export async function handleRawAction(
 					},
 		);
 	} catch (err) {
-		const apiErr = err instanceof ApiError ? ` [code: ${err.code}]` : "";
+		const apiErr =
+			err instanceof ApiError || err instanceof SpacemoltError ? ` [code: ${err.code}]` : "";
 		// Logged as well as returned: the caller sees the error, but without a
 		// daemon-side record a failure can only be investigated from the
 		// caller's own logs. A "No response to …" timeout is ambiguous — the

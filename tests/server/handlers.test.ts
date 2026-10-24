@@ -9,6 +9,7 @@ import type {
 	PirateRadioEnvelope,
 } from "@setpoint/protocol";
 import type { ClerkPlayer, GameState } from "@spacemolt/lib";
+import { GameCallGate } from "../../src/accounts/game-call-gate.js";
 import type { CombatModeStore } from "../../src/combat/combat-mode-store.js";
 import { markStateFresh } from "../../src/dispatcher/state-freshness.js";
 import {
@@ -224,6 +225,7 @@ function makeContext(
 		observationSubscriptions: new ObservationSubscriptionKeeper(),
 		marketEventsStore: createEventBuffer<MarketUpdateEnvelope>(),
 		marketSubscriptions: new MarketSubscriptionKeeper(),
+		gameCallGate: new GameCallGate(),
 		combatModeStore: new FakeCombatModeStore() as unknown as CombatModeStore,
 	};
 }
@@ -2543,6 +2545,43 @@ describe("handleGetJob", () => {
 // ── Raw Action ──────────────────────────────────────────────────────
 
 describe("handleRawAction", () => {
+	test("refuses at once with 503 and Retry-After while the game has the IP blocked", async () => {
+		let sent = 0;
+		const account = new FakeLibManagedAccount({
+			playerId: "p1",
+			username: "TestPlayer",
+			handlers: {
+				view: () => {
+					sent++;
+					return { result: {} };
+				},
+			},
+		});
+		const ctx = makeContext({ accounts: [account] });
+		const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+		ctx.gameCallGate.noteFailure(
+			new Error(
+				"Your IP has been temporarily blocked due to excessive rate limit violations. Try again in 120 seconds.",
+			),
+		);
+		warnSpy.mockRestore();
+
+		const res = await handleRawAction(
+			new Request("http://localhost/accounts/p1/raw", {
+				method: "POST",
+				body: JSON.stringify({ toolGroup: "storage", action: "view" }),
+				headers: { "Content-Type": "application/json" },
+			}),
+			{ playerId: "p1" },
+			ctx,
+		);
+
+		expect(res.status).toBe(503);
+		expect(Number(res.headers.get("Retry-After"))).toBeGreaterThan(100);
+		expect(((await res.json()) as { code: string }).code).toBe("ip_blocked");
+		expect(sent).toBe(0);
+	});
+
 	test("logs a failed call as well as returning it, so the daemon keeps a record", async () => {
 		const account = new FakeLibManagedAccount({
 			playerId: "p1",

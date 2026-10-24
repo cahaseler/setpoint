@@ -18,6 +18,7 @@ import {
 import { markStateFresh } from "../dispatcher/state-freshness.js";
 import { errorMessage } from "../util/errors.js";
 import { createLogger } from "../util/logger.js";
+import type { GameCallGate } from "./game-call-gate.js";
 import { type LibConfig, buildOwnedFilter } from "./lib-config.js";
 import type { AccountClientLike, LibManagedAccount } from "./lib-types.js";
 import { classifyServerNotice, createNoticeRateLimiter } from "./server-notices.js";
@@ -100,6 +101,12 @@ export interface LibAccountManagerOptions {
 	 * `MarketSubscriptionKeeper`'s job.
 	 */
 	onMarketUpdate?: (playerId: string, event: MarketUpdateEvent, account: LibManagedAccount) => void;
+	/**
+	 * Holds game calls back while the game has said to stop — an account
+	 * rate-limited, or the IP blocked. Installed on every account as it is
+	 * indexed. See `game-call-gate.ts`.
+	 */
+	gate?: GameCallGate;
 }
 
 /**
@@ -185,7 +192,10 @@ export class LibAccountManager {
 				`[${label}] Connection lost (code=${err.code ?? "?"}${err.reason ? `, reason=${err.reason}` : ""}): ${err.message}`,
 			);
 		});
+		const gate = this.opts.gate;
+		gate?.install(playerId, account);
 		account.onRateLimited((info) => {
+			gate?.noteRateLimited(playerId, info.delayMs);
 			log.info(
 				`[${label}] Rate limited on ${info.command}: retry ${info.attempt} in ${Math.round(info.delayMs)}ms`,
 			);
