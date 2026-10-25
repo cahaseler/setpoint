@@ -200,7 +200,7 @@ export class AccountMarketApi {
 	}
 	/**
 	 * Streams `market_update` pushes for this account: the daemon's buffered
-	 * backlog (last 500 events) immediately, then each new push live. The
+	 * backlog (last 50 events) immediately, then each new push live. The
 	 * generator runs until the connection closes or `signal` aborts — consume
 	 * with `for await (const envelope of account.market.events())`.
 	 *

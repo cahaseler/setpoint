@@ -1,7 +1,6 @@
 import type {
 	CombatEnvelope,
 	MarketBookSnapshot,
-	MarketUpdateEnvelope,
 	ObservationSnapshot,
 	ObservationUpdateEnvelope,
 	PirateRadioEnvelope,
@@ -68,7 +67,8 @@ export interface HandlerContext {
 	pirateRadioStore: EventBuffer<PirateRadioEnvelope>;
 	observationEventsStore: EventBuffer<ObservationUpdateEnvelope>;
 	observationSubscriptions: ObservationSubscriptionKeeper;
-	marketEventsStore: EventBuffer<MarketUpdateEnvelope>;
+	/** Serialized `MarketUpdateEnvelope` JSON, one string per push. */
+	marketEventsStore: EventBuffer<string>;
 	marketSubscriptions: MarketSubscriptionKeeper;
 	combatModeStore: CombatModeStore;
 	/** Accounts with a synchronous goal currently executing. Used to prevent races. */
@@ -2618,7 +2618,7 @@ export async function handleBatchGoalAsync(
 
 /**
  * `GET /accounts/:playerId/market/events` — Server-Sent Events stream of
- * `market_update` pushes: the buffered backlog (last 500) immediately on
+ * `market_update` pushes: the buffered backlog (last 50) immediately on
  * connect, then each new push live as it arrives.
  *
  * The game only sends market updates while a subscription is active, and the
@@ -2661,11 +2661,12 @@ export async function handleMarketEvents(
 
 	const stream = new ReadableStream<Uint8Array>({
 		start(controller): void {
-			for (const envelope of ctx.marketEventsStore.recent(actualId)) {
-				controller.enqueue(encoder.encode(`data: ${JSON.stringify(envelope)}\n\n`));
+			// Already serialized on receipt — see marketEventsStore in index.ts.
+			for (const json of ctx.marketEventsStore.recent(actualId)) {
+				controller.enqueue(encoder.encode(`data: ${json}\n\n`));
 			}
-			unsubscribe = ctx.marketEventsStore.subscribe(actualId, (envelope) => {
-				controller.enqueue(encoder.encode(`data: ${JSON.stringify(envelope)}\n\n`));
+			unsubscribe = ctx.marketEventsStore.subscribe(actualId, (json) => {
+				controller.enqueue(encoder.encode(`data: ${json}\n\n`));
 			});
 		},
 		cancel(): void {

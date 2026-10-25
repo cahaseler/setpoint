@@ -222,7 +222,7 @@ function makeContext(
 		pirateRadioStore: createEventBuffer<PirateRadioEnvelope>(),
 		observationEventsStore: createEventBuffer<ObservationUpdateEnvelope>(),
 		observationSubscriptions: new ObservationSubscriptionKeeper(),
-		marketEventsStore: createEventBuffer<MarketUpdateEnvelope>(),
+		marketEventsStore: createEventBuffer<string>(),
 		marketSubscriptions: new MarketSubscriptionKeeper(),
 		combatModeStore: new FakeCombatModeStore() as unknown as CombatModeStore,
 	};
@@ -3886,15 +3886,15 @@ describe("handleMarketEvents", () => {
 	test("streams the backlog, then live events, for this account only", async () => {
 		const account = makeAccount("p1", "TestPlayer", docked("sol_base"));
 		const ctx = makeContext({ accounts: [account] });
-		ctx.marketEventsStore.record("p1", marketEvent(1));
+		ctx.marketEventsStore.record("p1", JSON.stringify(marketEvent(1)));
 
 		const res = await handleMarketEvents(
 			new Request("http://localhost/accounts/p1/market/events"),
 			{ playerId: "p1" },
 			ctx,
 		);
-		ctx.marketEventsStore.record("p2", marketEvent(99));
-		ctx.marketEventsStore.record("p1", marketEvent(2));
+		ctx.marketEventsStore.record("p2", JSON.stringify(marketEvent(99)));
+		ctx.marketEventsStore.record("p1", JSON.stringify(marketEvent(2)));
 
 		const events = await readSseEvents(res, 2);
 		expect(events.map((e) => e.event.tick)).toEqual([1, 2]);

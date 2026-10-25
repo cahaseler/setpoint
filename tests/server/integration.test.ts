@@ -1,7 +1,6 @@
 import { afterAll, beforeAll, describe, expect, mock, test } from "bun:test";
 import type {
 	CombatEnvelope,
-	MarketUpdateEnvelope,
 	ObservationUpdateEnvelope,
 	PirateRadioEnvelope,
 } from "@setpoint/protocol";
@@ -76,7 +75,7 @@ describe("Server integration", () => {
 	let handlerCtx: HandlerContext;
 	let pirateRadioStore: EventBuffer<PirateRadioEnvelope>;
 	let observationEventsStore: EventBuffer<ObservationUpdateEnvelope>;
-	let marketEventsStore: EventBuffer<MarketUpdateEnvelope>;
+	let marketEventsStore: EventBuffer<string>;
 	// Seed p1's push-fed cache with TEST_STATE so goal execution (which reads
 	// account.state) sees a fueled ship; read handlers get state from the store stub.
 	const accounts = [
@@ -104,7 +103,7 @@ describe("Server integration", () => {
 
 		pirateRadioStore = createEventBuffer<PirateRadioEnvelope>();
 		observationEventsStore = createEventBuffer<ObservationUpdateEnvelope>();
-		marketEventsStore = createEventBuffer<MarketUpdateEnvelope>();
+		marketEventsStore = createEventBuffer<string>();
 
 		const ctx: HandlerContext = {
 			manager,
@@ -319,10 +318,13 @@ describe("Server integration", () => {
 	test("GET /accounts/:playerId/market/events is served as an SSE stream", async () => {
 		// Seeded so the stream writes a frame — a stream that never flushes a
 		// byte leaves the response headers unsent.
-		marketEventsStore.record("p1", {
-			receivedAt: new Date().toISOString(),
-			event: { base_id: "sol_base", tick: 1, items: [] },
-		});
+		marketEventsStore.record(
+			"p1",
+			JSON.stringify({
+				receivedAt: new Date().toISOString(),
+				event: { base_id: "sol_base", tick: 1, items: [] },
+			}),
+		);
 
 		const controller = new AbortController();
 		const res = await fetch(`${base}/accounts/p1/market/events`, { signal: controller.signal });

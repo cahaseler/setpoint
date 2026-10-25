@@ -134,12 +134,16 @@ async function main(): Promise<void> {
 	// server only sends these while a watch is subscribed, so the keeper
 	// establishes one when a stream opens and re-establishes it after each move.
 	// Buffers market_update pushes per account for
-	// GET /accounts/:id/market/events (SSE). Larger than the default buffer:
-	// a busy station pushes most ticks, and a reconnecting consumer measuring
-	// order lifetimes needs the gap covered.
-	const marketEventsStore = createEventBuffer<MarketUpdateEnvelope>(500);
+	// GET /accounts/:id/market/events (SSE), serialized once on receipt.
+	// A push can carry a whole station's book — up to ~19KB of JSON — so
+	// these are stored as the JSON the stream sends rather than as object
+	// graphs several times that size, and the backlog keeps the default 50.
+	// It was 500 at first: by 2026-10-25 that held 280MB of JSON across 36
+	// accounts and was most of the daemon's 720MB resident memory.
+	const marketEventsStore = createEventBuffer<string>();
 	const onMarketUpdate = (playerId: string, event: MarketUpdateEvent): void => {
-		marketEventsStore.record(playerId, { receivedAt: new Date().toISOString(), event });
+		const envelope: MarketUpdateEnvelope = { receivedAt: new Date().toISOString(), event };
+		marketEventsStore.record(playerId, JSON.stringify(envelope));
 	};
 
 	const observationEventsStore = createEventBuffer<ObservationUpdateEnvelope>();
