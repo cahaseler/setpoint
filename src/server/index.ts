@@ -1,7 +1,6 @@
 import type { Database } from "bun:sqlite";
 import type {
 	CombatEnvelope,
-	MarketUpdateEnvelope,
 	ObservationUpdateEnvelope,
 	PirateRadioEnvelope,
 } from "@setpoint/protocol";
@@ -126,7 +125,8 @@ export interface ServerOptions {
 	pirateRadioStore: EventBuffer<PirateRadioEnvelope>;
 	observationEventsStore: EventBuffer<ObservationUpdateEnvelope>;
 	observationSubscriptions: ObservationSubscriptionKeeper;
-	marketEventsStore: EventBuffer<MarketUpdateEnvelope>;
+	/** Serialized `MarketUpdateEnvelope` JSON, one string per push. */
+	marketEventsStore: EventBuffer<string>;
 	marketSubscriptions: MarketSubscriptionKeeper;
 	gameCallGate: GameCallGate;
 	combatModeStore: CombatModeStore;
