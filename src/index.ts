@@ -17,6 +17,7 @@ import {
 	SpacemoltClient,
 	type StateSection,
 } from "@spacemolt/lib";
+import { GameCallGate } from "./accounts/game-call-gate.js";
 import { parseLibConfig } from "./accounts/lib-config.js";
 import { LibAccountManager } from "./accounts/lib-manager.js";
 import { type LibManagedAccount, playerId as playerIdOf } from "./accounts/lib-types.js";
@@ -199,6 +200,9 @@ async function main(): Promise<void> {
 		clerkApiKey: libConfig.clerkApiKey,
 		connectRetry: { maxRetries: 200, baseDelayMs: 2000, maxDelayMs: 60_000 },
 	});
+	// Holds game calls while the game has said to stop: an account
+	// rate-limited, or the whole IP blocked. See accounts/game-call-gate.ts.
+	const gameCallGate = new GameCallGate();
 	const manager = new LibAccountManager(client, libConfig, {
 		onStateChange,
 		onDrift,
@@ -207,6 +211,7 @@ async function main(): Promise<void> {
 		onPirateRadio,
 		onObservationUpdate,
 		onMarketUpdate,
+		gate: gameCallGate,
 	});
 
 	// Periodically force a refresh() across the whole fleet so idle accounts
@@ -236,6 +241,7 @@ async function main(): Promise<void> {
 		observationSubscriptions,
 		marketEventsStore,
 		marketSubscriptions,
+		gameCallGate,
 		combatModeStore,
 		executingGoals,
 		claimedAccounts,

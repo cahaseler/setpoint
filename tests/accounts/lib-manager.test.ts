@@ -5,6 +5,7 @@ import {
 	ConnectionClosedError,
 	type GameState,
 } from "@spacemolt/lib";
+import { GameCallGate } from "../../src/accounts/game-call-gate.js";
 import { LibAccountManager } from "../../src/accounts/lib-manager.js";
 import type { AccountClientLike, LibManagedAccount } from "../../src/accounts/lib-types.js";
 import { STATE_FRESHNESS_TTL_MS, isStateStale } from "../../src/dispatcher/state-freshness.js";
@@ -754,6 +755,30 @@ describe("LibAccountManager", () => {
 			expect(infoLines).toContain(
 				"[Alpha] Rate limited on spacemolt.get_status: retry 2 in 1235ms",
 			);
+		});
+
+		test("installs the game-call gate and feeds it each rate-limit retry", async () => {
+			const { client, accounts } = setup([player("Alpha", "pid-a")]);
+			const gate = new GameCallGate();
+			const installed: string[] = [];
+			const held: Array<{ playerId: string; delayMs: number }> = [];
+			gate.install = (playerId) => {
+				installed.push(playerId);
+			};
+			gate.noteRateLimited = (playerId, delayMs) => {
+				held.push({ playerId, delayMs });
+			};
+			const mgr = new LibAccountManager(client, { clerkApiKey: "k" }, { gate });
+			await mgr.connect();
+
+			const infoSpy = spyOn(console, "info").mockImplementation(() => {});
+			accounts
+				.get("Alpha")
+				?.emitRateLimited({ command: "spacemolt_storage.view", attempt: 1, delayMs: 41_000 });
+			infoSpy.mockRestore();
+
+			expect(installed).toEqual(["pid-a"]);
+			expect(held).toEqual([{ playerId: "pid-a", delayMs: 41_000 }]);
 		});
 
 		test("still logs a close that carries no code", async () => {

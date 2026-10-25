@@ -10,6 +10,7 @@ import type { LibAccountManager } from "../accounts/lib-manager.js";
 import type { CombatHeartbeatStore } from "../combat/combat-heartbeat.js";
 import type { CombatModeStore } from "../combat/combat-mode-store.js";
 
+import type { GameCallGate } from "../accounts/game-call-gate.js";
 import type { CraftingEventsStore } from "../state/crafting-events-store.js";
 import type { EventBuffer } from "../state/event-buffer.js";
 import type { MarketSubscriptionKeeper } from "../state/market-subscription.js";
@@ -127,6 +128,7 @@ export interface ServerOptions {
 	observationSubscriptions: ObservationSubscriptionKeeper;
 	marketEventsStore: EventBuffer<MarketUpdateEnvelope>;
 	marketSubscriptions: MarketSubscriptionKeeper;
+	gameCallGate: GameCallGate;
 	combatModeStore: CombatModeStore;
 	combatHeartbeats?: CombatHeartbeatStore | undefined;
 	/** Whether an account is mid-battle. Late-bound: the combat reactor is built after the server. */
@@ -375,6 +377,7 @@ export function startServer(options: ServerOptions): DispatcherServer {
 		observationSubscriptions: options.observationSubscriptions,
 		marketEventsStore: options.marketEventsStore,
 		marketSubscriptions: options.marketSubscriptions,
+		gameCallGate: options.gameCallGate,
 		combatModeStore: options.combatModeStore,
 		combatHeartbeats: options.combatHeartbeats,
 		isInCombat: options.isInCombat,

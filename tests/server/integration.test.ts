@@ -6,6 +6,7 @@ import type {
 	PirateRadioEnvelope,
 } from "@setpoint/protocol";
 import type { GameState } from "@spacemolt/lib";
+import { GameCallGate } from "../../src/accounts/game-call-gate.js";
 import type { CombatModeStore } from "../../src/combat/combat-mode-store.js";
 import type { HandlerContext } from "../../src/server/handlers.js";
 import { errorResponse } from "../../src/server/http.js";
@@ -123,6 +124,7 @@ describe("Server integration", () => {
 			observationSubscriptions: new ObservationSubscriptionKeeper(),
 			marketEventsStore,
 			marketSubscriptions: new MarketSubscriptionKeeper(),
+			gameCallGate: new GameCallGate(),
 			combatModeStore: { get: () => "flee" } as unknown as CombatModeStore,
 		};
 
