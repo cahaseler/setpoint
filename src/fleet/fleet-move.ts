@@ -1,3 +1,4 @@
+import { withAccountLogging } from "../accounts/log-subject.js";
 import type { FleetOperationResult, GoalResult } from "../dispatcher/goals.js";
 import { failed, fleetOperation, succeeded } from "../dispatcher/goals.js";
 import type { LibGoalContext } from "../dispatcher/lib-goal-context.js";
@@ -187,19 +188,26 @@ async function settleMember(
 		);
 	}
 
-	let ticks = 0;
+	// A fleet operation runs under the leader's log subject; name the member
+	// for the work done on its own ship.
+	return withAccountLogging(
+		() => ctx.account,
+		async () => {
+			let ticks = 0;
 
-	if (options.baseId !== undefined) {
-		const dock = await new LibDockAt(options.baseId).execute(ctx);
-		ticks += dock.ticksUsed;
-		if (!dock.success) return { ...dock, ticksUsed: ticks };
-	}
+			if (options.baseId !== undefined) {
+				const dock = await new LibDockAt(options.baseId).execute(ctx);
+				ticks += dock.ticksUsed;
+				if (!dock.success) return { ...dock, ticksUsed: ticks };
+			}
 
-	const ready = await readyShip(ctx, options);
-	ticks += ready.ticksUsed;
-	if (!ready.success) return { ...ready, ticksUsed: ticks };
+			const ready = await readyShip(ctx, options);
+			ticks += ready.ticksUsed;
+			if (!ready.success) return { ...ready, ticksUsed: ticks };
 
-	return succeeded(`Arrived${ready.message === "" ? "" : ` (${ready.message})`}`, ticks);
+			return succeeded(`Arrived${ready.message === "" ? "" : ` (${ready.message})`}`, ticks);
+		},
+	);
 }
 
 /**
