@@ -266,8 +266,9 @@ export class AccountObservationApi {
 
 	/**
 	 * Gets the cached observation-watch view: players, pirates, empire NPCs,
-	 * wildlife, intact prizes and arena enemies at the watched POI, plus
-	 * scanner ship counts for the rest of the system. There is no subscribe
+	 * wildlife, intact prizes, arena enemies and frontier Repeaters at the
+	 * watched POI, plus scanner ship counts for the rest of the system. There
+	 * is no subscribe
 	 * method here — subscribe first via
 	 * `account.raw.spacemolt.subscribe_observation()`, or open `events()`,
 	 * which subscribes and maintains the watch for you (throws

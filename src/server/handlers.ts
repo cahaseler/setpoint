@@ -1677,6 +1677,7 @@ function serializeObservation(view: ObservationView): ObservationSnapshot {
 		creatures: [...view.creatures.values()],
 		prizes: [...view.prizes.values()],
 		arenaNpcs: [...view.arenaNpcs.values()],
+		repeaters: [...view.repeaters.values()],
 		shipCounts: Object.fromEntries(view.shipCounts),
 		cloaked: [...view.cloaked.values()],
 		unknownSignature: view.unknownSignature,

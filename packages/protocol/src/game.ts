@@ -18,6 +18,7 @@ import type {
 	NotificationPayloads,
 	PirateInfo,
 	PrizeInfo,
+	RepeaterInfo,
 } from "@spacemolt/lib";
 
 /** Per-job crafting progress push, as sent by the game server's `crafting_update` notification. */
@@ -65,6 +66,8 @@ export type ObservedCreature = CreatureInfo;
 export type ObservedPrize = PrizeInfo;
 /** An arena challenge enemy present at a watched POI. */
 export type ObservedArenaNpc = ArenaNpcInfo;
+/** A frontier Repeater present at a watched POI. */
+export type ObservedRepeater = RepeaterInfo;
 
 /** The subset of notification types setpoint's combat detector treats as combat-relevant. */
 export const COMBAT_NOTIFICATION_TYPES = [

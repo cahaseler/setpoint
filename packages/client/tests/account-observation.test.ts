@@ -54,6 +54,7 @@ describe("AccountApi.observation", () => {
 		creatures: [],
 		prizes: [],
 		arenaNpcs: [],
+		repeaters: [],
 		shipCounts: { sol_belt: 3 },
 		cloaked: [],
 		unknownSignature: false,
