@@ -12,7 +12,6 @@ import type { PirateRadioEvent } from "@setpoint/protocol";
 export function makePirateRadioEvent(over: Partial<PirateRadioEvent> = {}): PirateRadioEvent {
 	return {
 		category: "ambient",
-		discord_policy: "never",
 		editorial_class: "ambient",
 		event_key: "ambient_chatter",
 		faction_key: "blackvane",

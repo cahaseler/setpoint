@@ -119,17 +119,8 @@ export async function reloadWeapons(
 		log.info(
 			`Batch reloading ${chunk.length} weapon(s): ${chunk.map((e) => `${e.moduleId}←${e.ammoItemId}`).join(", ")}`,
 		);
-		// The game takes `{weapon_instance_id, ammo_item_id}` objects, but
-		// @spacemolt/lib 15.0.0 types this parameter as `string[]` on `commands`
-		// (and as `unknown[]` in its OpenAPI types) — its command generator loses
-		// the element schema. The shape is therefore checked here, at the one
-		// place it is built, and cast past the wrong declaration.
-		const weapons: Array<{ weapon_instance_id: string; ammo_item_id: string }> = chunk.map((e) => ({
-			weapon_instance_id: e.moduleId,
-			ammo_item_id: e.ammoItemId,
-		}));
 		const response = await ctx.account.commands.spacemolt_battle.reload({
-			weapons: weapons as unknown as string[],
+			weapons: chunk.map((e) => ({ weapon_instance_id: e.moduleId, ammo_item_id: e.ammoItemId })),
 		});
 		ticksUsed++;
 
