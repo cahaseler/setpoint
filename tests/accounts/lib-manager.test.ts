@@ -795,6 +795,72 @@ describe("LibAccountManager", () => {
 		});
 	});
 
+	describe("hazards and Pathfinder storms", () => {
+		const hazard = (hull: number) => ({
+			dose_pct: 8,
+			hazard: { type: "radiation", severity: 3 },
+			hull,
+			max_hull: 400,
+			message: "Radiation is burning through your hull.",
+		});
+
+		test("logs a hazard warning with the hull left, collapsing repeats per account", async () => {
+			const { client, accounts } = setup([player("Alpha", "pid-a"), player("Bravo", "pid-b")]);
+			const mgr = new LibAccountManager(client, { clerkApiKey: "k" });
+			await mgr.connect();
+
+			const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+			accounts.get("Alpha")?.emitNotification("hazard_warning", hazard(368));
+			accounts.get("Alpha")?.emitNotification("hazard_warning", hazard(336));
+			accounts.get("Bravo")?.emitNotification("hazard_warning", hazard(390));
+			const lines = warnSpy.mock.calls.map((c) => String(c[0]));
+			warnSpy.mockRestore();
+
+			const alpha = lines.filter((l) => l.includes("[Alpha] Hazard"));
+			expect(alpha).toHaveLength(1);
+			expect(alpha[0]).toContain("Hazard radiation (severity 3): hull 368/400, 8% per dose");
+			// Another account's first warning is not hidden by Alpha's repeats.
+			expect(lines.some((l) => l.includes("[Bravo] Hazard"))).toBe(true);
+		});
+
+		test("logs every storm deflection at warn", async () => {
+			const { client, accounts } = setup([player("Alpha", "pid-a")]);
+			const mgr = new LibAccountManager(client, { clerkApiKey: "k" });
+			await mgr.connect();
+
+			const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+			for (let i = 0; i < 2; i++) {
+				accounts.get("Alpha")?.emitNotification("pathfinder_storm", {
+					deflected: true,
+					message: "Pushed off course.",
+				});
+			}
+			const lines = warnSpy.mock.calls.map((c) => String(c[0]));
+			warnSpy.mockRestore();
+
+			expect(lines.filter((l) => l.includes("[Alpha] Pathfinder storm deflected"))).toHaveLength(2);
+		});
+
+		test("collapses buffeting that left the heading alone, at info", async () => {
+			const { client, accounts } = setup([player("Alpha", "pid-a")]);
+			const mgr = new LibAccountManager(client, { clerkApiKey: "k" });
+			await mgr.connect();
+
+			const infoSpy = spyOn(console, "info").mockImplementation(() => {});
+			for (let i = 0; i < 3; i++) {
+				accounts
+					.get("Alpha")
+					?.emitNotification("pathfinder_storm", { deflected: false, message: "Buffeted." });
+			}
+			const lines = infoSpy.mock.calls.map((c) => String(c[0]));
+			infoSpy.mockRestore();
+
+			expect(
+				lines.filter((l) => l.includes("[Alpha] Pathfinder storm, heading held")),
+			).toHaveLength(1);
+		});
+	});
+
 	describe("market updates", () => {
 		test("forwards market_update pushes to onMarketUpdate", async () => {
 			const events: Array<{ playerId: string; baseId: string }> = [];
