@@ -107,6 +107,11 @@ export interface LibAccountManagerOptions {
 	 * indexed. See `game-call-gate.ts`.
 	 */
 	gate?: GameCallGate;
+	/**
+	 * Called on every `hazard_warning` push (game v0.687.0), before log
+	 * collapsing — the hazard reactor decides whether to pull the ship out.
+	 */
+	onHazardWarning?: (playerId: string, warning: NotificationPayloads["hazard_warning"]) => void;
 }
 
 /**
@@ -211,7 +216,13 @@ export class LibAccountManager {
 		// at the POI, or on each mining action, and the ship is lost if hull
 		// reaches 0. Logged at warn with the hull left, so a ship being worn down
 		// is visible however it is being driven. Repeats are collapsed per account.
+		const onHazardWarning = this.opts.onHazardWarning;
 		account.on("hazard_warning", (w) => {
+			try {
+				onHazardWarning?.(playerId, w);
+			} catch (err) {
+				log.error(`[${playerId}] onHazardWarning handler threw: ${errorMessage(err)}`);
+			}
 			const suppressed = this.perAccountLimiter.admit(`hazard:${playerId}`, Date.now());
 			if (suppressed === null) return;
 			const repeats = suppressed > 0 ? ` (+${suppressed} more dose(s) since the last line)` : "";

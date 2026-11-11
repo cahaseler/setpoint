@@ -823,6 +823,29 @@ describe("LibAccountManager", () => {
 			expect(lines.some((l) => l.includes("[Bravo] Hazard"))).toBe(true);
 		});
 
+		test("forwards every hazard warning to onHazardWarning, including collapsed repeats", async () => {
+			// The reactor must see each dose — a tolerate floor can be crossed on a
+			// warning the log line suppressed.
+			const { client, accounts } = setup([player("Alpha", "pid-a")]);
+			const seen: Array<{ playerId: string; hull: number }> = [];
+			const mgr = new LibAccountManager(
+				client,
+				{ clerkApiKey: "k" },
+				{ onHazardWarning: (playerId, w) => seen.push({ playerId, hull: w.hull }) },
+			);
+			await mgr.connect();
+
+			const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+			accounts.get("Alpha")?.emitNotification("hazard_warning", hazard(368));
+			accounts.get("Alpha")?.emitNotification("hazard_warning", hazard(336));
+			warnSpy.mockRestore();
+
+			expect(seen).toEqual([
+				{ playerId: "pid-a", hull: 368 },
+				{ playerId: "pid-a", hull: 336 },
+			]);
+		});
+
 		test("logs every storm deflection at warn", async () => {
 			const { client, accounts } = setup([player("Alpha", "pid-a")]);
 			const mgr = new LibAccountManager(client, { clerkApiKey: "k" });

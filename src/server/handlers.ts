@@ -29,6 +29,7 @@ import type { FleetAccessDeps } from "../fleet/server-access.js";
 import { makeFleetAccess } from "../fleet/server-access.js";
 
 import type { GameCallGate } from "../accounts/game-call-gate.js";
+import { type HazardModeStore, parseHazardSetting } from "../combat/hazard-mode-store.js";
 import type { CraftingEventsStore } from "../state/crafting-events-store.js";
 import type { EventBuffer } from "../state/event-buffer.js";
 import type { MarketSubscriptionKeeper } from "../state/market-subscription.js";
@@ -77,6 +78,7 @@ export interface HandlerContext {
 	marketEventsStore: EventBuffer<string>;
 	marketSubscriptions: MarketSubscriptionKeeper;
 	gameCallGate: GameCallGate;
+	hazardModeStore: HazardModeStore;
 	combatModeStore: CombatModeStore;
 	/** Accounts with a synchronous goal currently executing. Used to prevent races. */
 	executingGoals: Map<string, ExecutingGoalEntry>;
@@ -1188,6 +1190,58 @@ export async function handleSetCombatMode(
 	return jsonResponse({ playerId: actualId, mode });
 }
 
+/** `GET /accounts/:playerId/hazard-mode` — the account's response to POI hazards. */
+export async function handleGetHazardMode(
+	_req: Request,
+	params: RouteParams,
+	ctx: HandlerContext,
+): Promise<Response> {
+	const playerId = params["playerId"];
+	if (!playerId) {
+		return errorResponse("Missing playerId", 400);
+	}
+	const account = resolveAccount(ctx, playerId);
+	if (!account) {
+		return errorResponse("Account not found", 404);
+	}
+	const actualId = playerIdOf(account);
+	return jsonResponse({ playerId: actualId, ...ctx.hazardModeStore.get(actualId) });
+}
+
+/**
+ * `PATCH /accounts/:playerId/hazard-mode` — set it. Body is
+ * `{ "mode": "retreat" | "external" }` or
+ * `{ "mode": "tolerate", "minHullPct": <0-100> }`. Persisted; takes effect on
+ * the next hazard warning, no restart.
+ */
+export async function handleSetHazardMode(
+	req: Request,
+	params: RouteParams,
+	ctx: HandlerContext,
+): Promise<Response> {
+	const playerId = params["playerId"];
+	if (!playerId) {
+		return errorResponse("Missing playerId", 400);
+	}
+	const account = resolveAccount(ctx, playerId);
+	if (!account) {
+		return errorResponse("Account not found", 404);
+	}
+	let body: unknown;
+	try {
+		body = await req.json();
+	} catch {
+		return errorResponse("Invalid JSON body", 400);
+	}
+	const setting = parseHazardSetting(body);
+	if (typeof setting === "string") {
+		return errorResponse(setting, 400);
+	}
+	const actualId = playerIdOf(account);
+	await ctx.hazardModeStore.set(actualId, setting);
+	return jsonResponse({ playerId: actualId, ...setting });
+}
+
 export async function handleStartLoop(
 	req: Request,
 	params: RouteParams,
@@ -1239,6 +1293,23 @@ export async function handleStartLoop(
 	const opts = options as Record<string, unknown>;
 
 	const actualId = playerIdOf(account);
+
+	// Something other than a loop owns the ship — a goal, a hazard retreat, an
+	// async job or a fleet operation. Starting a loop now would put two drivers
+	// on one ship; the caller waits instead, as a goal submission already does.
+	const executing = ctx.executingGoals.get(actualId);
+	if (executing) {
+		return errorResponse(
+			`A ${executing.goalType} goal is executing on this account. Try again when it finishes.`,
+			409,
+		);
+	}
+	if (ctx.jobManager.getRunningJob(actualId)) {
+		return errorResponse("An async goal job is already running on this account.", 409);
+	}
+	if (ctx.claimedAccounts.has(actualId)) {
+		return errorResponse("This account is claimed by a fleet operation in progress.", 409);
+	}
 
 	// If a loop is already running, stop it and wait for it to actually finish
 	// before starting the new one. Evicting the map entry without waiting (as

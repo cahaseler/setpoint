@@ -24,6 +24,8 @@ import { type LibManagedAccount, playerId as playerIdOf } from "./accounts/lib-t
 import { CombatHeartbeatStore } from "./combat/combat-heartbeat.js";
 import { CombatModeStore } from "./combat/combat-mode-store.js";
 import { CombatReactor } from "./combat/combat-reactor.js";
+import { HazardModeStore } from "./combat/hazard-mode-store.js";
+import { HazardReactor } from "./combat/hazard-reactor.js";
 import { makeLibGoalContext } from "./dispatcher/lib-goal-context.js";
 import type { ExecutingGoalEntry } from "./server/account-release.js";
 import { createGoal } from "./server/goal-registry.js";
@@ -155,6 +157,10 @@ async function main(): Promise<void> {
 	// Per-account combat-response override (flee vs. externally-driven combat
 	// logic) — loaded before the reactor and server both need it.
 	const combatModeStore = await CombatModeStore.load(CONFIG_DIR);
+	// Per-account response to POI hazards (game v0.687.0). See
+	// combat/hazard-reactor.ts; built late, like the combat reactor.
+	const hazardModeStore = await HazardModeStore.load(CONFIG_DIR);
+	const hazardRef: { current: HazardReactor | undefined } = { current: undefined };
 	// In memory only: a heartbeat asserts a driver process is alive right now,
 	// so a value surviving a restart would be a lie about one that isn't.
 	const combatHeartbeats = new CombatHeartbeatStore();
@@ -216,6 +222,7 @@ async function main(): Promise<void> {
 		onObservationUpdate,
 		onMarketUpdate,
 		gate: gameCallGate,
+		onHazardWarning: (playerId, warning) => hazardRef.current?.handle(playerId, warning),
 	});
 
 	// Periodically force a refresh() across the whole fleet so idle accounts
@@ -246,6 +253,7 @@ async function main(): Promise<void> {
 		marketEventsStore,
 		marketSubscriptions,
 		gameCallGate,
+		hazardModeStore,
 		combatModeStore,
 		executingGoals,
 		claimedAccounts,
@@ -255,6 +263,17 @@ async function main(): Promise<void> {
 	// Bound job history: finished jobs past the retention window are deleted
 	// in the background. See server/job-pruner.ts.
 	const jobPruner = startJobPruner(server.jobManager);
+
+	hazardRef.current = new HazardReactor({
+		manager,
+		loopManager: server.loopManager,
+		jobManager: server.jobManager,
+		executingGoals,
+		configDir: CONFIG_DIR,
+		combatEventsStore,
+		hazardModeStore,
+		isInCombat: (playerId: string) => reactorRef.current?.isInCombat(playerId) ?? false,
+	});
 
 	reactorRef.current = new CombatReactor({
 		manager,

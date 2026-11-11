@@ -269,6 +269,42 @@ describe("dispatch", () => {
 		expect(client.patch).not.toHaveBeenCalled();
 	});
 
+	test("hazard-mode without arg calls GET /accounts/:playerId/hazard-mode", async () => {
+		const { ctx, client } = makeCtx();
+		await dispatch(ctx, ["hazard-mode", "player-123"]);
+
+		expect(client.get).toHaveBeenCalledWith("/accounts/player-123/hazard-mode");
+	});
+
+	test("hazard-mode retreat calls PATCH with the mode", async () => {
+		const { ctx, client } = makeCtx();
+		await dispatch(ctx, ["hazard-mode", "player-123", "retreat"]);
+
+		expect(client.patch).toHaveBeenCalledWith("/accounts/player-123/hazard-mode", {
+			mode: "retreat",
+		});
+	});
+
+	test("hazard-mode tolerate passes the hull floor as a number", async () => {
+		const { ctx, client } = makeCtx();
+		await dispatch(ctx, ["hazard-mode", "player-123", "tolerate", "40"]);
+
+		expect(client.patch).toHaveBeenCalledWith("/accounts/player-123/hazard-mode", {
+			mode: "tolerate",
+			minHullPct: 40,
+		});
+	});
+
+	test("hazard-mode tolerate without a floor is a usage error", async () => {
+		const { ctx, client, output } = makeCtx();
+		await expect(dispatch(ctx, ["hazard-mode", "player-123", "tolerate"])).rejects.toThrow(
+			"usage_error",
+		);
+
+		expect(output.usageError).toHaveBeenCalled();
+		expect(client.patch).not.toHaveBeenCalled();
+	});
+
 	// --- New commands ---
 
 	test("accounts register calls POST /accounts/register with body", async () => {

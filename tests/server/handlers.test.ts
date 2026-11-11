@@ -1,4 +1,7 @@
 import { describe, expect, mock, spyOn, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type {
 	CombatEnvelope,
 	CombatMode,
@@ -11,6 +14,7 @@ import type {
 import type { ClerkPlayer, GameState } from "@spacemolt/lib";
 import { GameCallGate } from "../../src/accounts/game-call-gate.js";
 import type { CombatModeStore } from "../../src/combat/combat-mode-store.js";
+import { HazardModeStore } from "../../src/combat/hazard-mode-store.js";
 import { markStateFresh } from "../../src/dispatcher/state-freshness.js";
 import {
 	type HandlerContext,
@@ -26,6 +30,7 @@ import {
 	handleFleetMoveAsync,
 	handleGetAccount,
 	handleGetCombatMode,
+	handleGetHazardMode,
 	handleGetJob,
 	handleGetLogLevel,
 	handleGetLoop,
@@ -43,6 +48,7 @@ import {
 	handleRawAction,
 	handleRegisterAccount,
 	handleSetCombatMode,
+	handleSetHazardMode,
 	handleSetLogLevel,
 	handleStartLoop,
 	handleStopLoop,
@@ -226,6 +232,7 @@ function makeContext(
 		marketEventsStore: createEventBuffer<string>(),
 		marketSubscriptions: new MarketSubscriptionKeeper(),
 		gameCallGate: new GameCallGate(),
+		hazardModeStore: { get: () => ({ mode: "retreat" }) } as unknown as HazardModeStore,
 		combatModeStore: new FakeCombatModeStore() as unknown as CombatModeStore,
 	};
 }
@@ -3957,6 +3964,118 @@ describe("handleMarketEvents", () => {
 		await res.body?.cancel();
 
 		expect(ctx.marketSubscriptions.hasSubscribers("p1")).toBe(false);
+	});
+});
+
+describe("hazard mode", () => {
+	async function contextWithStore() {
+		const dir = await mkdtemp(join(tmpdir(), "hazard-"));
+		const account = makeAccount("p1");
+		const ctx = makeContext({ accounts: [account] });
+		ctx.hazardModeStore = await HazardModeStore.load(dir);
+		return { ctx, dir };
+	}
+
+	const patch = (body: unknown) =>
+		new Request("http://localhost/accounts/p1/hazard-mode", {
+			method: "PATCH",
+			body: JSON.stringify(body),
+			headers: { "Content-Type": "application/json" },
+		});
+
+	test("GET reports the default, retreat", async () => {
+		const { ctx, dir } = await contextWithStore();
+		const res = await handleGetHazardMode(
+			new Request("http://localhost/accounts/p1/hazard-mode"),
+			{ playerId: "p1" },
+			ctx,
+		);
+		expect(await res.json()).toEqual({ playerId: "p1", mode: "retreat" });
+		await rm(dir, { recursive: true, force: true });
+	});
+
+	test("PATCH sets tolerate with a hull floor, and GET reads it back", async () => {
+		const { ctx, dir } = await contextWithStore();
+		const info = spyOn(console, "info").mockImplementation(() => {});
+		const set = await handleSetHazardMode(
+			patch({ mode: "tolerate", minHullPct: 40 }),
+			{ playerId: "p1" },
+			ctx,
+		);
+		info.mockRestore();
+		expect(set.status).toBe(200);
+
+		const res = await handleGetHazardMode(
+			new Request("http://localhost/accounts/p1/hazard-mode"),
+			{ playerId: "p1" },
+			ctx,
+		);
+		expect(await res.json()).toEqual({ playerId: "p1", mode: "tolerate", minHullPct: 40 });
+		await rm(dir, { recursive: true, force: true });
+	});
+
+	test("PATCH rejects tolerate without a threshold", async () => {
+		const { ctx, dir } = await contextWithStore();
+		const res = await handleSetHazardMode(patch({ mode: "tolerate" }), { playerId: "p1" }, ctx);
+		expect(res.status).toBe(400);
+		await rm(dir, { recursive: true, force: true });
+	});
+
+	test("404 for an unknown account", async () => {
+		const ctx = makeContext({ accounts: [] });
+		const res = await handleGetHazardMode(
+			new Request("http://localhost/accounts/x/hazard-mode"),
+			{ playerId: "x" },
+			ctx,
+		);
+		expect(res.status).toBe(404);
+	});
+});
+
+describe("handleStartLoop refuses while something else owns the ship", () => {
+	const startMining = () =>
+		new Request("http://localhost/accounts/p1/loop", {
+			method: "POST",
+			body: JSON.stringify({
+				type: "mining",
+				options: {
+					miningSystemId: "sol",
+					beltPoiId: "sol_belt",
+					sellSystemId: "sol",
+					sellStationPoiId: "sol_station",
+					sellBaseId: "sol_base",
+				},
+			}),
+			headers: { "Content-Type": "application/json" },
+		});
+
+	test("a hazard retreat in progress blocks a loop restart with 409", async () => {
+		// The retreat registers as the account's executing goal. A caller
+		// relaunching the loop straight after would send the ship back in.
+		const account = makeAccount("p1");
+		const ctx = makeContext({ accounts: [account] });
+		ctx.executingGoals.set("p1", {
+			goalType: "hazard-retreat",
+			startedAt: "",
+			controller: new AbortController(),
+			progress: { goalType: "hazard-retreat", completedSteps: [], remainingSteps: [] },
+			promise: new Promise(() => {}),
+		});
+
+		const res = await handleStartLoop(startMining(), { playerId: "p1" }, ctx);
+
+		expect(res.status).toBe(409);
+		expect(((await res.json()) as { error: string }).error).toContain("hazard-retreat");
+	});
+
+	test("a fleet claim blocks a loop start with 409", async () => {
+		const account = makeAccount("p1");
+		const ctx = makeContext({ accounts: [account] });
+		ctx.claimedAccounts.add("p1");
+
+		const res = await handleStartLoop(startMining(), { playerId: "p1" }, ctx);
+
+		expect(res.status).toBe(409);
 	});
 });
 

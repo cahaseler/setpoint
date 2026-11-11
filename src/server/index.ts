@@ -10,6 +10,7 @@ import type { CombatHeartbeatStore } from "../combat/combat-heartbeat.js";
 import type { CombatModeStore } from "../combat/combat-mode-store.js";
 
 import type { GameCallGate } from "../accounts/game-call-gate.js";
+import type { HazardModeStore } from "../combat/hazard-mode-store.js";
 import type { CraftingEventsStore } from "../state/crafting-events-store.js";
 import type { EventBuffer } from "../state/event-buffer.js";
 import type { MarketSubscriptionKeeper } from "../state/market-subscription.js";
@@ -39,6 +40,7 @@ import {
 	handleFleetMoveAsync,
 	handleGetAccount,
 	handleGetCombatMode,
+	handleGetHazardMode,
 	handleGetJob,
 	handleGetLogLevel,
 	handleGetLoop,
@@ -57,6 +59,7 @@ import {
 	handleRefreshState,
 	handleRegisterAccount,
 	handleSetCombatMode,
+	handleSetHazardMode,
 	handleSetLogLevel,
 	handleStartLoop,
 	handleStopLoop,
@@ -129,6 +132,7 @@ export interface ServerOptions {
 	marketEventsStore: EventBuffer<string>;
 	marketSubscriptions: MarketSubscriptionKeeper;
 	gameCallGate: GameCallGate;
+	hazardModeStore: HazardModeStore;
 	combatModeStore: CombatModeStore;
 	combatHeartbeats?: CombatHeartbeatStore | undefined;
 	/** Whether an account is mid-battle. Late-bound: the combat reactor is built after the server. */
@@ -315,6 +319,10 @@ export function buildRoutes(ctx: HandlerContext): RouteTable {
 			GET: r(handleGetCombatMode),
 			PATCH: r(handleSetCombatMode),
 		},
+		"/accounts/:playerId/hazard-mode": {
+			GET: r(handleGetHazardMode),
+			PATCH: r(handleSetHazardMode),
+		},
 
 		// Config
 		"/log-level": { GET: r(handleGetLogLevel), POST: r(handleSetLogLevel) },
@@ -378,6 +386,7 @@ export function startServer(options: ServerOptions): DispatcherServer {
 		marketEventsStore: options.marketEventsStore,
 		marketSubscriptions: options.marketSubscriptions,
 		gameCallGate: options.gameCallGate,
+		hazardModeStore: options.hazardModeStore,
 		combatModeStore: options.combatModeStore,
 		combatHeartbeats: options.combatHeartbeats,
 		isInCombat: options.isInCombat,
