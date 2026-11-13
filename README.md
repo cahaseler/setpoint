@@ -75,6 +75,7 @@ All commands are available via `smctl`. `--port <n>`, `--json '<json>'` and
 | `smctl loop status\|start\|stop\|update <id>` | Loop lifecycle; `update` patches options live |
 | `smctl abort <id> [--force]` | Show in-progress work, or release the account with `--force` |
 | `smctl combat-mode <id> [flee\|external]` | Get or set the combat-response mode |
+| `smctl hazard-mode <id> [retreat\|external\|tolerate <minHullPct>]` | Get or set the response to POI hazards |
 | `smctl market <id> <baseId>` | Cached order book (subscribe first) |
 | `smctl observation <id>` | Cached observation-watch view (subscribe first) |
 | `smctl raw <id> <action> [key=value ...]` | Raw game API passthrough |
@@ -115,6 +116,7 @@ also accepts a username (case-insensitive).
 | POST | `/accounts/:playerId/fleet` | Reconcile the fleet this account leads |
 | POST | `/accounts/:playerId/fleet/move` | Move the fleet and ready every member |
 | GET/PATCH | `/accounts/:playerId/combat-mode` | Get or set combat-response mode |
+| GET/PATCH | `/accounts/:playerId/hazard-mode` | Get or set the response to POI hazards |
 | POST | `/accounts/:playerId/combat-heartbeat` | External combat-driver liveness ping |
 | DELETE | `/accounts/:playerId/abort` | Release the account from all in-progress work |
 | POST | `/accounts/:playerId/raw` | Raw game API passthrough |

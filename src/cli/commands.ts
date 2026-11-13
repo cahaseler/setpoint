@@ -141,6 +141,14 @@ const commands: Command[] = [
 			"Get or set an account's combat-response mode. \"external\" skips setpoint's automatic flee response (still releases any running loop/goal) so hand-written combat logic can drive the ship instead.",
 	},
 	{
+		pattern: "hazard-mode",
+		positionals: ["playerId", "mode?", "minHullPct?"],
+		handler: handleHazardMode,
+		usage: "smctl hazard-mode <playerId> [retreat|external|tolerate <minHullPct>]",
+		description:
+			'Get or set an account\'s response to POI hazards. "retreat" (default) stops setpoint\'s loop or goal and docks on the first hazard warning; "tolerate <minHullPct>" keeps working until hull falls below that percentage; "external" never intervenes.',
+	},
+	{
 		pattern: "abort",
 		positionals: ["playerId"],
 		handler: handleAbort,
@@ -468,6 +476,32 @@ async function handleCombatMode(ctx: CommandContext, args: string[]): Promise<vo
 	await sendAndOutput(ctx, () =>
 		ctx.client.patch(`/accounts/${encodeURIComponent(playerId)}/combat-mode`, { mode }),
 	);
+}
+
+async function handleHazardMode(ctx: CommandContext, args: string[]): Promise<void> {
+	const playerId = args[0] as string;
+	const mode = args[1];
+	const path = `/accounts/${encodeURIComponent(playerId)}/hazard-mode`;
+	if (mode === undefined) {
+		await sendAndOutput(ctx, () => ctx.client.get(path));
+		return;
+	}
+	if (mode === "retreat" || mode === "external") {
+		await sendAndOutput(ctx, () => ctx.client.patch(path, { mode }));
+		return;
+	}
+	if (mode === "tolerate") {
+		const minHullPct = Number(args[2]);
+		if (args[2] === undefined || !Number.isFinite(minHullPct)) {
+			ctx.output.usageError(
+				'"tolerate" needs a minimum hull percentage, e.g. hazard-mode <id> tolerate 40',
+			);
+			return;
+		}
+		await sendAndOutput(ctx, () => ctx.client.patch(path, { mode, minHullPct }));
+		return;
+	}
+	ctx.output.usageError('mode must be "retreat", "tolerate" or "external"');
 }
 
 async function handleAbort(ctx: CommandContext, args: string[]): Promise<void> {

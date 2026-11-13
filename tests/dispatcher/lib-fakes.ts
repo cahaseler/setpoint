@@ -279,6 +279,7 @@ export class FakeLibManagedAccount extends FakeLibGoalAccount implements LibMana
 				creatures: indexBy(snapshot.creatures, (c) => c.creature_id),
 				prizes: indexBy(snapshot.prizes, (p) => p.prize_id),
 				arenaNpcs: indexBy(snapshot.arena_npcs, (n) => n.npc_id),
+				repeaters: indexBy(snapshot.repeaters, (r) => r.repeater_id),
 				offlineCollapsed: snapshot.offline_collapsed ?? 0,
 				shipCounts: new Map(Object.entries(snapshot.ship_counts ?? {})),
 				cloaked: indexBy(snapshot.cloaked_contacts, (c) => c.target_id),

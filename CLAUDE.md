@@ -488,6 +488,25 @@ On entering combat, setpoint always releases the account from any running loop/g
 
 **An `external` driver must send a heartbeat.** `POST /accounts/:playerId/combat-heartbeat` every tick the driver is alive, whether or not it issued a command — holding position is a legitimate and common move, so silence on the command channel is not evidence of a dead driver. After five ticks of silence *while the account is in a battle*, setpoint takes the fight with its built-in flee response and logs it at `warn`. An `external` account outside a battle is simply parked and is never touched. The account's configured mode is **not** rewritten when the fallback fires: a setting the daemon silently changed on a timer becomes a mystery later, so re-arming is the driver's business and the next battle starts `external` again. Heartbeats are in-memory only — a value surviving a restart would be a lie about a process that did not.
 
+#### Hazard Response
+
+Game v0.687.0 added POI hazards: radiation, tidal shear and others take a share of hull every tick a ship stays undocked at the POI, or on each mining action, and the ship is lost at zero hull. `HazardReactor` (`src/combat/hazard-reactor.ts`) acts on each `hazard_warning` according to a per-account setting, persisted like combat mode:
+
+- `retreat` (default) — on the first warning, stop setpoint's loop or goal on the ship and dock: at the loop's sell or home station (the combat-recovery target), else at the nearest hazard-free station in the system.
+- `tolerate` with `minHullPct` — keep working while hull is at or above the floor, then retreat. For ships sent in deliberately, with repair kits aboard.
+- `external` — never intervene.
+
+It only ever acts on work setpoint is running: a ship with no setpoint loop, goal or job is left alone in every mode, as is a ship in combat. The stopped loop is not restarted, since it would go straight back to the hazard. While the retreat runs it is the account's executing goal (`hazard-retreat`), so a loop start or goal submit is refused with 409 until it finishes. Progress is posted on the combat event stream as `hazard_retreat_started` / `_completed` / `_failed`.
+
+```bash
+smctl hazard-mode <playerId>                 # Get the current setting
+smctl hazard-mode <playerId> tolerate 40     # Keep working until hull drops below 40%
+smctl hazard-mode <playerId> external        # Never intervene
+smctl hazard-mode <playerId> retreat         # Back to the default
+```
+
+A loop start is refused (409) while anything other than a loop owns the ship — a goal, a hazard retreat, an async job or a fleet claim. It used to check only for another loop, which let a loop start under a running goal and put two drivers on one ship.
+
 ### Fleet operations (multi-account)
 
 Fleet work is the one thing in setpoint that spans accounts: an invite is worthless until the invitee accepts, and that accept runs on the invitee's own connection. Rather than widen `LibGoalContext`, fleet operations reach other accounts through the narrow `FleetAccess` port in `src/fleet/`, supplied by the server layer.
@@ -554,6 +573,8 @@ The daemon listens on `http://127.0.0.1:7580` by default. All responses are JSON
 | `DELETE` | `/accounts/:playerId/loop` | Stop loop | `smctl loop stop` |
 | `GET` | `/accounts/:playerId/combat-mode` | Get combat-response mode | `smctl combat-mode <id>` |
 | `PATCH` | `/accounts/:playerId/combat-mode` | Set combat-response mode (no restart) | `smctl combat-mode <id> <mode>` |
+| `GET` | `/accounts/:playerId/hazard-mode` | Get hazard-response setting | `smctl hazard-mode <id>` |
+| `PATCH` | `/accounts/:playerId/hazard-mode` | Set hazard-response setting (no restart) | `smctl hazard-mode <id> <mode> [minHullPct]` |
 | `POST` | `/accounts/:playerId/combat-heartbeat` | External combat driver liveness ping (see below) | — (use `@setpoint/client`'s `account.combatMode.heartbeat()`) |
 | `POST` | `/accounts/:playerId/fleet` | Reconcile the fleet this account leads to an exact membership | — (use `account.fleet.ensure()`) |
 | `POST` | `/accounts/:playerId/fleet/move` | Move the fleet and bring every member to readiness | — (use `account.fleet.move()`) |

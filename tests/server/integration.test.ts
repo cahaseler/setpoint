@@ -7,6 +7,7 @@ import type {
 import type { GameState } from "@spacemolt/lib";
 import { GameCallGate } from "../../src/accounts/game-call-gate.js";
 import type { CombatModeStore } from "../../src/combat/combat-mode-store.js";
+import type { HazardModeStore } from "../../src/combat/hazard-mode-store.js";
 import type { HandlerContext } from "../../src/server/handlers.js";
 import { errorResponse } from "../../src/server/http.js";
 import { buildRoutes } from "../../src/server/index.js";
@@ -124,6 +125,7 @@ describe("Server integration", () => {
 			marketEventsStore,
 			marketSubscriptions: new MarketSubscriptionKeeper(),
 			gameCallGate: new GameCallGate(),
+			hazardModeStore: { get: () => ({ mode: "retreat" }) } as unknown as HazardModeStore,
 			combatModeStore: { get: () => "flee" } as unknown as CombatModeStore,
 		};
 
@@ -334,6 +336,12 @@ describe("Server integration", () => {
 		expect(res.status).toBe(200);
 		expect(res.headers.get("Content-Type")).toBe("text/event-stream");
 		controller.abort();
+	});
+
+	test("GET /accounts/:playerId/hazard-mode is wired to the hazard-mode handler", async () => {
+		const res = await fetch(`${base}/accounts/p1/hazard-mode`);
+		expect(res.status).toBe(200);
+		expect(((await res.json()) as { mode: string }).mode).toBe("retreat");
 	});
 
 	test("POST /accounts/:playerId/fleet is wired to the ensure-fleet handler", async () => {

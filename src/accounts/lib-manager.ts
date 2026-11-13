@@ -107,6 +107,11 @@ export interface LibAccountManagerOptions {
 	 * indexed. See `game-call-gate.ts`.
 	 */
 	gate?: GameCallGate;
+	/**
+	 * Called on every `hazard_warning` push (game v0.687.0), before log
+	 * collapsing — the hazard reactor decides whether to pull the ship out.
+	 */
+	onHazardWarning?: (playerId: string, warning: NotificationPayloads["hazard_warning"]) => void;
 }
 
 /**
@@ -123,6 +128,13 @@ export class LibAccountManager {
 	private ownedListCache: { players: ClerkPlayer[]; fetchedAt: number } | undefined;
 	/** Shared across every account so one fleet-wide broadcast logs once, not once per socket. */
 	private readonly noticeLimiter = createNoticeRateLimiter({ windowMs: NOTICE_LOG_WINDOW_MS });
+	/**
+	 * Separate from `noticeLimiter`, and keyed per account rather than per type:
+	 * a hazard doses a ship every tick it stays, so one ship at a hazard would
+	 * otherwise write a warning every ten seconds, and one account's repeats
+	 * must not hide another account's first warning.
+	 */
+	private readonly perAccountLimiter = createNoticeRateLimiter({ windowMs: NOTICE_LOG_WINDOW_MS });
 
 	constructor(
 		private readonly client: AccountClientLike,
@@ -199,6 +211,39 @@ export class LibAccountManager {
 			log.info(
 				`[${label}] Rate limited on ${info.command}: retry ${info.attempt} in ${Math.round(info.delayMs)}ms`,
 			);
+		});
+		// POI hazards (game v0.687.0) damage hull every tick a ship stays undocked
+		// at the POI, or on each mining action, and the ship is lost if hull
+		// reaches 0. Logged at warn with the hull left, so a ship being worn down
+		// is visible however it is being driven. Repeats are collapsed per account.
+		const onHazardWarning = this.opts.onHazardWarning;
+		account.on("hazard_warning", (w) => {
+			try {
+				onHazardWarning?.(playerId, w);
+			} catch (err) {
+				log.error(`[${playerId}] onHazardWarning handler threw: ${errorMessage(err)}`);
+			}
+			const suppressed = this.perAccountLimiter.admit(`hazard:${playerId}`, Date.now());
+			if (suppressed === null) return;
+			const repeats = suppressed > 0 ? ` (+${suppressed} more dose(s) since the last line)` : "";
+			log.warn(
+				`[${label}] Hazard ${w.hazard.type} (severity ${w.hazard.severity}): hull ${w.hull}/${w.max_hull}, ${w.dose_pct}% per dose${repeats} — ${w.message}`,
+			);
+		});
+		// A Pathfinder drift crossing storm weather. A deflection matters — the
+		// ship is off its plotted bearing until re-plotted — so every one is
+		// logged. Buffeting that left the heading alone is collapsed per account.
+		account.on("pathfinder_storm", (storm) => {
+			if (storm.deflected) {
+				log.warn(
+					`[${label}] Pathfinder storm deflected the ship off its bearing — ${storm.message}`,
+				);
+				return;
+			}
+			const suppressed = this.perAccountLimiter.admit(`storm:${playerId}`, Date.now());
+			if (suppressed === null) return;
+			const repeats = suppressed > 0 ? ` (+${suppressed} more since the last line)` : "";
+			log.info(`[${label}] Pathfinder storm, heading held${repeats} — ${storm.message}`);
 		});
 		const onChange = this.opts.onStateChange;
 		if (onChange) {

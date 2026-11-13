@@ -10,6 +10,7 @@ import type {
 	GoalOptionsMap,
 	GoalResult,
 	GoalType,
+	HazardModeStatus,
 	JobRecord,
 	LoopOptionsMap,
 	LoopStatus,
@@ -266,8 +267,9 @@ export class AccountObservationApi {
 
 	/**
 	 * Gets the cached observation-watch view: players, pirates, empire NPCs,
-	 * wildlife, intact prizes and arena enemies at the watched POI, plus
-	 * scanner ship counts for the rest of the system. There is no subscribe
+	 * wildlife, intact prizes, arena enemies and frontier Repeaters at the
+	 * watched POI, plus scanner ship counts for the rest of the system. There
+	 * is no subscribe
 	 * method here — subscribe first via
 	 * `account.raw.spacemolt.subscribe_observation()`, or open `events()`,
 	 * which subscribes and maintains the watch for you (throws
@@ -609,6 +611,42 @@ export class AccountCombatModeApi {
 	}
 }
 
+/**
+ * Per-account response to POI hazards. Mirrors the daemon's
+ * `GET/PATCH /accounts/:id/hazard-mode` routes. See `HazardMode` for what
+ * each mode does; the default is `"retreat"`.
+ */
+export class AccountHazardModeApi {
+	constructor(
+		private readonly client: SetpointClient,
+		private readonly id: string,
+	) {}
+
+	/** Gets the account's current hazard-mode setting. */
+	async get(): Promise<HazardModeStatus> {
+		const result = await this.client.request(
+			"GET",
+			`/accounts/${encodeURIComponent(this.id)}/hazard-mode`,
+		);
+		return result as HazardModeStatus;
+	}
+
+	/**
+	 * Sets it. `"tolerate"` needs the hull percentage below which setpoint
+	 * retreats — for a ship sent in deliberately, with repair kits aboard.
+	 */
+	async set(
+		setting: { mode: "retreat" | "external" } | { mode: "tolerate"; minHullPct: number },
+	): Promise<HazardModeStatus> {
+		const result = await this.client.request(
+			"PATCH",
+			`/accounts/${encodeURIComponent(this.id)}/hazard-mode`,
+			{ body: setting },
+		);
+		return result as HazardModeStatus;
+	}
+}
+
 /** Destination and on-arrival readiness for a fleet move. */
 export interface FleetMoveRequest {
 	systemId: string;
@@ -770,6 +808,8 @@ export class AccountApi {
 
 	/** Combat-response mode sub-API for this account (`sp.account(id).combatMode`). */
 	readonly combatMode: AccountCombatModeApi;
+	/** Hazard-response sub-API for this account (`sp.account(id).hazardMode`). */
+	readonly hazardMode: AccountHazardModeApi;
 
 	/** Live pirate-radio sub-API for this account (`sp.account(id).pirateRadio`). */
 	readonly pirateRadio: AccountPirateRadioApi;
@@ -789,6 +829,7 @@ export class AccountApi {
 		this.crafting = new AccountCraftingApi(client, id);
 		this.combat = new AccountCombatApi(client, id);
 		this.combatMode = new AccountCombatModeApi(client, id);
+		this.hazardMode = new AccountHazardModeApi(client, id);
 		this.pirateRadio = new AccountPirateRadioApi(client, id);
 		this.fleet = new AccountFleetApi(client, id);
 	}
