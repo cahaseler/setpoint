@@ -473,7 +473,7 @@ Supported loop types: `mining`, `enhanced-mining`, `salvage`, `roaming-salvage`,
 smctl loop update <playerId> --json '{"routes":{"lhs_1140":["sol","ross_128","lhs_1140"]}}'
 ```
 
-Routes are read at the start of each leg, so a `PATCH /loop` applies from the next one. A patch replaces the whole `routes` map. A rejected jump on a supplied route fails the leg with the ship's position rather than re-planning around the caller's choice, and the loop retries as usual. Setpoint deliberately does no pathfinding of its own: route choice belongs to the caller, which can update its algorithm without a setpoint release. Combat recovery flies the interrupted loop's routes too. It works by `navigate-to-system` consulting `LibGoalContext.routeFor`, so any goal that travels honours it; a new place that builds a child goal context must pass `routeFor` through, as `lib-sequence.ts` and `lib-loops.ts` do.
+Routes are read at the start of each leg, so a `PATCH /loop` applies from the next one. A patch replaces the whole `routes` map. A rejected jump on a supplied route fails the leg with the ship's position rather than re-planning around the caller's choice, and the loop retries as usual. Setpoint deliberately does no pathfinding of its own: route choice belongs to the caller, which can update its algorithm without a setpoint release. Combat recovery and the hazard retreat fly the interrupted loop's routes too. It works by `navigate-to-system` consulting `LibGoalContext.routeFor`, so any goal that travels honours it; a new place that builds a child goal context must pass `routeFor` through, as `lib-sequence.ts` and `lib-loops.ts` do.
 
 Loop configs are persisted to disk and auto-resume on daemon restart.
 

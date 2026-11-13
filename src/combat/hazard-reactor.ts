@@ -18,8 +18,9 @@
  * - The ship is in combat. The combat response already owns it.
  * - A retreat is already under way.
  *
- * The stopped loop is not restarted: it would take the ship straight back to
- * the hazard. While the retreat runs it is registered as the account's
+ * The retreat flies the stopped loop's caller-supplied routes, if it had any,
+ * as combat recovery does. The stopped loop is not restarted: it would take
+ * the ship straight back to the hazard. While the retreat runs it is registered as the account's
  * executing goal (`hazard-retreat`), so a goal or loop submitted meanwhile is
  * refused as busy rather than steering the ship back in.
  */
@@ -28,6 +29,7 @@ import type {
 	CombatEnvelope,
 	HazardRetreatPayload,
 	NotificationPayloads,
+	Routes,
 } from "@setpoint/protocol";
 import type { LibAccountManager } from "../accounts/lib-manager.js";
 import type { LibManagedAccount } from "../accounts/lib-types.js";
@@ -169,7 +171,13 @@ export class HazardReactor {
 				this.record(playerId, "hazard_retreat_failed", { ...payload, message });
 				return;
 			}
-			const ctx = makeLibGoalContext(() => this.mustResolve(playerId), signal);
+			// Fly the stopped loop's own routes, if it had any. The caller chose
+			// them to keep this ship out of somewhere — leaving a hazard by way of
+			// a leviathan's system would trade one danger for another.
+			const routes = loopOptions?.["routes"] as Routes | undefined;
+			const ctx = makeLibGoalContext(() => this.mustResolve(playerId), signal, {
+				routeFor: (targetSystemId) => routes?.[targetSystemId],
+			});
 			const result = await (this.deps.retreat ?? retreatTo)(ctx, target);
 			const done = { ...payload, target, message: result.message };
 			if (result.success) {

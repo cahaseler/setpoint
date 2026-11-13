@@ -32,7 +32,7 @@ const warning = (hull: number, maxHull = 400): HazardWarning =>
 
 function makeHarness(options: {
 	setting?: HazardSetting;
-	loopStatus?: typeof MINING | undefined;
+	loopStatus?: { type: string; running: boolean; options: Record<string, unknown> } | undefined;
 	executingGoal?: string;
 	runningJob?: string;
 	inCombat?: boolean;
@@ -73,6 +73,7 @@ function makeHarness(options: {
 		},
 	});
 	const retreats: RecoveryTarget[] = [];
+	const routesSeen: Array<unknown> = [];
 	let executingDuringRetreat: string | undefined;
 	const reactor = new HazardReactor({
 		manager: {
@@ -87,8 +88,9 @@ function makeHarness(options: {
 			get: () => options.setting ?? { mode: "retreat" },
 		} as unknown as HazardModeStore,
 		isInCombat: () => options.inCombat === true,
-		retreat: async (_ctx, target) => {
+		retreat: async (ctx, target) => {
 			retreats.push(target);
+			routesSeen.push(ctx.routeFor?.(target.systemId));
 			executingDuringRetreat = executingGoals.get("p1")?.goalType;
 			return (
 				options.retreatResult ?? {
@@ -109,6 +111,7 @@ function makeHarness(options: {
 		reactor,
 		released,
 		retreats,
+		routesSeen,
 		events,
 		settle,
 		executingGoals,
@@ -150,6 +153,28 @@ describe("HazardReactor", () => {
 
 		expect(h.executingDuringRetreat()).toBe("hazard-retreat");
 		expect(h.executingGoals.has("p1")).toBe(false);
+	});
+
+	test("the retreat flies the stopped loop's own routes", async () => {
+		// The caller routed this loop around something; leaving a hazard by way
+		// of that system would trade one danger for another.
+		const h = makeHarness({
+			loopStatus: {
+				...MINING,
+				options: {
+					...MINING.options,
+					sellSystemId: "lhs_1140",
+					routes: { lhs_1140: ["sol", "ross_128", "lhs_1140"] },
+				},
+			},
+		});
+
+		await quietly(async () => {
+			h.reactor.handle("p1", warning(380));
+			await h.settle();
+		});
+
+		expect(h.routesSeen).toEqual([["sol", "ross_128", "lhs_1140"]]);
 	});
 
 	test("external: never intervenes", async () => {
