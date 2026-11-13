@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { connectAccounts, resumeLoopConfig } from "../../src/index.js";
+import { connectAccounts, resumeConnectedAccounts, resumeLoopConfig } from "../../src/index.js";
 import { JobManager } from "../../src/server/job-manager.js";
 import { LoopManager } from "../../src/server/loop-manager.js";
 import { createMemoryDatabase } from "../../src/state/database.js";
@@ -269,6 +269,35 @@ describe("loop-persistence", () => {
 				),
 			).rejects.toThrow("partway failure");
 			expect(attempts).toBe(1);
+		});
+
+		test("standby connects without resuming; the cutover resumes every account at once", async () => {
+			// The incumbent is still running these loops during standby; resuming
+			// them early would put two drivers on every ship.
+			const options = {
+				homeSystemId: "sol",
+				homeStationPoiId: "sol_station",
+				homeBaseId: "sol_base",
+			};
+			const loopManager = new LoopManager();
+			loopManager.setConfigDir(tempDir);
+			await loopManager.saveLoopConfig("player-roamer", "roaming-salvage", options, tempDir);
+			const started: string[] = [];
+			loopManager.startRoamingSalvageLoop = ((playerId: string) => {
+				started.push(playerId);
+				return { running: true } as ReturnType<LoopManager["startRoamingSalvageLoop"]>;
+			}) as LoopManager["startRoamingSalvageLoop"];
+
+			const account = new FakeLibManagedAccount({ playerId: "player-roamer", username: "Roamer" });
+			const manager = makeFakeLibManager([account]);
+			const store = { getState: mock(() => null) } as unknown as StateStore;
+			const server = { loopManager, jobManager: new JobManager(createMemoryDatabase()) };
+
+			await connectAccounts(manager, store, undefined, tempDir);
+			expect(started).toEqual([]);
+
+			await resumeConnectedAccounts(manager, store, server, tempDir);
+			expect(started).toEqual(["player-roamer"]);
 		});
 
 		test("does not throw when a connected account has no player_id yet", async () => {

@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, mock, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, mock, spyOn, test } from "bun:test";
 import type {
 	CombatEnvelope,
 	ObservationUpdateEnvelope,
@@ -8,6 +8,7 @@ import type { GameState } from "@spacemolt/lib";
 import { GameCallGate } from "../../src/accounts/game-call-gate.js";
 import type { CombatModeStore } from "../../src/combat/combat-mode-store.js";
 import type { HazardModeStore } from "../../src/combat/hazard-mode-store.js";
+import { Lifecycle } from "../../src/lifecycle/lifecycle.js";
 import type { HandlerContext } from "../../src/server/handlers.js";
 import { errorResponse } from "../../src/server/http.js";
 import { buildRoutes } from "../../src/server/index.js";
@@ -78,6 +79,7 @@ describe("Server integration", () => {
 	let pirateRadioStore: EventBuffer<PirateRadioEnvelope>;
 	let observationEventsStore: EventBuffer<ObservationUpdateEnvelope>;
 	let marketEventsStore: EventBuffer<string>;
+	let serverCtx: HandlerContext;
 	// Seed p1's push-fed cache with TEST_STATE so goal execution (which reads
 	// account.state) sees a fueled ship; read handlers get state from the store stub.
 	const accounts = [
@@ -126,8 +128,10 @@ describe("Server integration", () => {
 			marketSubscriptions: new MarketSubscriptionKeeper(),
 			gameCallGate: new GameCallGate(),
 			hazardModeStore: { get: () => ({ mode: "retreat" }) } as unknown as HazardModeStore,
+			lifecycle: new Lifecycle(),
 			combatModeStore: { get: () => "flee" } as unknown as CombatModeStore,
 		};
+		serverCtx = ctx;
 
 		// Serve the daemon's real route table rather than re-declaring a subset
 		// here — a handler registered at the wrong path is then a failure in
@@ -342,6 +346,30 @@ describe("Server integration", () => {
 		const res = await fetch(`${base}/accounts/p1/hazard-mode`);
 		expect(res.status).toBe(200);
 		expect(((await res.json()) as { mode: string }).mode).toBe("retreat");
+	});
+
+	test("while handing over, mutating requests get 503 with Retry-After and reads still work", async () => {
+		const warn = spyOn(console, "warn").mockImplementation(() => {});
+		serverCtx.lifecycle.enterActive(1);
+		serverCtx.lifecycle.onHandoverRequested(() => {});
+		const handover = await fetch(`${base}/lifecycle/handover`, { method: "POST" });
+		warn.mockRestore();
+		expect(handover.status).toBe(202);
+
+		const post = await fetch(`${base}/accounts/p1/loop`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ type: "mining", options: {} }),
+		});
+		expect(post.status).toBe(503);
+		expect(post.headers.get("Retry-After")).toBe("5");
+		expect(((await post.json()) as { code: string }).code).toBe("handover");
+
+		const health = await fetch(`${base}/health`);
+		expect(health.status).toBe(200);
+
+		// Back to a fresh lifecycle so later tests are not refused.
+		serverCtx.lifecycle = new Lifecycle();
 	});
 
 	test("POST /accounts/:playerId/fleet is wired to the ensure-fleet handler", async () => {

@@ -141,6 +141,15 @@ const commands: Command[] = [
 			"Get or set an account's combat-response mode. \"external\" skips setpoint's automatic flee response (still releases any running loop/goal) so hand-written combat logic can drive the ship instead.",
 	},
 	{
+		pattern: "announce-restart",
+		positionals: ["inSeconds", "reason"],
+		variadic: true,
+		handler: handleAnnounceRestart,
+		usage: "smctl announce-restart <inSeconds> <reason...>",
+		description:
+			"Announce an upcoming setpoint restart: writes a RESTART PENDING line to daemon.log for the sessions that monitor it, and shows it on /health until the restarted daemon is ready.",
+	},
+	{
 		pattern: "hazard-mode",
 		positionals: ["playerId", "mode?", "minHullPct?"],
 		handler: handleHazardMode,
@@ -475,6 +484,18 @@ async function handleCombatMode(ctx: CommandContext, args: string[]): Promise<vo
 	}
 	await sendAndOutput(ctx, () =>
 		ctx.client.patch(`/accounts/${encodeURIComponent(playerId)}/combat-mode`, { mode }),
+	);
+}
+
+async function handleAnnounceRestart(ctx: CommandContext, args: string[]): Promise<void> {
+	const inSeconds = Number(args[0]);
+	const reason = args.slice(1).join(" ").trim();
+	if (!Number.isFinite(inSeconds) || inSeconds < 0 || reason === "") {
+		ctx.output.usageError("usage: smctl announce-restart <inSeconds> <reason...>");
+		return;
+	}
+	await sendAndOutput(ctx, () =>
+		ctx.client.post("/lifecycle/restart-notice", { inSeconds, reason }),
 	);
 }
 

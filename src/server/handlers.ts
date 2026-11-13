@@ -29,7 +29,9 @@ import type { FleetAccessDeps } from "../fleet/server-access.js";
 import { makeFleetAccess } from "../fleet/server-access.js";
 
 import type { GameCallGate } from "../accounts/game-call-gate.js";
+import { withAccountLogging } from "../accounts/log-subject.js";
 import { type HazardModeStore, parseHazardSetting } from "../combat/hazard-mode-store.js";
+import type { Lifecycle } from "../lifecycle/lifecycle.js";
 import type { CraftingEventsStore } from "../state/crafting-events-store.js";
 import type { EventBuffer } from "../state/event-buffer.js";
 import type { MarketSubscriptionKeeper } from "../state/market-subscription.js";
@@ -79,6 +81,7 @@ export interface HandlerContext {
 	marketSubscriptions: MarketSubscriptionKeeper;
 	gameCallGate: GameCallGate;
 	hazardModeStore: HazardModeStore;
+	lifecycle: Lifecycle;
 	combatModeStore: CombatModeStore;
 	/** Accounts with a synchronous goal currently executing. Used to prevent races. */
 	executingGoals: Map<string, ExecutingGoalEntry>;
@@ -134,7 +137,53 @@ export function handleHealth(_req: Request, _params: RouteParams, ctx: HandlerCo
 		uptime: Date.now() - new Date(ctx.startedAt).getTime(),
 		startedAt: ctx.startedAt,
 		accounts: ctx.manager.size,
+		lifecycle: ctx.lifecycle.status(),
 	});
+}
+
+/**
+ * `POST /lifecycle/restart-notice` — announce an upcoming restart. Body:
+ * `{ "inSeconds": number, "reason": string }`. Writes a `RESTART PENDING`
+ * line to `daemon.log` for the sessions that monitor it, and shows on
+ * `GET /health` until the restarted daemon is ready.
+ */
+export async function handleRestartNotice(
+	req: Request,
+	_params: RouteParams,
+	ctx: HandlerContext,
+): Promise<Response> {
+	let body: unknown;
+	try {
+		body = await req.json();
+	} catch {
+		return errorResponse("Invalid JSON body", 400);
+	}
+	const { inSeconds, reason } = (body ?? {}) as Record<string, unknown>;
+	if (typeof inSeconds !== "number" || !Number.isFinite(inSeconds) || inSeconds < 0) {
+		return errorResponse("inSeconds must be a non-negative number", 400);
+	}
+	if (typeof reason !== "string" || reason.trim() === "") {
+		return errorResponse("reason is required", 400);
+	}
+	return jsonResponse(ctx.lifecycle.announceRestart(inSeconds, reason.trim()));
+}
+
+/**
+ * `POST /lifecycle/handover` — called by a successor setpoint in standby once
+ * it holds every account. This process stops taking new work, stops its loops
+ * and in-flight work, and exits; the successor then takes the port and
+ * resumes everything. Answers 202 with this process's pid so the successor
+ * can wait for it to be gone, or 409 if it is not in a state to hand over.
+ */
+export function handleHandoverRequest(
+	_req: Request,
+	_params: RouteParams,
+	ctx: HandlerContext,
+): Response {
+	if (!ctx.lifecycle.requestHandover()) {
+		return errorResponse(`Not handing over: this setpoint is ${ctx.lifecycle.phase}`, 409);
+	}
+	return jsonResponse({ pid: process.pid, handingOver: true }, 202);
 }
 
 // ── Accounts ────────────────────────────────────────────────────────
@@ -515,7 +564,7 @@ export async function handleExecuteGoal(
 	// account), so a one-off goal's precondition check doesn't silently no-op
 	// against externally-drifted state.
 	await goalCtx.refreshState();
-	const goalPromise = goal.execute(goalCtx);
+	const goalPromise = withAccountLogging(resolveLive, () => goal.execute(goalCtx));
 
 	ctx.executingGoals.set(actualId, {
 		goalType,
@@ -732,8 +781,7 @@ export async function handleExecuteGoalAsync(
 		// account), so a one-off goal's precondition check doesn't silently no-op
 		// against externally-drifted state.
 		await goalCtx.refreshState();
-		const jobPromise = goal
-			.execute(goalCtx)
+		const jobPromise = withAccountLogging(resolveLive, () => goal.execute(goalCtx))
 			.then(async (result) => {
 				// Refresh state after completion: many mutation responses (deposit, sell, etc.)
 				// don't include V2GameState, leaving the state store stale.
@@ -840,6 +888,22 @@ export async function handleRawAction(
 		? toolGroup
 		: `spacemolt_${toolGroup}`;
 
+	// While the account is reconnecting, refuse at once. Setpoint's own goals
+	// and loops wait for the reconnect (see GameCallGate), but a raw caller has
+	// its own timeout: a call it gave up on that then executes after the
+	// reconnect is how a mutation runs twice. Failing fast and retryable is
+	// what lets it decide.
+	if ((account as { authenticated?: boolean }).authenticated === false) {
+		return new Response(
+			JSON.stringify({
+				error: "This account is reconnecting to the game; retry in a few seconds",
+				code: "reconnecting",
+				retry_after: 5,
+			}),
+			{ status: 503, headers: { "Content-Type": "application/json", "Retry-After": "5" } },
+		);
+	}
+
 	// While the game has the IP blocked, refuse at once rather than holding the
 	// caller's connection open until it lifts. The gate would hold the call
 	// anyway; this tells the caller how long to wait instead.
@@ -914,8 +978,12 @@ export async function handleRawAction(
 		// caller's own logs. A "No response to …" timeout is ambiguous — the
 		// request may have run — while a closed-socket error means it was never
 		// sent, so the message is kept verbatim.
-		log.warn(
-			`[${playerIdOf(account)}] Raw ${resolvedToolGroup}/${action} failed: ${errorMessage(err)}${apiErr}`,
+		withAccountLogging(
+			() => account,
+			() =>
+				log.warn(
+					`[${playerIdOf(account)}] Raw ${resolvedToolGroup}/${action} failed: ${errorMessage(err)}${apiErr}`,
+				),
 		);
 		return errorResponse(`API call failed: ${errorMessage(err)}${apiErr}`, 500);
 	}
@@ -2530,11 +2598,14 @@ export async function runBatchGoal(
 		try {
 			const goalOptions = (options ?? {}) as Record<string, unknown>;
 			const goal = createGoal(type, goalOptions);
+			const resolveMember = resolveLiveAccount(ctx, playerId);
 			const result = await runCancellable(ctx, playerId, type, goalOptions, (perAccount) =>
-				goal.execute(
-					makeLibGoalContext(
-						resolveLiveAccount(ctx, playerId),
-						signal === undefined ? perAccount : anySignal([signal, perAccount]),
+				withAccountLogging(resolveMember, () =>
+					goal.execute(
+						makeLibGoalContext(
+							resolveMember,
+							signal === undefined ? perAccount : anySignal([signal, perAccount]),
+						),
 					),
 				),
 			);

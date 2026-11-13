@@ -48,15 +48,26 @@ export function ipBlockDurationMs(err: unknown): number | undefined {
 	return seconds !== undefined ? Number(seconds) * 1000 : DEFAULT_IP_BLOCK_MS;
 }
 
-/** The two methods every game call passes through. */
+/** The two methods every game call passes through, and whether the socket is up. */
 export interface GatedAccount {
 	query: (...args: never[]) => Promise<unknown>;
 	mutate: (...args: never[]) => Promise<unknown>;
+	/** False while the account is reconnecting. Absent on test doubles that never disconnect. */
+	readonly authenticated?: boolean;
 }
+
+/**
+ * How long a call waits for its account to reconnect before going out anyway
+ * (and failing as it would have). A game deploy is over in a few minutes; an
+ * account still down after this is not coming back on its own.
+ */
+const RECONNECT_HOLD_MS = 5 * 60_000;
+const RECONNECT_POLL_MS = 500;
 
 export interface GameCallGateOptions {
 	now?: () => number;
 	sleep?: (ms: number) => Promise<void>;
+	reconnectHoldMs?: number;
 }
 
 export class GameCallGate {
@@ -64,13 +75,16 @@ export class GameCallGate {
 	private readonly accountHoldUntil = new Map<string, number>();
 	private readonly now: () => number;
 	private readonly sleep: (ms: number) => Promise<void>;
+	private readonly reconnectHoldMs: number;
 
 	constructor({
 		now = Date.now,
 		sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+		reconnectHoldMs = RECONNECT_HOLD_MS,
 	}: GameCallGateOptions = {}) {
 		this.now = now;
 		this.sleep = sleep;
+		this.reconnectHoldMs = reconnectHoldMs;
 	}
 
 	/** Milliseconds until the current IP block lifts; 0 when there is none. */
@@ -104,6 +118,27 @@ export class GameCallGate {
 		}
 	}
 
+	/**
+	 * Hold a call while its account is reconnecting, instead of letting it fail
+	 * at once on a closed socket.
+	 *
+	 * When the game restarts for a deploy, every socket drops and the lib
+	 * reconnects each account over a few minutes. Calls made in that window
+	 * used to fail immediately, so a loop retrying every 30 seconds burned its
+	 * failure budget before its account came back — 18 loops hit 10/10 that
+	 * way after one game deploy. Waiting turns the deploy into a pause. A call
+	 * that was already in flight when the socket dropped still fails; only new
+	 * ones wait.
+	 */
+	private async waitForConnection(playerId: string, account: GatedAccount): Promise<void> {
+		if (account.authenticated !== false) return;
+		log.info(`[${playerId}] Account is reconnecting; holding game calls until it is back`);
+		const deadline = this.now() + this.reconnectHoldMs;
+		while (account.authenticated === false && this.now() < deadline) {
+			await this.sleep(RECONNECT_POLL_MS);
+		}
+	}
+
 	/** Resolve once neither an IP block nor this account's rate-limit hold is in force. */
 	async waitUntilClear(playerId: string): Promise<void> {
 		for (;;) {
@@ -126,6 +161,7 @@ export class GameCallGate {
 		for (const method of ["query", "mutate"] as const) {
 			const original = account[method].bind(account) as (...args: unknown[]) => Promise<unknown>;
 			const gated = async (...args: unknown[]): Promise<unknown> => {
+				await this.waitForConnection(playerId, account);
 				await this.waitUntilClear(playerId);
 				try {
 					return await original(...args);

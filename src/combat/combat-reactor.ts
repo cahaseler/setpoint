@@ -1,3 +1,4 @@
+import { withAccountLogging } from "../accounts/log-subject.js";
 /**
  * Stateful per-fleet orchestrator: wires the pure combat detector
  * (`combat-detector.ts`) to the account-release primitive
@@ -243,8 +244,10 @@ export class CombatReactor {
 
 		const controller = new AbortController();
 		tracked.responseController = controller;
-		this.strategy
-			.respond({ account, battleId, signal: controller.signal })
+		withAccountLogging(
+			() => this.deps.manager.getByPlayerId(playerId) ?? account,
+			() => this.strategy.respond({ account, battleId, signal: controller.signal }),
+		)
 			.then((result) => {
 				log.info(
 					`[${playerId}] combat response "${this.strategy.name}" finished: ${result.message}`,
@@ -284,7 +287,10 @@ export class CombatReactor {
 			const ctx = makeLibGoalContext(() => this.mustResolveAccount(playerId), undefined, {
 				routeFor: (targetSystemId) => routes?.[targetSystemId],
 			});
-			const result = await (this.deps.recover ?? runCombatRecovery)(ctx, target);
+			const result = await withAccountLogging(
+				() => this.mustResolveAccount(playerId),
+				() => (this.deps.recover ?? runCombatRecovery)(ctx, target),
+			);
 			this.deps.combatEventsStore.record(playerId, {
 				receivedAt: new Date().toISOString(),
 				type: result.success ? "combat_recovery_completed" : "combat_recovery_failed",
