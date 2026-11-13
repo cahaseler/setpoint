@@ -21,6 +21,7 @@ import { GameCallGate } from "./accounts/game-call-gate.js";
 import { parseLibConfig } from "./accounts/lib-config.js";
 import { LibAccountManager } from "./accounts/lib-manager.js";
 import { type LibManagedAccount, playerId as playerIdOf } from "./accounts/lib-types.js";
+import { withAccountLogging } from "./accounts/log-subject.js";
 import { CombatHeartbeatStore } from "./combat/combat-heartbeat.js";
 import { CombatModeStore } from "./combat/combat-mode-store.js";
 import { CombatReactor } from "./combat/combat-reactor.js";
@@ -486,8 +487,10 @@ async function resumeJobsForAccount(
 			return live;
 		});
 
-		goal
-			.execute(goalCtx)
+		withAccountLogging(
+			() => goalCtx.account as LibManagedAccount,
+			() => goal.execute(goalCtx),
+		)
 			.then((result) => jobManager.complete(job.jobId, result))
 			.catch((err: unknown) => jobManager.fail(job.jobId, errorMessage(err)));
 

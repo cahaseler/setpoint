@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { RouteHop, Routes } from "@setpoint/protocol";
 import type { LoopOptionsMap } from "@setpoint/protocol";
 import type { LibManagedAccount } from "../accounts/lib-types.js";
+import { withAccountLogging } from "../accounts/log-subject.js";
 import type { LoopResult, ProgressRef } from "../dispatcher/goals.js";
 import { makeLibGoalContext } from "../dispatcher/lib-goal-context.js";
 import { runEnhancedMiningLoop } from "../dispatcher/lib-loops/enhanced-mining-loop.js";
@@ -466,7 +467,7 @@ export class LoopManager {
 		const activeLoop: ActiveLoop = {
 			type: "mining",
 			controller,
-			promise: runMiningLoop(loopOptions, ctx),
+			promise: withAccountLogging(resolveAccount, () => runMiningLoop(loopOptions, ctx)),
 			startedAt: new Date().toISOString(),
 			stepRef,
 			options: options as unknown as Record<string, unknown>,
@@ -547,7 +548,7 @@ export class LoopManager {
 		const activeLoop: ActiveLoop = {
 			type: "enhanced-mining",
 			controller,
-			promise: runEnhancedMiningLoop(loopOptions, ctx),
+			promise: withAccountLogging(resolveAccount, () => runEnhancedMiningLoop(loopOptions, ctx)),
 			startedAt: new Date().toISOString(),
 			stepRef,
 			options: options as unknown as Record<string, unknown>,
@@ -619,7 +620,7 @@ export class LoopManager {
 		const activeLoop: ActiveLoop = {
 			type: "salvage",
 			controller,
-			promise: runSalvageLoop(loopOptions, ctx),
+			promise: withAccountLogging(resolveAccount, () => runSalvageLoop(loopOptions, ctx)),
 			startedAt: new Date().toISOString(),
 			stepRef,
 			options: options as unknown as Record<string, unknown>,
@@ -683,7 +684,7 @@ export class LoopManager {
 		const activeLoop: ActiveLoop = {
 			type: "trading",
 			controller,
-			promise: runTradingLoop(loopOptions, ctx),
+			promise: withAccountLogging(resolveAccount, () => runTradingLoop(loopOptions, ctx)),
 			startedAt: new Date().toISOString(),
 			stepRef,
 			options: options as unknown as Record<string, unknown>,
@@ -746,7 +747,7 @@ export class LoopManager {
 		const activeLoop: ActiveLoop = {
 			type: "hauling",
 			controller,
-			promise: runHaulingLoop(loopOptions, ctx),
+			promise: withAccountLogging(resolveAccount, () => runHaulingLoop(loopOptions, ctx)),
 			startedAt: new Date().toISOString(),
 			stepRef,
 			options: options as unknown as Record<string, unknown>,
@@ -809,7 +810,7 @@ export class LoopManager {
 		const activeLoop: ActiveLoop = {
 			type: "storage-transfer",
 			controller,
-			promise: runStorageTransferLoop(loopOptions, ctx),
+			promise: withAccountLogging(resolveAccount, () => runStorageTransferLoop(loopOptions, ctx)),
 			startedAt: new Date().toISOString(),
 			stepRef,
 			options: options as unknown as Record<string, unknown>,
@@ -880,7 +881,7 @@ export class LoopManager {
 		const activeLoop: ActiveLoop = {
 			type: "exploration",
 			controller,
-			promise: runExplorationLoop(loopOptions, ctx),
+			promise: withAccountLogging(resolveAccount, () => runExplorationLoop(loopOptions, ctx)),
 			startedAt: new Date().toISOString(),
 			stepRef,
 			options: options as unknown as Record<string, unknown>,
@@ -949,7 +950,7 @@ export class LoopManager {
 		const activeLoop: ActiveLoop = {
 			type: "guard",
 			controller,
-			promise: runGuardLoop(loopOptions, ctx),
+			promise: withAccountLogging(resolveAccount, () => runGuardLoop(loopOptions, ctx)),
 			startedAt: new Date().toISOString(),
 			stepRef,
 			options: options as unknown as Record<string, unknown>,
@@ -1022,7 +1023,7 @@ export class LoopManager {
 		const activeLoop: ActiveLoop = {
 			type: "roaming-salvage",
 			controller,
-			promise: runRoamingSalvageLoop(loopOptions, ctx),
+			promise: withAccountLogging(resolveAccount, () => runRoamingSalvageLoop(loopOptions, ctx)),
 			startedAt: new Date().toISOString(),
 			stepRef,
 			options: options as unknown as Record<string, unknown>,
@@ -1089,7 +1090,7 @@ export class LoopManager {
 		const activeLoop: ActiveLoop = {
 			type: "tow-salvage",
 			controller,
-			promise: runTowSalvageLoop(loopOptions, ctx),
+			promise: withAccountLogging(resolveAccount, () => runTowSalvageLoop(loopOptions, ctx)),
 			startedAt: new Date().toISOString(),
 			stepRef,
 			options: options as unknown as Record<string, unknown>,

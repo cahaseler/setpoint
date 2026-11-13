@@ -11,7 +11,7 @@ import type {
 	ObservationUpdateEnvelope,
 	PirateRadioEnvelope,
 } from "@setpoint/protocol";
-import type { ClerkPlayer, GameState } from "@spacemolt/lib";
+import { type ClerkPlayer, type GameState, SpacemoltError } from "@spacemolt/lib";
 import { GameCallGate } from "../../src/accounts/game-call-gate.js";
 import type { CombatModeStore } from "../../src/combat/combat-mode-store.js";
 import { HazardModeStore } from "../../src/combat/hazard-mode-store.js";
@@ -2065,6 +2065,45 @@ describe("handleExecuteGoal", () => {
 
 		const res = await handleExecuteGoal(req, { playerId: "p1" }, ctx);
 		expect(res.status).toBe(409);
+	});
+
+	test("a goal's warnings name the account and ship it ran on", async () => {
+		// The low-fuel warning comes from deep inside ensure-fueled, a module that
+		// knows nothing of accounts. A log monitor filtering on ship or account
+		// needs it tagged anyway.
+		const account = new FakeLibManagedAccount({
+			playerId: "p1",
+			username: "Carol Jordan",
+			state: {
+				ship: { name: "Wayfarer", fuel: 10, max_fuel: 100 },
+				location: { docked_at: "sol_base" },
+			} as unknown as GameState,
+			handlers: {
+				refuel: () => {
+					throw new SpacemoltError(
+						"no_fuel_source",
+						"No fuel cells in cargo and insufficient credits",
+					);
+				},
+			},
+		});
+		const ctx = makeContext({ accounts: [account] });
+
+		const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+		await handleExecuteGoal(
+			new Request("http://localhost/accounts/p1/goal", {
+				method: "POST",
+				body: JSON.stringify({ type: "ensure-fueled" }),
+				headers: { "Content-Type": "application/json" },
+			}),
+			{ playerId: "p1" },
+			ctx,
+		);
+		const warnLines = warnSpy.mock.calls.map((c) => String(c[0]));
+		warnSpy.mockRestore();
+
+		const refuelLine = warnLines.find((l) => l.includes("[goal:ensure-fueled]"));
+		expect(refuelLine).toContain("[goal:ensure-fueled] [Carol Jordan / Wayfarer] Refuel skipped");
 	});
 
 	test("returns 400 for unknown goal type", async () => {
