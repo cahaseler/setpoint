@@ -185,6 +185,74 @@ describe("LibNavigateToSystem", () => {
 		expect(refreshCalls).toBeGreaterThanOrEqual(2);
 	});
 
+	test("on action_pending, waits for the queued action to drain before jumping again", async () => {
+		let refreshCalls = 0;
+		const pendingAtJump: boolean[] = [];
+		const account = new FakeLibGoalAccount(
+			{ location: { system_id: "sol", poi_id: "p" }, queue: { has_pending: true } },
+			{
+				find_route: () =>
+					route({
+						estimated_fuel: 10,
+						fuel_available: 100,
+						total_jumps: 1,
+						route: [{ system_id: "alpha", jumps: 1, name: "Alpha" }],
+					}),
+				jump: () => {
+					const pending = account.state.queue?.has_pending === true;
+					pendingAtJump.push(pending);
+					if (pending) {
+						throw new SpacemoltError(
+							"action_pending",
+							"Another action is already pending (jump). Wait for it to complete.",
+						);
+					}
+					return fakeMutationResult("jump");
+				},
+			},
+		);
+		account.refresh = () => {
+			refreshCalls++;
+			// The other connection's queued action executes a few polls later; the
+			// ship has not moved, so position stays settled throughout.
+			if (refreshCalls >= 4) account.setState({ queue: { has_pending: false } });
+			return Promise.resolve(account.state);
+		};
+		const result = await new LibNavigateToSystem("alpha", 0, {
+			maxWaitMs: 1000,
+			pollIntervalMs: 5,
+		}).execute(makeLibGoalContext(account));
+		expect(result.success).toBe(true);
+		expect(pendingAtJump).toEqual([true, false]);
+	});
+
+	test("a non-pending API error still reroutes without waiting on the action queue", async () => {
+		let jumps = 0;
+		const account = new FakeLibGoalAccount(
+			{ location: { system_id: "sol", poi_id: "p" }, queue: { has_pending: true } },
+			{
+				find_route: () =>
+					route({
+						estimated_fuel: 10,
+						fuel_available: 100,
+						total_jumps: 1,
+						route: [{ system_id: "alpha", jumps: 1, name: "Alpha" }],
+					}),
+				jump: () => {
+					jumps++;
+					if (jumps === 1) throw new SpacemoltError("unknown_destination", "Unknown destination");
+					return fakeMutationResult("jump");
+				},
+			},
+		);
+		const result = await new LibNavigateToSystem("alpha", 0, {
+			maxWaitMs: 60_000,
+			pollIntervalMs: 5,
+		}).execute(makeLibGoalContext(account));
+		expect(result.success).toBe(true);
+		expect(jumps).toBe(2);
+	});
+
 	test("multi-hop jump succeeds and force-refreshes after navigation", async () => {
 		const account = new FakeLibGoalAccount(
 			{ location: { system_id: "sol", poi_id: "p" } },
