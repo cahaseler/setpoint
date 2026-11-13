@@ -33,6 +33,7 @@ import type {
 } from "@setpoint/protocol";
 import type { LibAccountManager } from "../accounts/lib-manager.js";
 import type { LibManagedAccount } from "../accounts/lib-types.js";
+import { withAccountLogging } from "../accounts/log-subject.js";
 import type { GoalResult } from "../dispatcher/goals.js";
 import { LibPrepareAtStation } from "../dispatcher/lib-compounds/prepare-at-station.js";
 import { type LibGoalContext, makeLibGoalContext } from "../dispatcher/lib-goal-context.js";
@@ -145,7 +146,10 @@ export class HazardReactor {
 			promise: done,
 		});
 		try {
-			await this.dock(playerId, payload, loopType, loopOptions, controller.signal);
+			await withAccountLogging(
+				() => this.mustResolve(playerId),
+				() => this.dock(playerId, payload, loopType, loopOptions, controller.signal),
+			);
 		} finally {
 			finish();
 			if (this.deps.executingGoals.get(playerId)?.promise === done) {
