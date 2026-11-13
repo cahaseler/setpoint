@@ -1,5 +1,5 @@
-import { describe, expect, mock, spyOn, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
@@ -437,10 +437,80 @@ describe("handleGetAccount", () => {
 // ── Add Account ──────────────────────────────────────────────────────
 
 describe("handleAddAccount", () => {
+	let configDir: string;
+	beforeEach(async () => {
+		configDir = await mkdtemp(join(tmpdir(), "add-account-"));
+	});
+	afterEach(async () => {
+		await rm(configDir, { recursive: true, force: true });
+	});
+
+	const writeAllowlist = (usernames: string[]): Promise<void> =>
+		writeFile(
+			join(configDir, "dispatcher.json"),
+			JSON.stringify({ clerkApiKey: "ak_test", accountsFilter: { usernames } }),
+		);
+	const readAllowlist = async (): Promise<unknown> =>
+		(
+			JSON.parse(await readFile(join(configDir, "dispatcher.json"), "utf-8")) as {
+				accountsFilter: { usernames: string[] };
+			}
+		).accountsFilter.usernames;
+
+	test("adds a connected account to the startup allowlist so a restart reconnects it", async () => {
+		await writeAllowlist(["Alpha"]);
+		let connected!: () => void;
+		const done = new Promise<void>((resolve) => {
+			connected = resolve;
+		});
+		const ctx = makeContext({
+			connectOne: () => {
+				connected();
+				return Promise.resolve(makeAccount("p-new", "OwnedPlayer"));
+			},
+		});
+		ctx.configDir = configDir;
+
+		const res = await handleAddAccount(
+			new Request("http://localhost/accounts", {
+				method: "POST",
+				body: JSON.stringify({ username: "ownedplayer" }),
+				headers: { "Content-Type": "application/json" },
+			}),
+			{},
+			ctx,
+		);
+		expect(res.status).toBe(202);
+		await done;
+		await Bun.sleep(20);
+		expect(await readAllowlist()).toEqual(["Alpha", "OwnedPlayer"]);
+	});
+
+	test("leaves the allowlist alone when the connect fails", async () => {
+		await writeAllowlist(["Alpha"]);
+		const ctx = makeContext({
+			connectOne: () => Promise.reject(new Error("not owned")),
+		});
+		ctx.configDir = configDir;
+
+		await handleAddAccount(
+			new Request("http://localhost/accounts", {
+				method: "POST",
+				body: JSON.stringify({ username: "Stranger" }),
+				headers: { "Content-Type": "application/json" },
+			}),
+			{},
+			ctx,
+		);
+		await Bun.sleep(20);
+		expect(await readAllowlist()).toEqual(["Alpha"]);
+	});
+
 	test("starts a background connect for an owned account and returns 202", async () => {
 		const ctx = makeContext({
 			connectOne: () => Promise.resolve(makeAccount("p-new", "OwnedPlayer")),
 		});
+		ctx.configDir = configDir;
 
 		const req = new Request("http://localhost/accounts", {
 			method: "POST",

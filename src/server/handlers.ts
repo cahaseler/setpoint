@@ -12,6 +12,7 @@ import {
 	type SpacemoltClient,
 	SpacemoltError,
 } from "@spacemolt/lib";
+import { rememberAccount } from "../accounts/allowlist.js";
 import { loadRegistrationConfig } from "../accounts/config.js";
 import type { LibAccountManager } from "../accounts/lib-manager.js";
 import { type LibManagedAccount, playerId as playerIdOf } from "../accounts/lib-types.js";
@@ -308,6 +309,23 @@ export function handleGetAccount(
 	});
 }
 
+/**
+ * Put a runtime-added account on the startup allowlist so a restart or deploy
+ * reconnects it. A failure is logged, not thrown: the account is connected
+ * either way, and the operator needs to know only that it won't survive a restart.
+ */
+async function persistAccount(ctx: HandlerContext, username: string): Promise<void> {
+	try {
+		if (await rememberAccount(ctx.configDir, username)) {
+			log.info(`[${username}] Added to the startup allowlist in dispatcher.json`);
+		}
+	} catch (err) {
+		log.error(
+			`[${username}] Connected, but could not add it to the startup allowlist — it will not reconnect after a restart: ${errorMessage(err)}`,
+		);
+	}
+}
+
 export async function handleAddAccount(
 	req: Request,
 	_params: RouteParams,
@@ -339,9 +357,12 @@ export async function handleAddAccount(
 	// Connect in the background. Owned accounts authenticate via the lib's
 	// credential store; connecting can take seconds under the auth rate limit,
 	// so we return 202 immediately and let the caller poll GET /accounts.
-	void ctx.manager.connectOne(username).catch((err) => {
-		log.error(`[${username}] Background connect failed: ${errorMessage(err)}`);
-	});
+	void ctx.manager
+		.connectOne(username)
+		.then((account) => persistAccount(ctx, account.id ?? username))
+		.catch((err) => {
+			log.error(`[${username}] Background connect failed: ${errorMessage(err)}`);
+		});
 
 	return jsonResponse(
 		{
@@ -439,6 +460,7 @@ export async function handleRegisterAccount(
 			empire,
 			registration_code: registrationCode,
 		});
+		await persistAccount(ctx, account.id ?? username);
 
 		return jsonResponse(
 			{
