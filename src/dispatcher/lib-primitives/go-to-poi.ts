@@ -1,5 +1,6 @@
 import { ConnectionClosedError, SpacemoltError } from "@spacemolt/lib";
 import { createLogger } from "../../util/logger.js";
+import { sendThroughCustoms } from "../customs-hold.js";
 import type { GoalResult } from "../goals.js";
 import { alreadySatisfied, failed, succeeded } from "../goals.js";
 import type { LibGoal, LibGoalContext } from "../lib-goal-context.js";
@@ -76,7 +77,7 @@ export class LibGoToPoi implements LibGoal {
 
 		log.info(`Traveling to POI ${this.targetPoiId}`);
 		try {
-			await ctx.account.commands.spacemolt.travel({ id: this.targetPoiId });
+			await this.travel(ctx);
 		} catch (err) {
 			// On transient errors, force a live read and retry once — the travel may
 			// have been rejected due to a mid-transit state or a dropped connection.
@@ -109,7 +110,7 @@ export class LibGoToPoi implements LibGoal {
 				// try/catch and an unhandled throw rejects the loop promise immediately,
 				// bypassing the normal failure/retry cycle in runLibLoop.
 				try {
-					await ctx.account.commands.spacemolt.travel({ id: this.targetPoiId });
+					await this.travel(ctx);
 				} catch (retryErr) {
 					const msg = retryErr instanceof Error ? retryErr.message : String(retryErr);
 					log.warn(`Travel to ${this.targetPoiId} failed on retry: ${msg}`);
@@ -140,5 +141,12 @@ export class LibGoToPoi implements LibGoal {
 		}
 
 		return succeeded(`Traveled to POI ${this.targetPoiId}`, 1);
+	}
+
+	/** Travel to the target POI; a customs inspection delays it rather than failing it. */
+	private travel(ctx: LibGoalContext): Promise<unknown> {
+		return sendThroughCustoms(ctx, `traveling to ${this.targetPoiId}`, () =>
+			ctx.account.commands.spacemolt.travel({ id: this.targetPoiId }),
+		);
 	}
 }

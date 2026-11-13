@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { ConnectionClosedError, SpacemoltError } from "@spacemolt/lib";
+import { recordHoldUpdate } from "../../../src/dispatcher/hold-state.js";
 import { makeLibGoalContext } from "../../../src/dispatcher/lib-goal-context.js";
 import { LibGoToPoi } from "../../../src/dispatcher/lib-primitives/go-to-poi.js";
+import { customsRefusal, holdUpdate } from "../hold-fixtures.js";
 import { FakeLibGoalAccount, fakeMutationResult } from "../lib-fakes.js";
 
 describe("LibGoToPoi", () => {
@@ -255,5 +257,31 @@ describe("LibGoToPoi trusts the cached position", () => {
 		expect(result.alreadySatisfied).toBe(true);
 		// It resolved the transit rather than trusting a mid-flight position.
 		expect(account.refreshCalls).toBeGreaterThan(0);
+	});
+});
+
+describe("LibGoToPoi — customs holds", () => {
+	test("a travel refused during a customs inspection is waited out, then goes through", async () => {
+		let travels = 0;
+		const account = new FakeLibGoalAccount(
+			{ location: { system_id: "sol", poi_id: "station-1" } },
+			{
+				travel: () => {
+					travels++;
+					if (travels === 1) {
+						setTimeout(() => recordHoldUpdate(account, holdUpdate("ended")), 5);
+						throw customsRefusal("travel");
+					}
+					account.setState({ location: { system_id: "sol", poi_id: "belt-1" } });
+					return fakeMutationResult("travel");
+				},
+			},
+		);
+		const result = await new LibGoToPoi("belt-1").execute(makeLibGoalContext(account));
+		expect(result.success).toBe(true);
+		expect(travels).toBe(2);
+		// Only the arrival check refreshes: the inspection did not go through
+		// the goal's one transient-error retry, which refreshes first.
+		expect(account.refreshCalls).toBe(1);
 	});
 });

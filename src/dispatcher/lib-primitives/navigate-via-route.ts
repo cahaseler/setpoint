@@ -1,6 +1,7 @@
 import { type RouteHop, hopSystemId } from "@setpoint/protocol";
 import { ConnectionClosedError } from "@spacemolt/lib";
 import { createLogger } from "../../util/logger.js";
+import { sendThroughCustoms } from "../customs-hold.js";
 import type { GoalResult } from "../goals.js";
 import { alreadySatisfied, failed, succeeded } from "../goals.js";
 import type { LibGoal, LibGoalContext } from "../lib-goal-context.js";
@@ -134,7 +135,7 @@ export class LibNavigateViaRoute implements LibGoal {
 
 			log.info(`Jumping to ${hopSystem}${via} (hop ${i + 1}/${hops.length}, explicit route)`);
 			try {
-				await ctx.account.commands.spacemolt.jump({ id: jumpTarget });
+				await jumpThroughCustoms(ctx, hopSystem, jumpTarget);
 				ticksUsed++;
 			} catch (err) {
 				const isTransient = err instanceof ConnectionClosedError;
@@ -154,7 +155,7 @@ export class LibNavigateViaRoute implements LibGoal {
 						`Jump to ${hopSystem} failed transiently (${err instanceof Error ? err.message : String(err)}), retrying hop`,
 					);
 					try {
-						await ctx.account.commands.spacemolt.jump({ id: jumpTarget });
+						await jumpThroughCustoms(ctx, hopSystem, jumpTarget);
 						ticksUsed++;
 						continue;
 					} catch (retryErr) {
@@ -198,4 +199,15 @@ export class LibNavigateViaRoute implements LibGoal {
 			ticksUsed,
 		);
 	}
+}
+
+/** Jump one hop; a customs inspection delays it rather than failing it. */
+function jumpThroughCustoms(
+	ctx: LibGoalContext,
+	hopSystem: string,
+	jumpTarget: string,
+): Promise<unknown> {
+	return sendThroughCustoms(ctx, `jumping to ${hopSystem}`, () =>
+		ctx.account.commands.spacemolt.jump({ id: jumpTarget }),
+	);
 }

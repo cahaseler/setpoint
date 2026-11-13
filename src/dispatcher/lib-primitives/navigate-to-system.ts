@@ -1,5 +1,6 @@
 import { ConnectionClosedError, SpacemoltError } from "@spacemolt/lib";
 import { createLogger } from "../../util/logger.js";
+import { sendThroughCustoms } from "../customs-hold.js";
 import type { GoalResult } from "../goals.js";
 import { alreadySatisfied, failed, succeeded } from "../goals.js";
 import type { LibGoal, LibGoalContext } from "../lib-goal-context.js";
@@ -161,7 +162,9 @@ export class LibNavigateToSystem implements LibGoal {
 				`Jumping to ${hopSystemId} (hop ${ticksUsed - ticksUsedSoFar + 1}/${route.total_jumps})`,
 			);
 			try {
-				await ctx.account.commands.spacemolt.jump({ id: hopSystemId });
+				await sendThroughCustoms(ctx, `jumping to ${hopSystemId}`, () =>
+					ctx.account.commands.spacemolt.jump({ id: hopSystemId }),
+				);
 				ticksUsed++;
 			} catch (err) {
 				const isApiError = err instanceof SpacemoltError;
