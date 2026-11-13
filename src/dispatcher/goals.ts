@@ -6,6 +6,7 @@ import type {
 	ReconcileSubject as ReconcileSubjectType,
 } from "@setpoint/protocol";
 import type { StoredGameState } from "../state/store.js";
+import type { LocationWaitOptions } from "./wait-for-location.js";
 
 /**
  * The goal/loop result shapes are defined once in `@setpoint/protocol` — the
@@ -74,6 +75,11 @@ export interface LoopOptions {
 	 * Return false (or omit) to count the failure normally.
 	 */
 	ignoreFailure?: (result: GoalResult) => boolean;
+	/**
+	 * How to wait for a ship that is mid-transit when the loop starts, before
+	 * its first iteration. Defaults to `waitForLocation`'s own.
+	 */
+	arrivalWait?: LocationWaitOptions;
 }
 
 /** Helper to build a successful result when already satisfied. */

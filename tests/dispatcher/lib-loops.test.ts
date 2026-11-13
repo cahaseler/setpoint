@@ -30,6 +30,39 @@ describe("runLibLoop", () => {
 		expect(result.ticksUsed).toBe(3);
 	});
 
+	test("waits for a mid-transit ship to arrive before the first iteration", async () => {
+		const account = new FakeLibGoalAccount({ location: { system_id: "", in_transit: true } });
+		let refreshes = 0;
+		account.refresh = () => {
+			refreshes++;
+			if (refreshes >= 3) account.setState({ location: { system_id: "sol", in_transit: false } });
+			return Promise.resolve(account.state);
+		};
+		const seen: Array<string | undefined> = [];
+		const result = await runLibLoop(
+			() =>
+				goal("x", () => {
+					seen.push(account.state.location?.system_id);
+					return succeeded("ok", 1);
+				}),
+			makeLibGoalContext(account),
+			{ maxIterations: 1, arrivalWait: { pollIntervalMs: 1, maxWaitMs: 1000 } },
+		);
+		expect(result.success).toBe(true);
+		expect(seen).toEqual(["sol"]);
+	});
+
+	test("does not wait for a ship that is already in a system", async () => {
+		const account = new FakeLibGoalAccount({ location: { system_id: "sol" } });
+		const result = await runLibLoop(
+			() => goal("x", () => succeeded("ok", 1)),
+			makeLibGoalContext(account),
+			{ maxIterations: 1, arrivalWait: { pollIntervalMs: 1, maxWaitMs: 1000 } },
+		);
+		expect(result.success).toBe(true);
+		expect(account.refreshCalls).toBe(0);
+	});
+
 	test("stops when shouldContinue returns false", async () => {
 		const account = new FakeLibGoalAccount({});
 		const result = await runLibLoop(

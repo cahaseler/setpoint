@@ -5,6 +5,7 @@ import { createLogger } from "../util/logger.js";
 import type { GoalResult, IterationResult, LoopOptions, LoopResult } from "./goals.js";
 import type { LibGoal, LibGoalContext } from "./lib-goal-context.js";
 import { makeLibGoalContext } from "./lib-goal-context.js";
+import { waitForLocation } from "./wait-for-location.js";
 
 const log = createLogger("loop");
 
@@ -42,6 +43,16 @@ function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
 			{ once: true },
 		);
 	});
+}
+
+/**
+ * Whether the ship is between systems or POIs, where its position is unknown.
+ * State with no location section at all hasn't been seeded, which waiting
+ * would not fix.
+ */
+function isMidTransit(state: Readonly<GameState>): boolean {
+	const location = state.location;
+	return location !== undefined && (location.in_transit === true || !location.system_id);
 }
 
 /**
@@ -85,6 +96,17 @@ export async function runLibLoop(
 	let totalTicks = 0;
 	// Refresh (free) before the first iteration so the loop starts with current data.
 	let currentState = await refreshBeforeRetry(ctx, ctx.state);
+	// A loop resumed after a restart or handover can find its ship still
+	// mid-jump: stopping the previous daemon cut the loop's leg short, but the
+	// jump carries on server-side. Position-dependent commands fail until it
+	// lands ("You are not in a system"), so wait for it rather than spending an
+	// iteration and a retry delay on that failure.
+	if (isMidTransit(currentState)) {
+		log.info(
+			`[${playerId}] Ship is mid-transit — waiting for it to arrive before the first iteration`,
+		);
+		currentState = await waitForLocation(ctx, (s) => !isMidTransit(s), options.arrivalWait);
+	}
 	const maxIterations = options.maxIterations ?? Number.POSITIVE_INFINITY;
 	const maxConsecutiveFailures = options.maxConsecutiveFailures ?? DEFAULT_MAX_CONSECUTIVE_FAILURES;
 	const retryDelayMs = options.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
