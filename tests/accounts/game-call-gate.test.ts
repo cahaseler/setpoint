@@ -156,6 +156,41 @@ describe("GameCallGate", () => {
 		expect(clock.slept).toEqual([]);
 	});
 
+	test("holds a call while its account is reconnecting, then lets it through", async () => {
+		const clock = fakeClock();
+		let pollsUntilBack = 3;
+		const account = {
+			...fakeAccount(),
+			get authenticated(): boolean {
+				return pollsUntilBack-- <= 0;
+			},
+		};
+		const gate = new GameCallGate(clock);
+		gate.install("p1", account);
+
+		const info = spyOn(console, "info").mockImplementation(() => {});
+		await account.query();
+		info.mockRestore();
+
+		expect(account.calls).toEqual(["query"]);
+		expect(clock.slept.length).toBeGreaterThanOrEqual(2);
+	});
+
+	test("gives up holding after the reconnect window and sends the call anyway", async () => {
+		const clock = fakeClock();
+		const account = { ...fakeAccount(), authenticated: false };
+		const gate = new GameCallGate({ ...clock, reconnectHoldMs: 2_000 });
+		gate.install("p1", account);
+
+		const info = spyOn(console, "info").mockImplementation(() => {});
+		await account.query();
+		info.mockRestore();
+
+		// Sent (and, against a real closed socket, failed) rather than held for ever.
+		expect(account.calls).toEqual(["query"]);
+		expect(clock.slept.reduce((a, b) => a + b, 0)).toBeGreaterThanOrEqual(2_000);
+	});
+
 	test("installing patches the account in place, keeping its identity", () => {
 		const gate = new GameCallGate(fakeClock());
 		const account = fakeAccount();

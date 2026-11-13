@@ -269,6 +269,23 @@ describe("dispatch", () => {
 		expect(client.patch).not.toHaveBeenCalled();
 	});
 
+	test("announce-restart posts the delay and the whole reason", async () => {
+		const { ctx, client } = makeCtx();
+		await dispatch(ctx, ["announce-restart", "120", "deploying", "the", "handover"]);
+
+		expect(client.post).toHaveBeenCalledWith("/lifecycle/restart-notice", {
+			inSeconds: 120,
+			reason: "deploying the handover",
+		});
+	});
+
+	test("announce-restart without a reason is a usage error", async () => {
+		const { ctx, client, output } = makeCtx();
+		await expect(dispatch(ctx, ["announce-restart", "120"])).rejects.toThrow("usage_error");
+		expect(output.usageError).toHaveBeenCalled();
+		expect(client.post).not.toHaveBeenCalled();
+	});
+
 	test("hazard-mode without arg calls GET /accounts/:playerId/hazard-mode", async () => {
 		const { ctx, client } = makeCtx();
 		await dispatch(ctx, ["hazard-mode", "player-123"]);

@@ -16,6 +16,7 @@ import { GameCallGate } from "../../src/accounts/game-call-gate.js";
 import type { CombatModeStore } from "../../src/combat/combat-mode-store.js";
 import { HazardModeStore } from "../../src/combat/hazard-mode-store.js";
 import { markStateFresh } from "../../src/dispatcher/state-freshness.js";
+import { Lifecycle } from "../../src/lifecycle/lifecycle.js";
 import {
 	type HandlerContext,
 	handleAbortAccount,
@@ -39,6 +40,7 @@ import {
 	handleGetState,
 	handleGetStateSection,
 	handleGetSystem,
+	handleHandoverRequest,
 	handleHealth,
 	handleListAccounts,
 	handleMarketEvents,
@@ -47,6 +49,7 @@ import {
 	handlePirateRadioEvents,
 	handleRawAction,
 	handleRegisterAccount,
+	handleRestartNotice,
 	handleSetCombatMode,
 	handleSetHazardMode,
 	handleSetLogLevel,
@@ -233,6 +236,7 @@ function makeContext(
 		marketSubscriptions: new MarketSubscriptionKeeper(),
 		gameCallGate: new GameCallGate(),
 		hazardModeStore: { get: () => ({ mode: "retreat" }) } as unknown as HazardModeStore,
+		lifecycle: new Lifecycle(),
 		combatModeStore: new FakeCombatModeStore() as unknown as CombatModeStore,
 	};
 }
@@ -2641,6 +2645,38 @@ describe("handleGetJob", () => {
 // ── Raw Action ──────────────────────────────────────────────────────
 
 describe("handleRawAction", () => {
+	test("refuses at once with 503 while the account is reconnecting, sending nothing", async () => {
+		// A raw caller has its own timeout; a call it gave up on that executes
+		// after the reconnect is a mutation that runs twice.
+		let sent = 0;
+		const account = new FakeLibManagedAccount({
+			playerId: "p1",
+			username: "TestPlayer",
+			handlers: {
+				jump: () => {
+					sent++;
+					return { result: {} };
+				},
+			},
+		});
+		Object.defineProperty(account, "authenticated", { value: false });
+		const ctx = makeContext({ accounts: [account] });
+
+		const res = await handleRawAction(
+			new Request("http://localhost/accounts/p1/raw", {
+				method: "POST",
+				body: JSON.stringify({ toolGroup: "spacemolt", action: "jump", params: { id: "sol" } }),
+				headers: { "Content-Type": "application/json" },
+			}),
+			{ playerId: "p1" },
+			ctx,
+		);
+
+		expect(res.status).toBe(503);
+		expect(((await res.json()) as { code: string }).code).toBe("reconnecting");
+		expect(sent).toBe(0);
+	});
+
 	test("refuses at once with 503 and Retry-After while the game has the IP blocked", async () => {
 		let sent = 0;
 		const account = new FakeLibManagedAccount({
@@ -4165,6 +4201,71 @@ describe("handleStartLoop refuses while something else owns the ship", () => {
 		const res = await handleStartLoop(startMining(), { playerId: "p1" }, ctx);
 
 		expect(res.status).toBe(409);
+	});
+});
+
+describe("lifecycle endpoints", () => {
+	test("health reports the lifecycle phase and pid", async () => {
+		const ctx = makeContext({ accounts: [] });
+		const res = handleHealth(new Request("http://localhost/health"), {}, ctx);
+		const body = (await res.json()) as { lifecycle: { phase: string; pid: number } };
+		expect(body.lifecycle.phase).toBe("starting");
+		expect(body.lifecycle.pid).toBe(process.pid);
+	});
+
+	test("a restart notice is recorded and returned", async () => {
+		const ctx = makeContext({ accounts: [] });
+		const warn = spyOn(console, "warn").mockImplementation(() => {});
+		const res = await handleRestartNotice(
+			new Request("http://localhost/lifecycle/restart-notice", {
+				method: "POST",
+				body: JSON.stringify({ inSeconds: 90, reason: "deploying routes" }),
+			}),
+			{},
+			ctx,
+		);
+		warn.mockRestore();
+		expect(res.status).toBe(200);
+		expect(ctx.lifecycle.status().restartPending?.reason).toBe("deploying routes");
+	});
+
+	test("a restart notice needs a reason", async () => {
+		const ctx = makeContext({ accounts: [] });
+		const res = await handleRestartNotice(
+			new Request("http://localhost/lifecycle/restart-notice", {
+				method: "POST",
+				body: JSON.stringify({ inSeconds: 90 }),
+			}),
+			{},
+			ctx,
+		);
+		expect(res.status).toBe(400);
+	});
+
+	test("a handover request is refused unless this setpoint is active", async () => {
+		const ctx = makeContext({ accounts: [] });
+		const res = handleHandoverRequest(
+			new Request("http://localhost/lifecycle/handover", { method: "POST" }),
+			{},
+			ctx,
+		);
+		expect(res.status).toBe(409);
+	});
+
+	test("an active setpoint accepts a handover and reports its pid", async () => {
+		const ctx = makeContext({ accounts: [] });
+		const warn = spyOn(console, "warn").mockImplementation(() => {});
+		ctx.lifecycle.enterActive(0);
+		ctx.lifecycle.onHandoverRequested(() => {});
+		const res = handleHandoverRequest(
+			new Request("http://localhost/lifecycle/handover", { method: "POST" }),
+			{},
+			ctx,
+		);
+		warn.mockRestore();
+		expect(res.status).toBe(202);
+		expect(((await res.json()) as { pid: number }).pid).toBe(process.pid);
+		expect(ctx.lifecycle.phase).toBe("draining");
 	});
 });
 

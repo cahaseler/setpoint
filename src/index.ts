@@ -14,6 +14,7 @@ import type {
 import {
 	type GameState,
 	type NotificationPayloads,
+	STATE_SECTIONS,
 	SpacemoltClient,
 	type StateSection,
 } from "@spacemolt/lib";
@@ -28,6 +29,14 @@ import { CombatReactor } from "./combat/combat-reactor.js";
 import { HazardModeStore } from "./combat/hazard-mode-store.js";
 import { HazardReactor } from "./combat/hazard-reactor.js";
 import { makeLibGoalContext } from "./dispatcher/lib-goal-context.js";
+import {
+	bindWithRetry,
+	findIncumbent,
+	readRelease,
+	startStandbyControl,
+	takeOverFrom,
+} from "./lifecycle/handover.js";
+import { Lifecycle } from "./lifecycle/lifecycle.js";
 import type { ExecutingGoalEntry } from "./server/account-release.js";
 import { createGoal } from "./server/goal-registry.js";
 import { startServer } from "./server/index.js";
@@ -38,7 +47,7 @@ import { makeProjectingOnStateChange } from "./state/attach-projector.js";
 import { CraftingEventsStore } from "./state/crafting-events-store.js";
 import { createDatabase } from "./state/database.js";
 import { logDrift } from "./state/drift-logger.js";
-import { startDriftSweep } from "./state/drift-sweep.js";
+import { type DriftSweep, startDriftSweep } from "./state/drift-sweep.js";
 import { createEventBuffer } from "./state/event-buffer.js";
 import { MarketSubscriptionKeeper } from "./state/market-subscription.js";
 import { ObservationSubscriptionKeeper } from "./state/observation-subscription.js";
@@ -57,8 +66,19 @@ if (envLogLevel && VALID_LOG_LEVELS.has(envLogLevel)) {
 
 const log = createLogger("main");
 
-const CONFIG_DIR = join(import.meta.dir, "..", "config");
-const DB_PATH = join(import.meta.dir, "..", "data", "dispatcher.db");
+/**
+ * Where the daemon keeps its state: `config/`, `data/` and `logs/`.
+ *
+ * Defaults to the checkout the code runs from. Set `SETPOINT_HOME` to run the
+ * code from one directory and keep state in another — a deploy runs each
+ * release from its own checkout while every release shares one home, so the
+ * database, loop configs and the `daemon.log` that monitors watch stay put
+ * across releases and through a handover between two of them.
+ */
+const SETPOINT_HOME = process.env["SETPOINT_HOME"] || join(import.meta.dir, "..");
+const CONFIG_DIR = join(SETPOINT_HOME, "config");
+const DB_PATH = join(SETPOINT_HOME, "data", "dispatcher.db");
+const LOG_PATH = join(SETPOINT_HOME, "logs", "daemon.log");
 const API_PORT = Number(process.env["SM_PORT"]) || 7580;
 
 /** Read config/dispatcher.json, returning `{}` if it is missing or unreadable. */
@@ -72,6 +92,12 @@ async function readDispatcherConfig(): Promise<unknown> {
 
 async function main(): Promise<void> {
 	log.info("setpoint starting...");
+
+	// Is another setpoint already serving? If so this process is its successor:
+	// it connects every account in standby while the incumbent keeps working,
+	// then asks it to hand over. See lifecycle/handover.ts.
+	const lifecycle = new Lifecycle(readRelease(import.meta.dir));
+	const incumbent = await findIncumbent(API_PORT);
 
 	// Load config: Clerk API key (env wins) + optional owned-player filter.
 	log.info(`Loading config from ${CONFIG_DIR}`);
@@ -96,6 +122,9 @@ async function main(): Promise<void> {
 		changed: StateSection[],
 		account: LibManagedAccount,
 	): void => {
+		// In standby the incumbent still owns the mirror and the log; writing both
+		// from two processes for the length of the overlap only doubles them.
+		if (lifecycle.phase === "standby") return;
 		projectOnChange(playerId, changed, account);
 		// A move silently voids the account's observation watch server-side. Only
 		// accounts with a live event-stream subscriber are affected; the keeper
@@ -228,86 +257,89 @@ async function main(): Promise<void> {
 
 	// Periodically force a refresh() across the whole fleet so idle accounts
 	// (no goals/loops running) still get checked for drift, not just ones that
-	// happen to trigger an opportunistic refresh.
-	const driftSweep = startDriftSweep(manager);
+	// happen to trigger an opportunistic refresh. Started on activation: a
+	// standby successor must not double the incumbent's traffic.
+	let driftSweep: DriftSweep | undefined;
+	let jobPruner: { stop: () => void } | undefined;
+	let server: ReturnType<typeof startServer> | undefined;
+	let standbyControl: ReturnType<typeof Bun.serve> | undefined;
 
-	// Start the HTTP API server BEFORE connecting accounts, so health checks and
-	// state queries are live immediately. A cold start re-authenticates every
-	// owned account under the auth rate limit, which for a large fleet can take
-	// many minutes — we must not hold the server down for that whole window.
-	const server = startServer({
-		combatHeartbeats,
+	/**
+	 * Take over serving: bind the API port, recover jobs the previous process
+	 * left running, and start the reactors, pruner and drift sweep. Everything
+	 * here must run after any incumbent is gone — `startServer` builds the job
+	 * manager, whose orphaned-job sweep would otherwise fail the incumbent's
+	 * live jobs.
+	 */
+	const activate = async (): Promise<NonNullable<typeof server>> => {
 		// Late-bound through reactorRef: the reactor cannot exist until the
 		// server has produced the loop and job managers it depends on.
-		isInCombat: (playerId: string) => reactorRef.current?.isInCombat(playerId) ?? false,
-		port: API_PORT,
-		manager,
-		store,
-		db,
-		client,
-		configDir: CONFIG_DIR,
-		craftingEventsStore,
-		combatEventsStore,
-		pirateRadioStore,
-		observationEventsStore,
-		observationSubscriptions,
-		marketEventsStore,
-		marketSubscriptions,
-		gameCallGate,
-		hazardModeStore,
-		combatModeStore,
-		executingGoals,
-		claimedAccounts,
-	});
-	log.info(`Dispatcher running on port ${server.port}. Press Ctrl+C to stop.`);
+		const started = await bindWithRetry(() =>
+			startServer({
+				combatHeartbeats,
+				isInCombat: (playerId: string) => reactorRef.current?.isInCombat(playerId) ?? false,
+				port: API_PORT,
+				manager,
+				store,
+				db,
+				client,
+				configDir: CONFIG_DIR,
+				craftingEventsStore,
+				combatEventsStore,
+				pirateRadioStore,
+				observationEventsStore,
+				observationSubscriptions,
+				marketEventsStore,
+				marketSubscriptions,
+				gameCallGate,
+				hazardModeStore,
+				combatModeStore,
+				executingGoals,
+				claimedAccounts,
+				lifecycle,
+			}),
+		);
+		server = started;
+		log.info(`Dispatcher running on port ${started.port}. Press Ctrl+C to stop.`);
 
-	// Bound job history: finished jobs past the retention window are deleted
-	// in the background. See server/job-pruner.ts.
-	const jobPruner = startJobPruner(server.jobManager);
+		// Bound job history: finished jobs past the retention window are deleted
+		// in the background. See server/job-pruner.ts.
+		jobPruner = startJobPruner(started.jobManager);
+		driftSweep = startDriftSweep(manager);
 
-	hazardRef.current = new HazardReactor({
-		manager,
-		loopManager: server.loopManager,
-		jobManager: server.jobManager,
-		executingGoals,
-		configDir: CONFIG_DIR,
-		combatEventsStore,
-		hazardModeStore,
-		isInCombat: (playerId: string) => reactorRef.current?.isInCombat(playerId) ?? false,
-	});
-
-	reactorRef.current = new CombatReactor({
-		manager,
-		loopManager: server.loopManager,
-		jobManager: server.jobManager,
-		executingGoals,
-		configDir: CONFIG_DIR,
-		combatEventsStore,
-		combatModeStore,
-		heartbeats: combatHeartbeats,
-	});
-
-	// Connect all owned accounts in the background (the lib staggers connections
-	// internally). The server is already serving; each account's loops/jobs
-	// resume as soon as it connects, not after the whole fleet does.
-	log.info("Connecting accounts in the background...");
-	connectAccounts(manager, store, server, CONFIG_DIR)
-		.then(() => {
-			// Run one drift sweep pass as soon as the fleet is connected, instead of
-			// waiting up to a full intervalMs for the first scheduled pass —
-			// startDriftSweep() was called before any accounts existed to sweep.
-			void driftSweep.runOnce();
-		})
-		.catch((err) => {
-			log.error(`Background account connection failed: ${errorMessage(err)}`);
+		hazardRef.current = new HazardReactor({
+			manager,
+			loopManager: started.loopManager,
+			jobManager: started.jobManager,
+			executingGoals,
+			configDir: CONFIG_DIR,
+			combatEventsStore,
+			hazardModeStore,
+			isInCombat: (playerId: string) => reactorRef.current?.isInCombat(playerId) ?? false,
 		});
+
+		reactorRef.current = new CombatReactor({
+			manager,
+			loopManager: started.loopManager,
+			jobManager: started.jobManager,
+			executingGoals,
+			configDir: CONFIG_DIR,
+			combatEventsStore,
+			combatModeStore,
+			heartbeats: combatHeartbeats,
+		});
+
+		// A handover hands over: when a successor asks, stop and exit.
+		lifecycle.onHandoverRequested(() => void shutdown({ handover: true }));
+		return started;
+	};
 
 	// Graceful shutdown: stop loops and let in-flight HTTP requests drain
 	// (bounded — see stopServerWithGracePeriod) BEFORE disconnecting accounts,
 	// so a sync goal mid-request doesn't have its account's socket pulled out
 	// from under it while still trying to finish normally.
 	let shuttingDown = false;
-	const shutdown = async (): Promise<void> => {
+	const shutdown = async ({ handover = false }: { handover?: boolean } = {}): Promise<void> => {
 		// A second SIGINT/SIGTERM while the first shutdown is still draining must
 		// not call server.stop() again — verified live that calling it while an
 		// earlier unresolved call is pending never resolves (see
@@ -315,14 +347,18 @@ async function main(): Promise<void> {
 		// call forever even though the first is still on track to exit.
 		if (shuttingDown) return;
 		shuttingDown = true;
-		log.info("Shutting down...");
-		driftSweep.stop();
-		jobPruner.stop();
+		if (!handover) lifecycle.enterStopping();
+		log.info(handover ? "Handing over to the successor..." : "Shutting down...");
+		driftSweep?.stop();
+		jobPruner?.stop();
 		reactorRef.current?.stop();
-		try {
-			await server.stop();
-		} catch (err) {
-			log.error(`Error while stopping the server: ${errorMessage(err)}`);
+		standbyControl?.stop(true);
+		if (server) {
+			try {
+				await server.stop();
+			} catch (err) {
+				log.error(`Error while stopping the server: ${errorMessage(err)}`);
+			}
 		}
 		manager.disconnectAll();
 		db.close();
@@ -332,6 +368,53 @@ async function main(): Promise<void> {
 
 	process.on("SIGINT", () => void shutdown());
 	process.on("SIGTERM", () => void shutdown());
+
+	if (incumbent === undefined) {
+		// Nobody else is serving: start as today. The HTTP server comes up BEFORE
+		// accounts connect, so health checks and state queries are live
+		// immediately; each account's loops and jobs resume as soon as it
+		// connects, not after the whole fleet does.
+		const started = await activate();
+		log.info("Connecting accounts in the background...");
+		connectAccounts(manager, store, started, CONFIG_DIR)
+			.then(() => {
+				lifecycle.enterActive(manager.size);
+				// Run one drift sweep pass as soon as the fleet is connected, instead
+				// of waiting up to a full interval for the first scheduled pass.
+				void driftSweep?.runOnce();
+			})
+			.catch((err) => {
+				log.error(`Background account connection failed: ${errorMessage(err)}`);
+			});
+		return;
+	}
+
+	// Successor: connect every account alongside the incumbent (the game allows
+	// several connections per account since v0.707), then take over. The
+	// incumbent keeps serving throughout, so the visible gap is the cutover
+	// itself — seconds — rather than the minutes a fleet connect takes.
+	lifecycle.enterStandby(incumbent.pid);
+	standbyControl = startStandbyControl(API_PORT + 1, () => ({
+		...lifecycle.status(),
+		accounts: manager.size,
+	}));
+	try {
+		await connectAccounts(manager, store, undefined, CONFIG_DIR);
+	} catch (err) {
+		log.error(`Standby connect failed: ${errorMessage(err)} — the incumbent keeps serving`);
+		void shutdown();
+		return;
+	}
+	log.info(`Standby holds ${manager.size} account(s); asking the incumbent to hand over`);
+	await takeOverFrom(API_PORT, incumbent);
+	standbyControl.stop(true);
+	standbyControl = undefined;
+
+	const started = await activate();
+	await resumeConnectedAccounts(manager, store, started, CONFIG_DIR);
+	projectAll(manager, projectOnChange);
+	lifecycle.enterActive(manager.size);
+	void driftSweep?.runOnce();
 }
 
 type LoopConfigEntry = Awaited<ReturnType<typeof LoopManager.loadLoopConfigs>>[number];
@@ -358,7 +441,7 @@ export interface ConnectRetryOptions {
 export async function connectAccounts(
 	manager: LibAccountManager,
 	store: StateStore,
-	server: { loopManager: LoopManager; jobManager: JobManager },
+	server: { loopManager: LoopManager; jobManager: JobManager } | undefined,
 	configDir: string,
 	{
 		initialDelayMs = 15_000,
@@ -366,32 +449,15 @@ export async function connectAccounts(
 		sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
 	}: ConnectRetryOptions = {},
 ): Promise<void> {
-	const loopConfigs = await LoopManager.loadLoopConfigs(configDir);
-	const pendingLoopConfigs = new Map(loopConfigs.map((config) => [config.playerId, config]));
-	if (pendingLoopConfigs.size > 0) {
-		log.info(
-			`Found ${pendingLoopConfigs.size} persisted loop config(s), resuming as accounts connect...`,
-		);
-	}
+	// No server means standby: connect, but resume nothing — the incumbent is
+	// still running every loop and job. They are resumed at cutover by
+	// resumeConnectedAccounts.
+	const resumer = server ? await makeResumer(manager, store, server, configDir) : undefined;
 
 	let connectedCount = 0;
 	const onAccountReady = (account: LibManagedAccount): void => {
 		connectedCount++;
-		if (!account.player?.id) {
-			// The client's own onAccountConnected listener already warns and
-			// skips indexing for this case (see LibAccountManager's constructor)
-			// — nothing to resume for an account that was never indexed.
-			return;
-		}
-		const playerId = playerIdOf(account);
-		logAccountState(account, store);
-		void resumeJobsForAccount(server.jobManager, manager, playerId);
-
-		const loopConfig = pendingLoopConfigs.get(playerId);
-		if (loopConfig) {
-			pendingLoopConfigs.delete(playerId);
-			resumeLoopConfig(server.loopManager, manager, loopConfig);
-		}
+		resumer?.resume(account);
 	};
 
 	// The fleet-wide connect starts by listing owned accounts over HTTP, and that
@@ -419,11 +485,76 @@ export async function connectAccounts(
 		log.warn("No accounts connected at startup. The server is up; add accounts via the API.");
 		return;
 	}
+	resumer?.finish();
+}
 
-	// Any remaining config's account never connected this run, so it was never
-	// reached by the per-account resume above.
-	for (const config of pendingLoopConfigs.values()) {
-		log.warn(`[${config.playerId}] Account not connected, skipping loop resume`);
+/**
+ * Resume persisted loops and interrupted jobs for every account a standby
+ * successor already holds, at the moment it takes over.
+ */
+export async function resumeConnectedAccounts(
+	manager: LibAccountManager,
+	store: StateStore,
+	server: { loopManager: LoopManager; jobManager: JobManager },
+	configDir: string,
+): Promise<void> {
+	const resumer = await makeResumer(manager, store, server, configDir);
+	for (const account of manager.getAll()) resumer.resume(account);
+	resumer.finish();
+}
+
+/**
+ * Per-account resume of persisted loops and interrupted async jobs, shared by
+ * a cold start (resume each account as it connects) and a handover (resume
+ * them all at cutover).
+ */
+async function makeResumer(
+	manager: LibAccountManager,
+	store: StateStore,
+	server: { loopManager: LoopManager; jobManager: JobManager },
+	configDir: string,
+): Promise<{ resume: (account: LibManagedAccount) => void; finish: () => void }> {
+	const loopConfigs = await LoopManager.loadLoopConfigs(configDir);
+	const pendingLoopConfigs = new Map(loopConfigs.map((config) => [config.playerId, config]));
+	if (pendingLoopConfigs.size > 0) {
+		log.info(`Found ${pendingLoopConfigs.size} persisted loop config(s), resuming...`);
+	}
+	return {
+		resume: (account) => {
+			if (!account.player?.id) {
+				// The client's own onAccountConnected listener already warns and
+				// skips indexing for this case (see LibAccountManager's constructor)
+				// — nothing to resume for an account that was never indexed.
+				return;
+			}
+			const playerId = playerIdOf(account);
+			logAccountState(account, store);
+			void resumeJobsForAccount(server.jobManager, manager, playerId);
+			const loopConfig = pendingLoopConfigs.get(playerId);
+			if (loopConfig) {
+				pendingLoopConfigs.delete(playerId);
+				resumeLoopConfig(server.loopManager, manager, loopConfig);
+			}
+		},
+		// Any remaining config's account never connected, so nothing resumed it.
+		finish: () => {
+			for (const config of pendingLoopConfigs.values()) {
+				log.warn(`[${config.playerId}] Account not connected, skipping loop resume`);
+			}
+		},
+	};
+}
+
+/**
+ * Write every account's full state to the SQLite mirror. A successor skips
+ * projection in standby, so at cutover the mirror is refreshed in one pass.
+ */
+function projectAll(
+	manager: LibAccountManager,
+	project: (playerId: string, changed: StateSection[], account: LibManagedAccount) => void,
+): void {
+	for (const account of manager.getAll()) {
+		if (account.player?.id) project(playerIdOf(account), [...STATE_SECTIONS], account);
 	}
 }
 
@@ -559,7 +690,7 @@ export function resumeLoopConfig(
 // operational sessions grep — fabricated goal activity in the real log.
 if (import.meta.main) {
 	// Writes to logs/daemon.log alongside stdout.
-	enableFileLogging();
+	enableFileLogging(LOG_PATH);
 	installCrashSafetyHandlers(log);
 
 	main().catch((err) => {
