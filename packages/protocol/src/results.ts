@@ -11,6 +11,7 @@ import type {
 	ObservedPirate,
 	ObservedPlayer,
 	ObservedPrize,
+	ObservedRepeater,
 	PirateRadioEvent,
 } from "./game.js";
 
@@ -265,7 +266,7 @@ export interface MarketBookSnapshot {
  * read the event stream instead — the merged view cannot tell you that a
  * contact left, only that it is no longer here.
  *
- * The watch is POI-scoped: it carries all six of `get_nearby`'s presence
+ * The watch is POI-scoped: it carries all of `get_nearby`'s presence
  * classes at the ship's own POI and nothing about ships elsewhere in the
  * system. The one exception is `shipCounts`, which needs a working ship
  * scanner.
@@ -292,6 +293,8 @@ export interface ObservationSnapshot {
 	prizes: ObservedPrize[];
 	/** Arena challenge enemies at the watched POI. */
 	arenaNpcs: ObservedArenaNpc[];
+	/** Frontier Repeaters at the watched POI. */
+	repeaters: ObservedRepeater[];
 	/**
 	 * Ships at each charted POI in the system, keyed by POI ID: players, pirates,
 	 * empire NPC ships and leviathans, excluding your own ship and wildlife.

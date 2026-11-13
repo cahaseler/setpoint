@@ -2923,6 +2923,7 @@ describe("handleRawAction", () => {
 			creatures: new Map(),
 			prizes: new Map(),
 			arenaNpcs: new Map(),
+			repeaters: new Map(),
 			offlineCollapsed: 0,
 			shipCounts: new Map(),
 			cloaked: new Map(),
@@ -3182,6 +3183,7 @@ describe("handleGetObservation", () => {
 			creatures: new Map(),
 			prizes: new Map(),
 			arenaNpcs: new Map(),
+			repeaters: new Map(),
 			offlineCollapsed: 0,
 			shipCounts: new Map(),
 			cloaked: new Map(),
@@ -3237,6 +3239,7 @@ describe("handleGetObservation", () => {
 			creatures: new Map([["cr_1", { creature_id: "cr_1", name: "Void Drifter" }]]),
 			prizes: new Map([["pz_1", { prize_id: "pz_1", name: "Derelict Hauler" }]]),
 			arenaNpcs: new Map([["an_1", { npc_id: "an_1", name: "Arena Champion" }]]),
+			repeaters: new Map([["rp_1", { repeater_id: "rp_1", name: "Lantern Repeater" }]]),
 			offlineCollapsed: 4,
 			shipCounts: new Map([
 				["sol_belt", 3],
@@ -3259,6 +3262,7 @@ describe("handleGetObservation", () => {
 			creatures: Array<{ creature_id: string }>;
 			prizes: Array<{ prize_id: string }>;
 			arenaNpcs: Array<{ npc_id: string }>;
+			repeaters: Array<{ repeater_id: string }>;
 			offlineCollapsed: number;
 			shipCounts: Record<string, number>;
 		};
@@ -3268,6 +3272,7 @@ describe("handleGetObservation", () => {
 		expect(body.creatures.map((c) => c.creature_id)).toEqual(["cr_1"]);
 		expect(body.prizes.map((p) => p.prize_id)).toEqual(["pz_1"]);
 		expect(body.arenaNpcs.map((n) => n.npc_id)).toEqual(["an_1"]);
+		expect(body.repeaters.map((r) => r.repeater_id)).toEqual(["rp_1"]);
 		expect(body.offlineCollapsed).toBe(4);
 		// A Map does not survive JSON.stringify, so it has to arrive as an object.
 		expect(body.shipCounts).toEqual({ sol_belt: 3, sol_station: 12 });
