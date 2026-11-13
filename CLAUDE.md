@@ -308,6 +308,16 @@ If the `nohup` line is refused by a permission check, stop and say so rather
 than reaching for a substitute. Ask Craig to run it himself — in Claude Code he
 can prefix a command with `!` to run it in the session.
 
+**After every deploy, move the release checkout to match.** `~/projects/setpoint-release` is a detached git worktree of this repo holding exactly what the running daemon runs. The other projects that use `@setpoint/client` and `@setpoint/protocol` (sm-simpletraders, ilc-combat, sm-privateers) link to it through Bun's link registry, so their types always match the live daemon — not whatever branch is checked out here. Never work in it. Once a restart onto new code has been verified:
+
+```bash
+git -C ~/projects/setpoint-release fetch -q
+git -C ~/projects/setpoint-release checkout -q --detach origin/main
+(cd ~/projects/setpoint-release && bun install)
+```
+
+Then tell those sessions to `bun install`, and what changed. Until 2026-11-13 the links pointed at this working copy, so every branch switch here changed their types underneath them — a command from an unmerged lib upgrade appeared and vanished as branches changed. If the registry ever needs re-pointing: `bun link` in `setpoint-release/packages/client` and `packages/protocol`.
+
 **Avoid repeated restarts in a short window.** Each one re-authenticates the
 whole fleet, and `SETUP.md` warns this can trip the game's auth rate limit.
 
