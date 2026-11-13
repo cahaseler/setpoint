@@ -18,10 +18,12 @@ import { withAccountLogging } from "../accounts/log-subject.js";
  * reasons that have nothing to do with our own flee attempt.
  */
 
+import type { Routes } from "@setpoint/protocol";
 import type { CombatEnvelope } from "@setpoint/protocol";
 import type { LibAccountManager } from "../accounts/lib-manager.js";
 import type { LibManagedAccount } from "../accounts/lib-types.js";
-import { makeLibGoalContext } from "../dispatcher/lib-goal-context.js";
+import type { GoalResult } from "../dispatcher/goals.js";
+import { type LibGoalContext, makeLibGoalContext } from "../dispatcher/lib-goal-context.js";
 import type { AccountReleaseDeps } from "../server/account-release.js";
 import { forceReleaseAccount } from "../server/account-release.js";
 import type { EventBuffer } from "../state/event-buffer.js";
@@ -39,6 +41,7 @@ import type { CombatHeartbeatStore } from "./combat-heartbeat.js";
 import type { CombatModeStore } from "./combat-mode-store.js";
 import {
 	type RecoveryProximity,
+	type RecoveryTarget,
 	resolveRecoveryTarget,
 	runCombatRecovery,
 } from "./combat-recovery.js";
@@ -65,6 +68,8 @@ export interface CombatReactorDeps extends AccountReleaseDeps {
 	 * `"external"` mode whose driver has died neither fights nor flees.
 	 */
 	heartbeats?: CombatHeartbeatStore;
+	/** Runs the post-combat trip home. Defaults to `runCombatRecovery`; injectable for tests. */
+	recover?: (ctx: LibGoalContext, target: RecoveryTarget) => Promise<GoalResult>;
 	/**
 	 * Wall-clock ms an in-battle `"external"` account may go without a driver
 	 * heartbeat before setpoint takes the fight. Defaults to 50s — five ticks.
@@ -276,10 +281,15 @@ export class CombatReactor {
 		});
 
 		try {
-			const ctx = makeLibGoalContext(() => this.mustResolveAccount(playerId));
+			// Fly the interrupted loop's own routes home, if it had any — recovery is
+			// exactly when a ship is somewhere its usual route does not start.
+			const routes = interrupted.loopOptions?.["routes"] as Routes | undefined;
+			const ctx = makeLibGoalContext(() => this.mustResolveAccount(playerId), undefined, {
+				routeFor: (targetSystemId) => routes?.[targetSystemId],
+			});
 			const result = await withAccountLogging(
 				() => this.mustResolveAccount(playerId),
-				() => runCombatRecovery(ctx, target),
+				() => (this.deps.recover ?? runCombatRecovery)(ctx, target),
 			);
 			this.deps.combatEventsStore.record(playerId, {
 				receivedAt: new Date().toISOString(),

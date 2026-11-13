@@ -184,6 +184,31 @@ export interface CombatModeStatus {
 	mode: CombatMode;
 }
 
+/**
+ * What setpoint does when a ship it is driving takes damage from a POI hazard
+ * (game v0.687.0: radiation, tidal shear and the like dose hull every tick a
+ * ship stays undocked at the POI, or on each mining action; the ship is lost at
+ * zero hull).
+ *
+ * - `"retreat"` (the default): on the first hazard warning, stop setpoint's
+ *   loop or goal on the ship and dock somewhere safe.
+ * - `"tolerate"`: keep working while hull stays at or above `minHullPct`, then
+ *   retreat. For a ship sent in deliberately — with repair kits aboard, say.
+ * - `"external"`: never intervene; the ship's own driver handles hazards.
+ *
+ * Setpoint only ever acts on work it is running. A ship with no setpoint loop,
+ * goal or job is left alone in every mode.
+ */
+export type HazardMode = "retreat" | "tolerate" | "external";
+
+/** Current hazard-mode setting for an account, as exposed by GET/PATCH /accounts/:playerId/hazard-mode. */
+export interface HazardModeStatus {
+	playerId: string;
+	mode: HazardMode;
+	/** Present for `"tolerate"`: the hull percentage below which setpoint retreats. */
+	minHullPct?: number;
+}
+
 export type JobStatus = "pending" | "running" | "completed" | "failed";
 
 /**
@@ -407,11 +432,27 @@ export interface CombatRecoveryPayload {
 	message?: string;
 }
 
+/** Payload of setpoint's hazard-retreat events on the combat stream. */
+export interface HazardRetreatPayload {
+	hazard: { type: string; severity: number };
+	hull: number;
+	maxHull: number;
+	/** The loop or goal setpoint stopped to retreat. */
+	previousLoopType?: string | undefined;
+	previousGoalType?: string | undefined;
+	/** Where it is retreating to, once chosen. */
+	target?: CombatRecoveryTarget;
+	message?: string;
+}
+
 /** Synthetic events setpoint itself emits around a combat interruption, alongside the raw game pushes. */
 export type CombatSyntheticEnvelope =
 	| { receivedAt: string; type: "combat_interrupted"; payload: CombatInterruptedPayload }
 	| { receivedAt: string; type: "combat_recovery_started"; payload: CombatRecoveryPayload }
 	| { receivedAt: string; type: "combat_recovery_completed"; payload: CombatRecoveryPayload }
-	| { receivedAt: string; type: "combat_recovery_failed"; payload: CombatRecoveryPayload };
+	| { receivedAt: string; type: "combat_recovery_failed"; payload: CombatRecoveryPayload }
+	| { receivedAt: string; type: "hazard_retreat_started"; payload: HazardRetreatPayload }
+	| { receivedAt: string; type: "hazard_retreat_completed"; payload: HazardRetreatPayload }
+	| { receivedAt: string; type: "hazard_retreat_failed"; payload: HazardRetreatPayload };
 
 export type CombatEnvelope = CombatRawEnvelope | CombatSyntheticEnvelope;

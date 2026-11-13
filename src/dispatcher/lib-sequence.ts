@@ -72,7 +72,8 @@ export async function runLibSequence(
 		// underlying Account, leaving the pinned one sending on a dead socket:
 		// the step then fails, the sequence stops, and the ship is left wherever
 		// it got to — in the right system but short of the station.
-		const stepCtx = makeLibGoalContext(() => ctx.account, ctx.signal);
+		// Carries the caller's route lookup down, so a step that travels honours it.
+		const stepCtx = makeLibGoalContext(() => ctx.account, ctx.signal, { routeFor: ctx.routeFor });
 
 		log.info(`Running step: ${step.name}`);
 		const result = await step.execute(stepCtx);

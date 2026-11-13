@@ -1,4 +1,7 @@
 import { describe, expect, mock, spyOn, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type {
 	CombatEnvelope,
 	CombatMode,
@@ -11,7 +14,9 @@ import type {
 import { type ClerkPlayer, type GameState, SpacemoltError } from "@spacemolt/lib";
 import { GameCallGate } from "../../src/accounts/game-call-gate.js";
 import type { CombatModeStore } from "../../src/combat/combat-mode-store.js";
+import { HazardModeStore } from "../../src/combat/hazard-mode-store.js";
 import { markStateFresh } from "../../src/dispatcher/state-freshness.js";
+import { Lifecycle } from "../../src/lifecycle/lifecycle.js";
 import {
 	type HandlerContext,
 	handleAbortAccount,
@@ -26,6 +31,7 @@ import {
 	handleFleetMoveAsync,
 	handleGetAccount,
 	handleGetCombatMode,
+	handleGetHazardMode,
 	handleGetJob,
 	handleGetLogLevel,
 	handleGetLoop,
@@ -34,6 +40,7 @@ import {
 	handleGetState,
 	handleGetStateSection,
 	handleGetSystem,
+	handleHandoverRequest,
 	handleHealth,
 	handleListAccounts,
 	handleMarketEvents,
@@ -42,7 +49,9 @@ import {
 	handlePirateRadioEvents,
 	handleRawAction,
 	handleRegisterAccount,
+	handleRestartNotice,
 	handleSetCombatMode,
+	handleSetHazardMode,
 	handleSetLogLevel,
 	handleStartLoop,
 	handleStopLoop,
@@ -226,6 +235,8 @@ function makeContext(
 		marketEventsStore: createEventBuffer<string>(),
 		marketSubscriptions: new MarketSubscriptionKeeper(),
 		gameCallGate: new GameCallGate(),
+		hazardModeStore: { get: () => ({ mode: "retreat" }) } as unknown as HazardModeStore,
+		lifecycle: new Lifecycle(),
 		combatModeStore: new FakeCombatModeStore() as unknown as CombatModeStore,
 	};
 }
@@ -696,6 +707,56 @@ describe("handlePatchLoop", () => {
 		const body = (await res.json()) as Record<string, unknown>;
 		expect(res.status).toBe(200);
 		expect(body["running"]).toBe(true);
+	});
+
+	test("accepts a routes patch, wormhole hops included", async () => {
+		const account = makeAccount("p1");
+		const loopStatus: LoopStatus = {
+			type: "mining",
+			startedAt: "2026-01-01T00:00:00.000Z",
+			running: true,
+			options: {},
+		};
+		const ctx = makeContext({ accounts: [account], loopStatus });
+
+		const res = await handlePatchLoop(
+			new Request("http://localhost/accounts/p1/loop", {
+				method: "PATCH",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					routes: { lhs_1140: ["sol", { systemId: "fang", viaWormhole: "wh_1" }, "lhs_1140"] },
+				}),
+			}),
+			{ playerId: "p1" },
+			ctx,
+		);
+
+		expect(res.status).toBe(200);
+		expect(ctx.loopManager.patchLoopOptions).toHaveBeenCalled();
+	});
+
+	test("rejects a malformed route rather than storing it", async () => {
+		const account = makeAccount("p1");
+		const loopStatus: LoopStatus = {
+			type: "mining",
+			startedAt: "2026-01-01T00:00:00.000Z",
+			running: true,
+			options: {},
+		};
+		const ctx = makeContext({ accounts: [account], loopStatus });
+
+		const res = await handlePatchLoop(
+			new Request("http://localhost/accounts/p1/loop", {
+				method: "PATCH",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ routes: { fang: [{ systemId: "fang" }] } }),
+			}),
+			{ playerId: "p1" },
+			ctx,
+		);
+
+		expect(res.status).toBe(400);
+		expect(ctx.loopManager.patchLoopOptions).not.toHaveBeenCalled();
 	});
 
 	test("returns 409 when no loop is running", async () => {
@@ -2584,6 +2645,38 @@ describe("handleGetJob", () => {
 // ── Raw Action ──────────────────────────────────────────────────────
 
 describe("handleRawAction", () => {
+	test("refuses at once with 503 while the account is reconnecting, sending nothing", async () => {
+		// A raw caller has its own timeout; a call it gave up on that executes
+		// after the reconnect is a mutation that runs twice.
+		let sent = 0;
+		const account = new FakeLibManagedAccount({
+			playerId: "p1",
+			username: "TestPlayer",
+			handlers: {
+				jump: () => {
+					sent++;
+					return { result: {} };
+				},
+			},
+		});
+		Object.defineProperty(account, "authenticated", { value: false });
+		const ctx = makeContext({ accounts: [account] });
+
+		const res = await handleRawAction(
+			new Request("http://localhost/accounts/p1/raw", {
+				method: "POST",
+				body: JSON.stringify({ toolGroup: "spacemolt", action: "jump", params: { id: "sol" } }),
+				headers: { "Content-Type": "application/json" },
+			}),
+			{ playerId: "p1" },
+			ctx,
+		);
+
+		expect(res.status).toBe(503);
+		expect(((await res.json()) as { code: string }).code).toBe("reconnecting");
+		expect(sent).toBe(0);
+	});
+
 	test("refuses at once with 503 and Retry-After while the game has the IP blocked", async () => {
 		let sent = 0;
 		const account = new FakeLibManagedAccount({
@@ -3996,6 +4089,183 @@ describe("handleMarketEvents", () => {
 		await res.body?.cancel();
 
 		expect(ctx.marketSubscriptions.hasSubscribers("p1")).toBe(false);
+	});
+});
+
+describe("hazard mode", () => {
+	async function contextWithStore() {
+		const dir = await mkdtemp(join(tmpdir(), "hazard-"));
+		const account = makeAccount("p1");
+		const ctx = makeContext({ accounts: [account] });
+		ctx.hazardModeStore = await HazardModeStore.load(dir);
+		return { ctx, dir };
+	}
+
+	const patch = (body: unknown) =>
+		new Request("http://localhost/accounts/p1/hazard-mode", {
+			method: "PATCH",
+			body: JSON.stringify(body),
+			headers: { "Content-Type": "application/json" },
+		});
+
+	test("GET reports the default, retreat", async () => {
+		const { ctx, dir } = await contextWithStore();
+		const res = await handleGetHazardMode(
+			new Request("http://localhost/accounts/p1/hazard-mode"),
+			{ playerId: "p1" },
+			ctx,
+		);
+		expect(await res.json()).toEqual({ playerId: "p1", mode: "retreat" });
+		await rm(dir, { recursive: true, force: true });
+	});
+
+	test("PATCH sets tolerate with a hull floor, and GET reads it back", async () => {
+		const { ctx, dir } = await contextWithStore();
+		const info = spyOn(console, "info").mockImplementation(() => {});
+		const set = await handleSetHazardMode(
+			patch({ mode: "tolerate", minHullPct: 40 }),
+			{ playerId: "p1" },
+			ctx,
+		);
+		info.mockRestore();
+		expect(set.status).toBe(200);
+
+		const res = await handleGetHazardMode(
+			new Request("http://localhost/accounts/p1/hazard-mode"),
+			{ playerId: "p1" },
+			ctx,
+		);
+		expect(await res.json()).toEqual({ playerId: "p1", mode: "tolerate", minHullPct: 40 });
+		await rm(dir, { recursive: true, force: true });
+	});
+
+	test("PATCH rejects tolerate without a threshold", async () => {
+		const { ctx, dir } = await contextWithStore();
+		const res = await handleSetHazardMode(patch({ mode: "tolerate" }), { playerId: "p1" }, ctx);
+		expect(res.status).toBe(400);
+		await rm(dir, { recursive: true, force: true });
+	});
+
+	test("404 for an unknown account", async () => {
+		const ctx = makeContext({ accounts: [] });
+		const res = await handleGetHazardMode(
+			new Request("http://localhost/accounts/x/hazard-mode"),
+			{ playerId: "x" },
+			ctx,
+		);
+		expect(res.status).toBe(404);
+	});
+});
+
+describe("handleStartLoop refuses while something else owns the ship", () => {
+	const startMining = () =>
+		new Request("http://localhost/accounts/p1/loop", {
+			method: "POST",
+			body: JSON.stringify({
+				type: "mining",
+				options: {
+					miningSystemId: "sol",
+					beltPoiId: "sol_belt",
+					sellSystemId: "sol",
+					sellStationPoiId: "sol_station",
+					sellBaseId: "sol_base",
+				},
+			}),
+			headers: { "Content-Type": "application/json" },
+		});
+
+	test("a hazard retreat in progress blocks a loop restart with 409", async () => {
+		// The retreat registers as the account's executing goal. A caller
+		// relaunching the loop straight after would send the ship back in.
+		const account = makeAccount("p1");
+		const ctx = makeContext({ accounts: [account] });
+		ctx.executingGoals.set("p1", {
+			goalType: "hazard-retreat",
+			startedAt: "",
+			controller: new AbortController(),
+			progress: { goalType: "hazard-retreat", completedSteps: [], remainingSteps: [] },
+			promise: new Promise(() => {}),
+		});
+
+		const res = await handleStartLoop(startMining(), { playerId: "p1" }, ctx);
+
+		expect(res.status).toBe(409);
+		expect(((await res.json()) as { error: string }).error).toContain("hazard-retreat");
+	});
+
+	test("a fleet claim blocks a loop start with 409", async () => {
+		const account = makeAccount("p1");
+		const ctx = makeContext({ accounts: [account] });
+		ctx.claimedAccounts.add("p1");
+
+		const res = await handleStartLoop(startMining(), { playerId: "p1" }, ctx);
+
+		expect(res.status).toBe(409);
+	});
+});
+
+describe("lifecycle endpoints", () => {
+	test("health reports the lifecycle phase and pid", async () => {
+		const ctx = makeContext({ accounts: [] });
+		const res = handleHealth(new Request("http://localhost/health"), {}, ctx);
+		const body = (await res.json()) as { lifecycle: { phase: string; pid: number } };
+		expect(body.lifecycle.phase).toBe("starting");
+		expect(body.lifecycle.pid).toBe(process.pid);
+	});
+
+	test("a restart notice is recorded and returned", async () => {
+		const ctx = makeContext({ accounts: [] });
+		const warn = spyOn(console, "warn").mockImplementation(() => {});
+		const res = await handleRestartNotice(
+			new Request("http://localhost/lifecycle/restart-notice", {
+				method: "POST",
+				body: JSON.stringify({ inSeconds: 90, reason: "deploying routes" }),
+			}),
+			{},
+			ctx,
+		);
+		warn.mockRestore();
+		expect(res.status).toBe(200);
+		expect(ctx.lifecycle.status().restartPending?.reason).toBe("deploying routes");
+	});
+
+	test("a restart notice needs a reason", async () => {
+		const ctx = makeContext({ accounts: [] });
+		const res = await handleRestartNotice(
+			new Request("http://localhost/lifecycle/restart-notice", {
+				method: "POST",
+				body: JSON.stringify({ inSeconds: 90 }),
+			}),
+			{},
+			ctx,
+		);
+		expect(res.status).toBe(400);
+	});
+
+	test("a handover request is refused unless this setpoint is active", async () => {
+		const ctx = makeContext({ accounts: [] });
+		const res = handleHandoverRequest(
+			new Request("http://localhost/lifecycle/handover", { method: "POST" }),
+			{},
+			ctx,
+		);
+		expect(res.status).toBe(409);
+	});
+
+	test("an active setpoint accepts a handover and reports its pid", async () => {
+		const ctx = makeContext({ accounts: [] });
+		const warn = spyOn(console, "warn").mockImplementation(() => {});
+		ctx.lifecycle.enterActive(0);
+		ctx.lifecycle.onHandoverRequested(() => {});
+		const res = handleHandoverRequest(
+			new Request("http://localhost/lifecycle/handover", { method: "POST" }),
+			{},
+			ctx,
+		);
+		warn.mockRestore();
+		expect(res.status).toBe(202);
+		expect(((await res.json()) as { pid: number }).pid).toBe(process.pid);
+		expect(ctx.lifecycle.phase).toBe("draining");
 	});
 });
 

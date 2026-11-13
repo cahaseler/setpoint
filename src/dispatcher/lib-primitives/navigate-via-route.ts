@@ -1,3 +1,4 @@
+import { type RouteHop, hopSystemId } from "@setpoint/protocol";
 import { ConnectionClosedError } from "@spacemolt/lib";
 import { createLogger } from "../../util/logger.js";
 import type { GoalResult } from "../goals.js";
@@ -26,25 +27,28 @@ const log = createLogger("goal:navigate-via-route");
  */
 export class LibNavigateViaRoute implements LibGoal {
 	readonly name = "navigate-via-route";
-	private readonly route: string[];
+	private readonly route: RouteHop[];
 	private readonly fuelReserve: number;
 	private readonly waitOpts: LocationWaitOptions;
 
 	/**
-	 * @param route Systems to jump through in order; the last entry is the destination.
+	 * @param route Hops in order; the last is the destination. A hop is a system ID,
+	 *   or `{ systemId, viaWormhole }` to take a known wormhole from the previous
+	 *   system — see `RouteHop`.
 	 * @param fuelReserve Fuel units to keep beyond the route's estimated cost; the
 	 *   pre-flight check requires hops * fuel_per_jump + fuelReserve. Defaults to 0.
 	 * @param waitOpts Tuning for how long to wait out an unresolved position (mid-transit)
 	 *   before the first hop. Defaults are production-sane; overridable mainly for tests.
 	 */
-	constructor(route: string[], fuelReserve = 0, waitOpts: LocationWaitOptions = {}) {
+	constructor(route: RouteHop[], fuelReserve = 0, waitOpts: LocationWaitOptions = {}) {
 		this.route = route;
 		this.fuelReserve = fuelReserve;
 		this.waitOpts = waitOpts;
 	}
 
 	async execute(ctx: LibGoalContext): Promise<GoalResult> {
-		const target = this.route[this.route.length - 1];
+		const last = this.route[this.route.length - 1];
+		const target = last === undefined ? undefined : hopSystemId(last);
 		if (target === undefined) {
 			return failed("Cannot navigate via route: route is empty", 0);
 		}
@@ -83,12 +87,14 @@ export class LibNavigateViaRoute implements LibGoal {
 			}
 		}
 
-		// Skip leading hops the ship is already at (callers may include the origin).
-		let startIndex = 0;
-		while (startIndex < this.route.length && this.route[startIndex] === currentSystemId) {
-			startIndex++;
-		}
-		const hops = this.route.slice(startIndex);
+		// Fly from the hop after wherever the ship is on the route. A route may
+		// list systems before the ship's own — the origin, or legs already flown
+		// before an interruption — so a ship resuming partway along continues
+		// rather than jumping back to the start. Off the route entirely, it starts
+		// from the first hop, and a non-adjacent first hop fails at that jump with
+		// the ship's position reported.
+		const at = this.route.map(hopSystemId).lastIndexOf(currentSystemId);
+		const hops = this.route.slice(at + 1);
 
 		// Pre-flight fuel check: find_route supplies the ship's per-jump fuel
 		// cost and current fuel — the path it returns is never used.
@@ -112,8 +118,13 @@ export class LibNavigateViaRoute implements LibGoal {
 		}
 
 		for (let i = 0; i < hops.length; i++) {
-			const hopSystemId = hops[i];
-			if (hopSystemId === undefined) continue;
+			const hop = hops[i];
+			if (hop === undefined) continue;
+			const hopSystem = hopSystemId(hop);
+			// A wormhole hop jumps to its entrance POI in the current system; an
+			// ordinary hop jumps to the adjacent system.
+			const jumpTarget = typeof hop === "string" ? hop : hop.viaWormhole;
+			const via = typeof hop === "string" ? "" : ` via wormhole ${hop.viaWormhole}`;
 
 			// Check for external cancellation between jumps — explicit routes can
 			// be long, and a force abort must not wait for the full route.
@@ -121,9 +132,9 @@ export class LibNavigateViaRoute implements LibGoal {
 				return failed(`Route navigation aborted after ${ticksUsed} tick(s)`, ticksUsed);
 			}
 
-			log.info(`Jumping to ${hopSystemId} (hop ${i + 1}/${hops.length}, explicit route)`);
+			log.info(`Jumping to ${hopSystem}${via} (hop ${i + 1}/${hops.length}, explicit route)`);
 			try {
-				await ctx.account.commands.spacemolt.jump({ id: hopSystemId });
+				await ctx.account.commands.spacemolt.jump({ id: jumpTarget });
 				ticksUsed++;
 			} catch (err) {
 				const isTransient = err instanceof ConnectionClosedError;
@@ -134,24 +145,24 @@ export class LibNavigateViaRoute implements LibGoal {
 					// (delta rarely includes location for transit actions), so the
 					// cached snapshot can't tell us whether this hop landed.
 					const fresh = await ctx.refreshState({ force: true });
-					if (fresh.location?.system_id === hopSystemId) {
+					if (fresh.location?.system_id === hopSystem) {
 						ticksUsed++;
 						continue;
 					}
 					// Retry the same hop once — never a different path.
 					log.warn(
-						`Jump to ${hopSystemId} failed transiently (${err instanceof Error ? err.message : String(err)}), retrying hop`,
+						`Jump to ${hopSystem} failed transiently (${err instanceof Error ? err.message : String(err)}), retrying hop`,
 					);
 					try {
-						await ctx.account.commands.spacemolt.jump({ id: hopSystemId });
+						await ctx.account.commands.spacemolt.jump({ id: jumpTarget });
 						ticksUsed++;
 						continue;
 					} catch (retryErr) {
-						return this.failAtHop(ctx, hopSystemId, retryErr, ticksUsed);
+						return this.failAtHop(ctx, hopSystem, retryErr, ticksUsed);
 					}
 				}
 
-				return this.failAtHop(ctx, hopSystemId, err, ticksUsed);
+				return this.failAtHop(ctx, hopSystem, err, ticksUsed);
 			}
 		}
 
@@ -172,7 +183,7 @@ export class LibNavigateViaRoute implements LibGoal {
 	 */
 	private async failAtHop(
 		ctx: LibGoalContext,
-		hopSystemId: string,
+		hopSystem: string,
 		err: unknown,
 		ticksUsed: number,
 	): Promise<GoalResult> {
@@ -183,7 +194,7 @@ export class LibNavigateViaRoute implements LibGoal {
 		const position = state.location?.system_id ?? "unknown";
 		const message = err instanceof Error ? err.message : String(err);
 		return failed(
-			`Route jump to ${hopSystemId} failed (currently in ${position}): ${message}`,
+			`Route jump to ${hopSystem} failed (currently in ${position}): ${message}`,
 			ticksUsed,
 		);
 	}

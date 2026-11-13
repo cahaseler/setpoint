@@ -141,6 +141,23 @@ const commands: Command[] = [
 			"Get or set an account's combat-response mode. \"external\" skips setpoint's automatic flee response (still releases any running loop/goal) so hand-written combat logic can drive the ship instead.",
 	},
 	{
+		pattern: "announce-restart",
+		positionals: ["inSeconds", "reason"],
+		variadic: true,
+		handler: handleAnnounceRestart,
+		usage: "smctl announce-restart <inSeconds> <reason...>",
+		description:
+			"Announce an upcoming setpoint restart: writes a RESTART PENDING line to daemon.log for the sessions that monitor it, and shows it on /health until the restarted daemon is ready.",
+	},
+	{
+		pattern: "hazard-mode",
+		positionals: ["playerId", "mode?", "minHullPct?"],
+		handler: handleHazardMode,
+		usage: "smctl hazard-mode <playerId> [retreat|external|tolerate <minHullPct>]",
+		description:
+			'Get or set an account\'s response to POI hazards. "retreat" (default) stops setpoint\'s loop or goal and docks on the first hazard warning; "tolerate <minHullPct>" keeps working until hull falls below that percentage; "external" never intervenes.',
+	},
+	{
 		pattern: "abort",
 		positionals: ["playerId"],
 		handler: handleAbort,
@@ -468,6 +485,44 @@ async function handleCombatMode(ctx: CommandContext, args: string[]): Promise<vo
 	await sendAndOutput(ctx, () =>
 		ctx.client.patch(`/accounts/${encodeURIComponent(playerId)}/combat-mode`, { mode }),
 	);
+}
+
+async function handleAnnounceRestart(ctx: CommandContext, args: string[]): Promise<void> {
+	const inSeconds = Number(args[0]);
+	const reason = args.slice(1).join(" ").trim();
+	if (!Number.isFinite(inSeconds) || inSeconds < 0 || reason === "") {
+		ctx.output.usageError("usage: smctl announce-restart <inSeconds> <reason...>");
+		return;
+	}
+	await sendAndOutput(ctx, () =>
+		ctx.client.post("/lifecycle/restart-notice", { inSeconds, reason }),
+	);
+}
+
+async function handleHazardMode(ctx: CommandContext, args: string[]): Promise<void> {
+	const playerId = args[0] as string;
+	const mode = args[1];
+	const path = `/accounts/${encodeURIComponent(playerId)}/hazard-mode`;
+	if (mode === undefined) {
+		await sendAndOutput(ctx, () => ctx.client.get(path));
+		return;
+	}
+	if (mode === "retreat" || mode === "external") {
+		await sendAndOutput(ctx, () => ctx.client.patch(path, { mode }));
+		return;
+	}
+	if (mode === "tolerate") {
+		const minHullPct = Number(args[2]);
+		if (args[2] === undefined || !Number.isFinite(minHullPct)) {
+			ctx.output.usageError(
+				'"tolerate" needs a minimum hull percentage, e.g. hazard-mode <id> tolerate 40',
+			);
+			return;
+		}
+		await sendAndOutput(ctx, () => ctx.client.patch(path, { mode, minHullPct }));
+		return;
+	}
+	ctx.output.usageError('mode must be "retreat", "tolerate" or "external"');
 }
 
 async function handleAbort(ctx: CommandContext, args: string[]): Promise<void> {

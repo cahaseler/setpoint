@@ -5,6 +5,7 @@ import { alreadySatisfied, failed, succeeded } from "../goals.js";
 import type { LibGoal, LibGoalContext } from "../lib-goal-context.js";
 import type { LocationWaitOptions } from "../wait-for-location.js";
 import { waitForLocation } from "../wait-for-location.js";
+import { LibNavigateViaRoute } from "./navigate-via-route.js";
 
 const log = createLogger("goal:navigate-to-system");
 
@@ -67,6 +68,18 @@ export class LibNavigateToSystem implements LibGoal {
 			if (!currentSystemId || state.location?.in_transit) {
 				return failed("Cannot navigate: still mid-transit or current system unknown", 0);
 			}
+		}
+
+		// A caller-supplied route wins over find_route: the caller may be steering
+		// around something the game's planner does not weigh, like a leviathan.
+		// Read here, at the start of the leg, so a route patched onto a running
+		// loop applies from its next leg.
+		const supplied = ctx.routeFor?.(this.targetSystemId);
+		if (supplied !== undefined && supplied.length > 0) {
+			log.info(
+				`Using the caller-supplied ${supplied.length}-hop route to ${this.targetSystemId} instead of find_route`,
+			);
+			return new LibNavigateViaRoute(supplied, this.fuelReserve, this.waitOpts).execute(ctx);
 		}
 
 		// Undock before jumping — the game API rejects jump while docked.

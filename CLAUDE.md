@@ -36,7 +36,8 @@ setpoint/
 ├── package.json
 ├── tsconfig.json
 ├── scripts/
-│   └── bump-version.ts             # Auto-increment patch version on deploy
+│   ├── bump-version.ts             # Auto-increment patch version on deploy
+│   └── deploy-release.sh           # Deploy a release by handover (see "The deploy procedure")
 ├── packages/                       # Bun workspace packages
 │   ├── protocol/                   # @setpoint/protocol — shared goal/loop/game-state types + zod schemas
 │   └── client/                     # @setpoint/client — typed HTTP client for the daemon's API
@@ -68,6 +69,7 @@ setpoint/
 │   │   ├── combat-response.ts      # CombatResponseStrategy + FleeCombatStrategy
 │   │   ├── combat-mode-store.ts    # Persisted per-account flee vs. external mode
 │   │   └── combat-recovery.ts      # Post-combat return to the loop's working area
+│   ├── lifecycle/                  # Restart notices, standby, and handover between releases
 │   ├── server/                     # Local HTTP API
 │   │   ├── index.ts                # Server startup + buildRoutes() (Bun native route table)
 │   │   ├── http.ts                 # jsonResponse/errorResponse + RouteParams/RouteHandler types
@@ -265,32 +267,71 @@ After finishing a set of changes, run `bun run deploy`. It bumps the patch versi
 - **Free the port if needed:** `npx kill-port 7580` — avoid broad `pkill` that kills unrelated processes.
 - **NEVER restart the daemon (or kill its process) without explicit, in-the-moment instruction from Craig.** This holds even mid-incident, even when a fix clearly requires a restart to complete, even when it seems obviously implied by the conversation. Diagnose, explain what's wrong and why a restart would fix it, and ask — then wait for an explicit go-ahead before touching the process. The live daemon manages real, active accounts and other automation (patrols, loops, external scripts) depends on it staying up on Craig's own schedule, not whenever a fix is ready.
 
-#### The restart procedure
+#### The deploy procedure
 
 Once Craig has given that go-ahead, this is the whole procedure. Do not
 substitute a different launcher.
 
 ```bash
-kill -TERM <pid>                              # graceful: drains HTTP, then disconnects accounts
-# wait for "[main] Goodbye." in logs/daemon.log — takes ~20s, most of it the 10s server drain
-nohup bun run src/index.ts > /dev/null 2>&1 & # from the repo root
+scripts/deploy-release.sh [commit] [reason...]   # commit defaults to origin/main
+```
+
+Run it in the foreground with a long timeout (it returns once the new release
+is serving, which is several minutes for a full fleet), never as a background
+task of the agent session — see below. It:
+
+1. Checks the commit out as a detached worktree under
+   `~/projects/setpoint-releases/<sha>` and runs `bun install` there. Every
+   release shares config, data and logs with this checkout through
+   `SETPOINT_HOME`, so nothing is copied.
+2. Posts a restart notice to the running daemon, which logs
+   `RESTART PENDING` (see the lifecycle lines below).
+3. Launches the new release detached. Finding a daemon already on the port, it
+   goes into **standby**: it connects every account (the game allows several
+   connections per account, so the running daemon keeps its own), serves only
+   `/health` on the control port (`SM_PORT + 1`, so 7581), and resumes nothing.
+4. Once standby holds the fleet, it asks the running daemon to hand over
+   (`POST /lifecycle/handover`). That one refuses new mutating requests with
+   503 `code: "handover"` and `Retry-After: 5`, shuts down, and the new one
+   binds the port, resumes every persisted loop and job, and logs `READY`.
+   The gap callers see is well under a second.
+5. Points the `~/projects/setpoint-release` symlink at the new release and
+   retires the previous release's worktree.
+
+A daemon that predates handover answers 404 to the handover request. The new
+release then waits in standby and the script prints the old pid once; stop it
+with `kill -TERM <pid>` after standby's `/health` shows every account
+connected. That is the only manual step, and it applies to one deploy.
+
+With no daemon running at all (after a crash or a reboot), the launch is the
+plain one, from the live release:
+
+```bash
+cd ~/projects/setpoint-release && SETPOINT_HOME=~/projects/setpoint nohup bun run src/index.ts > /dev/null 2>&1 &
 ```
 
 Then verify, in this order:
 
-1. `curl -s http://localhost:7580/health` — the HTTP server comes up before any
-   account connects, so this answers within a second or two.
-2. Poll that same endpoint until `accounts` reaches its full count. The lib
-   staggers connects, so a full fleet takes several minutes. This is expected;
-   see the rate-limit table above.
-3. `curl -s http://localhost:7580/dashboard/data` and check every running loop's
+1. `curl -s http://localhost:7580/health` — `lifecycle.phase` is `active` and
+   `lifecycle.release` is the commit you deployed. After a cold start the HTTP
+   server comes up before any account connects; poll until `accounts` reaches
+   its full count, which takes several minutes (see the rate-limit table above).
+   After a handover the fleet is already connected.
+2. `curl -s http://localhost:7580/dashboard/data` and check every running loop's
    `consecutiveFailures`. A loop that resumed before its account's socket was up
    logs `cannot send on a closed socket` and retries; those counters climbing is
-   normal during the ramp, but they must stop climbing. The counter only clears
-   on a *completed* iteration, so a frozen non-zero count with fresh
+   normal during a cold-start ramp, but they must stop climbing. The counter
+   only clears on a *completed* iteration, so a frozen non-zero count with fresh
    `mining-iteration` lines in the log is a healthy loop, not a stuck one.
 
-**The launch must be detached — `ppid` 1, stdout and stderr to `/dev/null`,
+**Lifecycle lines.** Every phase change is logged at WARN under
+`[setpoint-lifecycle]` in `logs/daemon.log`, which the peer sessions already
+watch: `RESTART PENDING`, `HANDOVER STARTING`, `HANDOVER CUTOVER`, `READY`,
+`STOPPING`. `smctl announce-restart <inSeconds> <reason...>` posts the notice by
+hand, for a restart the script isn't doing. `/health` carries the same state as
+`lifecycle: {phase, pid, release, restartPending}`.
+
+**The daemon must run detached — `ppid` 1, stdout and stderr to `/dev/null`,
 file logging handles the rest.** Confirm with
 `ps -eo pid,ppid,cmd | grep src/index.ts`. Two ways of starting it that look
 equivalent and are not:
@@ -299,27 +340,30 @@ equivalent and are not:
   `run_in_background`, or any runner whose lifetime is the conversation). The
   harness terminates the task when the turn or session ends and the daemon dies
   with it. This happened on 2026-09-07: the daemon ran for six minutes, the
-  background task was killed, and all 261 accounts dropped.
+  background task was killed, and all 261 accounts dropped. The same goes for
+  running the deploy script that way.
 - **Never invent a different supervisor** (a new `tmux` session, a systemd unit,
   `pm2`). Nothing else on this box expects the daemon there, and it makes the
   process tree lie about how the service is run.
 
-If the `nohup` line is refused by a permission check, stop and say so rather
+If the launch is refused by a permission check, stop and say so rather
 than reaching for a substitute. Ask Craig to run it himself — in Claude Code he
 can prefix a command with `!` to run it in the session.
 
-**After every deploy, move the release checkout to match.** `~/projects/setpoint-release` is a detached git worktree of this repo holding exactly what the running daemon runs. The other projects that use `@setpoint/client` and `@setpoint/protocol` (sm-simpletraders, ilc-combat, sm-privateers) link to it through Bun's link registry, so their types always match the live daemon — not whatever branch is checked out here. Never work in it. Once a restart onto new code has been verified:
+**The release checkout.** `~/projects/setpoint-release` is a symlink to the
+worktree the live daemon runs from. The other projects that use
+`@setpoint/client` and `@setpoint/protocol` (sm-simpletraders, ilc-combat,
+sm-privateers) link to it through Bun's link registry, so their types always
+match the live daemon — not whatever branch is checked out here. Never work in
+it or under `~/projects/setpoint-releases/`. The deploy script moves the link;
+after a deploy, tell those sessions what changed. Until 2026-11-13 the links
+pointed at this working copy, so every branch switch here changed their types
+underneath them — a command from an unmerged lib upgrade appeared and vanished
+as branches changed. If the registry ever needs re-pointing: `bun link` in
+`setpoint-release/packages/client` and `packages/protocol`.
 
-```bash
-git -C ~/projects/setpoint-release fetch -q
-git -C ~/projects/setpoint-release checkout -q --detach origin/main
-(cd ~/projects/setpoint-release && bun install)
-```
-
-Then tell those sessions to `bun install`, and what changed. Until 2026-11-13 the links pointed at this working copy, so every branch switch here changed their types underneath them — a command from an unmerged lib upgrade appeared and vanished as branches changed. If the registry ever needs re-pointing: `bun link` in `setpoint-release/packages/client` and `packages/protocol`.
-
-**Avoid repeated restarts in a short window.** Each one re-authenticates the
-whole fleet, and `SETUP.md` warns this can trip the game's auth rate limit.
+**Avoid repeated deploys in a short window.** Each one connects the whole
+fleet again, and `SETUP.md` warns this can trip the game's auth rate limit.
 
 ### Important Patterns
 - **Never hardcode API types** — always use the types exported by `@spacemolt/lib`
@@ -477,6 +521,15 @@ smctl loop stop <playerId>                # Stop a running loop
 
 Supported loop types: `mining`, `enhanced-mining`, `salvage`, `roaming-salvage`, `tow-salvage`, `trading`, `hauling`, `storage-transfer`, `exploration`, `guard`.
 
+**Caller-supplied routes.** Every loop type accepts `routes`: a map from destination system ID to the route to fly there, hops in order with the destination last. Whenever the loop needs to reach a system that has an entry, it flies that route instead of the game's `find_route`; destinations without one still use `find_route`. A hop is a system ID, or `{ "systemId": "<dest>", "viaWormhole": "<entrance POI>" }` to take a known wormhole from the previous system (setpoint jumps to the entrance POI). A ship already partway along a route continues from the hop after its current system.
+
+```bash
+# Keep a miner's delivery leg out of hawthorne, effective from its next leg — no restart
+smctl loop update <playerId> --json '{"routes":{"lhs_1140":["sol","ross_128","lhs_1140"]}}'
+```
+
+Routes are read at the start of each leg, so a `PATCH /loop` applies from the next one. A patch replaces the whole `routes` map. A rejected jump on a supplied route fails the leg with the ship's position rather than re-planning around the caller's choice, and the loop retries as usual. Setpoint deliberately does no pathfinding of its own: route choice belongs to the caller, which can update its algorithm without a setpoint release. Combat recovery and the hazard retreat fly the interrupted loop's routes too. It works by `navigate-to-system` consulting `LibGoalContext.routeFor`, so any goal that travels honours it; a new place that builds a child goal context must pass `routeFor` through, as `lib-sequence.ts` and `lib-loops.ts` do.
+
 Loop configs are persisted to disk and auto-resume on daemon restart.
 
 Use `smctl help loops`, `smctl help trading`, or `smctl help hauling` for detailed schemas and examples.
@@ -489,6 +542,25 @@ On entering combat, setpoint always releases the account from any running loop/g
 - `external` — setpoint sends no automatic combat commands at all, leaving the ship free for hand-written combat logic (a bot, a script) driving it directly via the raw API or goals.
 
 **An `external` driver must send a heartbeat.** `POST /accounts/:playerId/combat-heartbeat` every tick the driver is alive, whether or not it issued a command — holding position is a legitimate and common move, so silence on the command channel is not evidence of a dead driver. After five ticks of silence *while the account is in a battle*, setpoint takes the fight with its built-in flee response and logs it at `warn`. An `external` account outside a battle is simply parked and is never touched. The account's configured mode is **not** rewritten when the fallback fires: a setting the daemon silently changed on a timer becomes a mystery later, so re-arming is the driver's business and the next battle starts `external` again. Heartbeats are in-memory only — a value surviving a restart would be a lie about a process that did not.
+
+#### Hazard Response
+
+Game v0.687.0 added POI hazards: radiation, tidal shear and others take a share of hull every tick a ship stays undocked at the POI, or on each mining action, and the ship is lost at zero hull. `HazardReactor` (`src/combat/hazard-reactor.ts`) acts on each `hazard_warning` according to a per-account setting, persisted like combat mode:
+
+- `retreat` (default) — on the first warning, stop setpoint's loop or goal on the ship and dock: at the loop's sell or home station (the combat-recovery target), else at the nearest hazard-free station in the system.
+- `tolerate` with `minHullPct` — keep working while hull is at or above the floor, then retreat. For ships sent in deliberately, with repair kits aboard.
+- `external` — never intervene.
+
+It only ever acts on work setpoint is running: a ship with no setpoint loop, goal or job is left alone in every mode, as is a ship in combat. The stopped loop is not restarted, since it would go straight back to the hazard. While the retreat runs it is the account's executing goal (`hazard-retreat`), so a loop start or goal submit is refused with 409 until it finishes. Progress is posted on the combat event stream as `hazard_retreat_started` / `_completed` / `_failed`.
+
+```bash
+smctl hazard-mode <playerId>                 # Get the current setting
+smctl hazard-mode <playerId> tolerate 40     # Keep working until hull drops below 40%
+smctl hazard-mode <playerId> external        # Never intervene
+smctl hazard-mode <playerId> retreat         # Back to the default
+```
+
+A loop start is refused (409) while anything other than a loop owns the ship — a goal, a hazard retreat, an async job or a fleet claim. It used to check only for another loop, which let a loop start under a running goal and put two drivers on one ship.
 
 ### Fleet operations (multi-account)
 
@@ -556,6 +628,8 @@ The daemon listens on `http://127.0.0.1:7580` by default. All responses are JSON
 | `DELETE` | `/accounts/:playerId/loop` | Stop loop | `smctl loop stop` |
 | `GET` | `/accounts/:playerId/combat-mode` | Get combat-response mode | `smctl combat-mode <id>` |
 | `PATCH` | `/accounts/:playerId/combat-mode` | Set combat-response mode (no restart) | `smctl combat-mode <id> <mode>` |
+| `GET` | `/accounts/:playerId/hazard-mode` | Get hazard-response setting | `smctl hazard-mode <id>` |
+| `PATCH` | `/accounts/:playerId/hazard-mode` | Set hazard-response setting (no restart) | `smctl hazard-mode <id> <mode> [minHullPct]` |
 | `POST` | `/accounts/:playerId/combat-heartbeat` | External combat driver liveness ping (see below) | — (use `@setpoint/client`'s `account.combatMode.heartbeat()`) |
 | `POST` | `/accounts/:playerId/fleet` | Reconcile the fleet this account leads to an exact membership | — (use `account.fleet.ensure()`) |
 | `POST` | `/accounts/:playerId/fleet/move` | Move the fleet and bring every member to readiness | — (use `account.fleet.move()`) |

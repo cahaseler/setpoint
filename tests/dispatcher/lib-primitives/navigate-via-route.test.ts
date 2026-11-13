@@ -174,3 +174,76 @@ describe("LibNavigateViaRoute", () => {
 		expect(jumps).toBe(2);
 	});
 });
+
+describe("LibNavigateViaRoute — wormholes and resuming", () => {
+	const jumps = (account: FakeLibGoalAccount): unknown[] =>
+		account.calls.filter((c) => c.action === "jump").map((c) => (c.params as { id: string }).id);
+
+	test("a wormhole hop jumps to its entrance POI, then carries on normally", async () => {
+		const account = new FakeLibGoalAccount(
+			{ location: { system_id: "sol" } },
+			{ find_route: () => route({}) },
+		);
+
+		const result = await new LibNavigateViaRoute([
+			"mid",
+			{ systemId: "fang", viaWormhole: "wh_entrance_0365fe63" },
+			"target",
+		]).execute(makeLibGoalContext(account));
+
+		expect(result.success).toBe(true);
+		expect(jumps(account)).toEqual(["mid", "wh_entrance_0365fe63", "target"]);
+	});
+
+	test("a ship partway along the route continues from where it is", async () => {
+		// After an interruption the ship can be mid-route; jumping back to the
+		// first hop would be wrong, and usually not even adjacent.
+		const account = new FakeLibGoalAccount(
+			{ location: { system_id: "b" } },
+			{ find_route: () => route({}) },
+		);
+
+		await new LibNavigateViaRoute(["sol", "a", "b", "c", "target"]).execute(
+			makeLibGoalContext(account),
+		);
+
+		expect(jumps(account)).toEqual(["c", "target"]);
+	});
+
+	test("resumes past a wormhole hop it has already taken", async () => {
+		const account = new FakeLibGoalAccount(
+			{ location: { system_id: "fang" } },
+			{ find_route: () => route({}) },
+		);
+
+		await new LibNavigateViaRoute([
+			"sol",
+			{ systemId: "fang", viaWormhole: "wh_entrance_0365fe63" },
+			"target",
+		]).execute(makeLibGoalContext(account));
+
+		expect(jumps(account)).toEqual(["target"]);
+	});
+
+	test("a ship not on the route starts from the first hop", async () => {
+		const account = new FakeLibGoalAccount(
+			{ location: { system_id: "elsewhere" } },
+			{ find_route: () => route({}) },
+		);
+
+		await new LibNavigateViaRoute(["a", "target"]).execute(makeLibGoalContext(account));
+
+		expect(jumps(account)).toEqual(["a", "target"]);
+	});
+
+	test("already satisfied when the route ends at a wormhole hop the ship has reached", async () => {
+		const account = new FakeLibGoalAccount({ location: { system_id: "fang" } });
+
+		const result = await new LibNavigateViaRoute([
+			"sol",
+			{ systemId: "fang", viaWormhole: "wh_entrance_0365fe63" },
+		]).execute(makeLibGoalContext(account));
+
+		expect(result.alreadySatisfied).toBe(true);
+	});
+});

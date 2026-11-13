@@ -3,7 +3,7 @@ import type { CombatEnvelope, CombatMode } from "@setpoint/protocol";
 import type { LibAccountManager } from "../../src/accounts/lib-manager.js";
 import { CombatHeartbeatStore } from "../../src/combat/combat-heartbeat.js";
 import type { CombatModeStore } from "../../src/combat/combat-mode-store.js";
-import { CombatReactor } from "../../src/combat/combat-reactor.js";
+import { CombatReactor, type CombatReactorDeps } from "../../src/combat/combat-reactor.js";
 import type {
 	CombatResponseResult,
 	CombatResponseStrategy,
@@ -52,6 +52,7 @@ function makeHarness(options: {
 	combatMode?: CombatMode | undefined;
 	heartbeats?: CombatHeartbeatStore | undefined;
 	externalHeartbeatTimeoutMs?: number | undefined;
+	recover?: CombatReactorDeps["recover"];
 }) {
 	const forceRemoveCalls: string[] = [];
 	const deleteConfigCalls: string[] = [];
@@ -93,6 +94,7 @@ function makeHarness(options: {
 		...(options.externalHeartbeatTimeoutMs !== undefined
 			? { externalHeartbeatTimeoutMs: options.externalHeartbeatTimeoutMs }
 			: {}),
+		...(options.recover !== undefined ? { recover: options.recover } : {}),
 	});
 
 	return {
@@ -191,6 +193,38 @@ describe("CombatReactor", () => {
 		const types = combatEventsStore.recent("p1").map((e) => e.type);
 		expect(types).toContain("combat_recovery_started");
 		expect(types).toContain("combat_recovery_completed");
+	});
+
+	test("recovery flies the interrupted loop's own routes home", async () => {
+		const account = new FakeAccount("p1", "acc-1", {
+			location: { system_id: "sol", poi_id: "sol-poi" },
+			ship: { fuel: 100, max_fuel: 100, hull: 50, max_hull: 50 },
+		});
+		const routesSeen: unknown[] = [];
+		const { reactor } = makeHarness({
+			loopStatus: {
+				type: "mining",
+				running: true,
+				options: {
+					sellSystemId: "lhs_1140",
+					sellStationPoiId: "lhs-poi",
+					sellBaseId: "lhs-base",
+					routes: { lhs_1140: ["sol", "ross_128", "lhs_1140"] },
+				},
+			},
+			account,
+			recover: async (ctx, target) => {
+				routesSeen.push(ctx.routeFor?.(target.systemId));
+				return { success: true, message: "docked", alreadySatisfied: false, ticksUsed: 1 };
+			},
+		});
+
+		reactor.handle("p1", "battle_started", battleStarted("p1"));
+		await flush();
+		reactor.handle("p1", "battle_ended", battleEnded());
+		await flush();
+
+		expect(routesSeen).toEqual([["sol", "ross_128", "lhs_1140"]]);
 	});
 
 	test("combatRecovery: external skips recovery entirely", async () => {

@@ -10,6 +10,8 @@ import type { CombatHeartbeatStore } from "../combat/combat-heartbeat.js";
 import type { CombatModeStore } from "../combat/combat-mode-store.js";
 
 import type { GameCallGate } from "../accounts/game-call-gate.js";
+import type { HazardModeStore } from "../combat/hazard-mode-store.js";
+import type { Lifecycle } from "../lifecycle/lifecycle.js";
 import type { CraftingEventsStore } from "../state/crafting-events-store.js";
 import type { EventBuffer } from "../state/event-buffer.js";
 import type { MarketSubscriptionKeeper } from "../state/market-subscription.js";
@@ -39,6 +41,7 @@ import {
 	handleFleetMoveAsync,
 	handleGetAccount,
 	handleGetCombatMode,
+	handleGetHazardMode,
 	handleGetJob,
 	handleGetLogLevel,
 	handleGetLoop,
@@ -47,6 +50,7 @@ import {
 	handleGetState,
 	handleGetStateSection,
 	handleGetSystem,
+	handleHandoverRequest,
 	handleHealth,
 	handleListAccounts,
 	handleMarketEvents,
@@ -56,7 +60,9 @@ import {
 	handleRawAction,
 	handleRefreshState,
 	handleRegisterAccount,
+	handleRestartNotice,
 	handleSetCombatMode,
+	handleSetHazardMode,
 	handleSetLogLevel,
 	handleStartLoop,
 	handleStopLoop,
@@ -129,6 +135,8 @@ export interface ServerOptions {
 	marketEventsStore: EventBuffer<string>;
 	marketSubscriptions: MarketSubscriptionKeeper;
 	gameCallGate: GameCallGate;
+	hazardModeStore: HazardModeStore;
+	lifecycle: Lifecycle;
 	combatModeStore: CombatModeStore;
 	combatHeartbeats?: CombatHeartbeatStore | undefined;
 	/** Whether an account is mid-battle. Late-bound: the combat reactor is built after the server. */
@@ -247,7 +255,20 @@ function route(
 		if (isUnboundedRequest(req)) {
 			server.timeout(req, 0);
 		}
-		log.info(`${req.method} ${new URL(req.url).pathname}`);
+		const { pathname } = new URL(req.url);
+		log.info(`${req.method} ${pathname}`);
+		// Handing over to a successor: nothing new may start on a ship it is about
+		// to take over. The cutover takes seconds, so callers simply retry.
+		if (ctx.lifecycle.refusesRequest(req.method, pathname)) {
+			return new Response(
+				JSON.stringify({
+					error: "setpoint is handing over to a new release; retry in a few seconds",
+					code: "handover",
+					retry_after: 5,
+				}),
+				{ status: 503, headers: { "Content-Type": "application/json", "Retry-After": "5" } },
+			);
+		}
 		try {
 			return await handler(req, req.params as Record<string, string>, ctx);
 		} catch (err) {
@@ -274,6 +295,8 @@ export function buildRoutes(ctx: HandlerContext): RouteTable {
 	return {
 		"/dashboard/data": { GET: r(handleDashboardData) },
 		"/health": { GET: r(handleHealth) },
+		"/lifecycle/restart-notice": { POST: r(handleRestartNotice) },
+		"/lifecycle/handover": { POST: r(handleHandoverRequest) },
 
 		// Accounts
 		"/accounts": { GET: r(handleListAccounts), POST: r(handleAddAccount) },
@@ -314,6 +337,10 @@ export function buildRoutes(ctx: HandlerContext): RouteTable {
 		"/accounts/:playerId/combat-mode": {
 			GET: r(handleGetCombatMode),
 			PATCH: r(handleSetCombatMode),
+		},
+		"/accounts/:playerId/hazard-mode": {
+			GET: r(handleGetHazardMode),
+			PATCH: r(handleSetHazardMode),
 		},
 
 		// Config
@@ -378,6 +405,8 @@ export function startServer(options: ServerOptions): DispatcherServer {
 		marketEventsStore: options.marketEventsStore,
 		marketSubscriptions: options.marketSubscriptions,
 		gameCallGate: options.gameCallGate,
+		hazardModeStore: options.hazardModeStore,
+		lifecycle: options.lifecycle,
 		combatModeStore: options.combatModeStore,
 		combatHeartbeats: options.combatHeartbeats,
 		isInCombat: options.isInCombat,

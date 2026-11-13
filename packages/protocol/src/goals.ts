@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { routeSchema } from "./routes.js";
 
 /**
  * Zod schema per goal type, mirrored field-for-field from the daemon's
@@ -14,7 +15,7 @@ export const goalSchemas = {
 		fuelReserve: z.number().optional(),
 	}),
 	"navigate-via-route": z.object({
-		route: z.array(z.string()),
+		route: routeSchema,
 		fuelReserve: z.number().optional(),
 	}),
 	"go-to-poi": z.object({ targetPoiId: z.string() }),
@@ -116,7 +117,7 @@ export const goalSchemas = {
 		repair: z.boolean().optional(),
 		cashSource: z.literal("faction").optional(),
 		minCredits: z.number().optional(),
-		route: z.array(z.string()).optional(),
+		route: routeSchema.optional(),
 	}),
 	"sell-at-station": z.object({
 		systemId: z.string(),
