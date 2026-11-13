@@ -411,10 +411,13 @@ async function main(): Promise<void> {
 	standbyControl = undefined;
 
 	const started = await activate();
+	// Standby's caches took the server's pushes but not the results of commands
+	// the incumbent sent, so a ship the incumbent moved can still be cached
+	// where it was. Re-read every account before anything acts on that state.
+	await driftSweep?.runOnce();
 	await resumeConnectedAccounts(manager, store, started, CONFIG_DIR);
 	projectAll(manager, projectOnChange);
 	lifecycle.enterActive(manager.size);
-	void driftSweep?.runOnce();
 }
 
 type LoopConfigEntry = Awaited<ReturnType<typeof LoopManager.loadLoopConfigs>>[number];
