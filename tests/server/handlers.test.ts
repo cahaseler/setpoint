@@ -698,6 +698,56 @@ describe("handlePatchLoop", () => {
 		expect(body["running"]).toBe(true);
 	});
 
+	test("accepts a routes patch, wormhole hops included", async () => {
+		const account = makeAccount("p1");
+		const loopStatus: LoopStatus = {
+			type: "mining",
+			startedAt: "2026-01-01T00:00:00.000Z",
+			running: true,
+			options: {},
+		};
+		const ctx = makeContext({ accounts: [account], loopStatus });
+
+		const res = await handlePatchLoop(
+			new Request("http://localhost/accounts/p1/loop", {
+				method: "PATCH",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					routes: { lhs_1140: ["sol", { systemId: "fang", viaWormhole: "wh_1" }, "lhs_1140"] },
+				}),
+			}),
+			{ playerId: "p1" },
+			ctx,
+		);
+
+		expect(res.status).toBe(200);
+		expect(ctx.loopManager.patchLoopOptions).toHaveBeenCalled();
+	});
+
+	test("rejects a malformed route rather than storing it", async () => {
+		const account = makeAccount("p1");
+		const loopStatus: LoopStatus = {
+			type: "mining",
+			startedAt: "2026-01-01T00:00:00.000Z",
+			running: true,
+			options: {},
+		};
+		const ctx = makeContext({ accounts: [account], loopStatus });
+
+		const res = await handlePatchLoop(
+			new Request("http://localhost/accounts/p1/loop", {
+				method: "PATCH",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ routes: { fang: [{ systemId: "fang" }] } }),
+			}),
+			{ playerId: "p1" },
+			ctx,
+		);
+
+		expect(res.status).toBe(400);
+		expect(ctx.loopManager.patchLoopOptions).not.toHaveBeenCalled();
+	});
+
 	test("returns 409 when no loop is running", async () => {
 		const account = makeAccount("p1");
 		const ctx = makeContext({ accounts: [account] });

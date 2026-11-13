@@ -3,6 +3,7 @@ import type { FindRouteResponse } from "@spacemolt/lib";
 import { SpacemoltError } from "@spacemolt/lib";
 import { makeLibGoalContext } from "../../../src/dispatcher/lib-goal-context.js";
 import { LibNavigateToSystem } from "../../../src/dispatcher/lib-primitives/navigate-to-system.js";
+import { runLibSequence } from "../../../src/dispatcher/lib-sequence.js";
 import { FakeLibGoalAccount, fakeMutationResult } from "../lib-fakes.js";
 
 /** Build a minimal FindRouteResponse QueryResult with the fields the goal reads. */
@@ -281,5 +282,69 @@ describe("LibNavigateToSystem", () => {
 		);
 		expect(result.success).toBe(false);
 		expect(result.message).toContain("aborted");
+	});
+});
+
+describe("LibNavigateToSystem — caller-supplied routes", () => {
+	const jumps = (account: FakeLibGoalAccount): unknown[] =>
+		account.calls.filter((c) => c.action === "jump").map((c) => (c.params as { id: string }).id);
+
+	/** find_route would send the ship through hawthorne; the caller's route avoids it. */
+	const viaHawthorne = () =>
+		route({
+			found: true,
+			fuel_available: 1000,
+			fuel_per_jump: 10,
+			estimated_fuel: 20,
+			total_jumps: 2,
+			route: [
+				{ system_id: "sol", name: "Sol", jumps: 0 },
+				{ system_id: "hawthorne", name: "Hawthorne", jumps: 1 },
+				{ system_id: "lhs_1140", name: "LHS 1140", jumps: 2 },
+			] as FindRouteResponse["route"],
+		});
+
+	test("flies the caller's route for that destination instead of find_route's", async () => {
+		const account = new FakeLibGoalAccount(
+			{ location: { system_id: "sol" } },
+			{ find_route: viaHawthorne },
+		);
+		const ctx = makeLibGoalContext(account, undefined, {
+			routeFor: (target) => (target === "lhs_1140" ? ["sol", "ross_128", "lhs_1140"] : undefined),
+		});
+
+		const result = await new LibNavigateToSystem("lhs_1140").execute(ctx);
+
+		expect(result.success).toBe(true);
+		expect(jumps(account)).toEqual(["ross_128", "lhs_1140"]);
+	});
+
+	test("uses find_route as before when no route is supplied for the destination", async () => {
+		const account = new FakeLibGoalAccount(
+			{ location: { system_id: "sol" } },
+			{ find_route: viaHawthorne },
+		);
+		const ctx = makeLibGoalContext(account, undefined, {
+			routeFor: (target) => (target === "elsewhere" ? ["elsewhere"] : undefined),
+		});
+
+		await new LibNavigateToSystem("lhs_1140").execute(ctx);
+
+		expect(jumps(account)).toEqual(["hawthorne", "lhs_1140"]);
+	});
+
+	test("the lookup reaches a navigation step nested inside a sequence", async () => {
+		// Compound goals build a fresh context per step; it must carry the lookup.
+		const account = new FakeLibGoalAccount(
+			{ location: { system_id: "sol" } },
+			{ find_route: viaHawthorne },
+		);
+		const ctx = makeLibGoalContext(account, undefined, {
+			routeFor: (target) => (target === "lhs_1140" ? ["ross_128", "lhs_1140"] : undefined),
+		});
+
+		await runLibSequence([new LibNavigateToSystem("lhs_1140")], ctx);
+
+		expect(jumps(account)).toEqual(["ross_128", "lhs_1140"]);
 	});
 });

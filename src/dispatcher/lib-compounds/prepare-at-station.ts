@@ -1,3 +1,4 @@
+import { type RouteHop, hopSystemId } from "@setpoint/protocol";
 import { createLogger } from "../../util/logger.js";
 import type { CompoundGoalResult } from "../goals.js";
 import type { LibGoal, LibGoalContext } from "../lib-goal-context.js";
@@ -38,7 +39,7 @@ export interface PrepareAtStationOptions {
 	 * find_route plan the path (e.g. to dodge patrols while smuggling).
 	 * Must end at systemId. Jump failures fail the goal without re-planning.
 	 */
-	route?: string[];
+	route?: RouteHop[];
 	/**
 	 * Fuel units the navigation step must keep in reserve beyond the route's
 	 * estimated jump cost, so the ship arrives with a buffer (e.g. for the
@@ -71,10 +72,11 @@ export class LibPrepareAtStation implements LibGoal {
 
 	async execute(ctx: LibGoalContext): Promise<CompoundGoalResult> {
 		const route = this.options.route;
-		if (route && route[route.length - 1] !== this.options.systemId) {
+		const routeEnd = route?.[route.length - 1];
+		if (route && (routeEnd === undefined || hopSystemId(routeEnd) !== this.options.systemId)) {
 			return {
 				success: false,
-				message: `Explicit route must end at "${this.options.systemId}" (route ends at "${route[route.length - 1] ?? ""}")`,
+				message: `Explicit route must end at "${this.options.systemId}" (route ends at "${routeEnd === undefined ? "" : hopSystemId(routeEnd)}")`,
 				alreadySatisfied: false,
 				ticksUsed: 0,
 				steps: [],

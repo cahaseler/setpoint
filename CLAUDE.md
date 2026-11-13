@@ -466,6 +466,15 @@ smctl loop stop <playerId>                # Stop a running loop
 
 Supported loop types: `mining`, `enhanced-mining`, `salvage`, `roaming-salvage`, `tow-salvage`, `trading`, `hauling`, `storage-transfer`, `exploration`, `guard`.
 
+**Caller-supplied routes.** Every loop type accepts `routes`: a map from destination system ID to the route to fly there, hops in order with the destination last. Whenever the loop needs to reach a system that has an entry, it flies that route instead of the game's `find_route`; destinations without one still use `find_route`. A hop is a system ID, or `{ "systemId": "<dest>", "viaWormhole": "<entrance POI>" }` to take a known wormhole from the previous system (setpoint jumps to the entrance POI). A ship already partway along a route continues from the hop after its current system.
+
+```bash
+# Keep a miner's delivery leg out of hawthorne, effective from its next leg — no restart
+smctl loop update <playerId> --json '{"routes":{"lhs_1140":["sol","ross_128","lhs_1140"]}}'
+```
+
+Routes are read at the start of each leg, so a `PATCH /loop` applies from the next one. A patch replaces the whole `routes` map. A rejected jump on a supplied route fails the leg with the ship's position rather than re-planning around the caller's choice, and the loop retries as usual. Setpoint deliberately does no pathfinding of its own: route choice belongs to the caller, which can update its algorithm without a setpoint release. Combat recovery flies the interrupted loop's routes too. It works by `navigate-to-system` consulting `LibGoalContext.routeFor`, so any goal that travels honours it; a new place that builds a child goal context must pass `routeFor` through, as `lib-sequence.ts` and `lib-loops.ts` do.
+
 Loop configs are persisted to disk and auto-resume on daemon restart.
 
 Use `smctl help loops`, `smctl help trading`, or `smctl help hauling` for detailed schemas and examples.

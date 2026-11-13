@@ -131,7 +131,9 @@ export async function runLibLoop(
 			// Resolver, not `ctx.account` — an iteration outlives a reconnect far
 			// more often than a single step does, and pinning the instance here
 			// leaves the rest of the iteration talking to a dead socket.
-			const iterationCtx = makeLibGoalContext(() => ctx.account, options.signal ?? ctx.signal);
+			const iterationCtx = makeLibGoalContext(() => ctx.account, options.signal ?? ctx.signal, {
+				routeFor: ctx.routeFor,
+			});
 			result = await goal.execute(iterationCtx);
 		} catch (err) {
 			if (options.signal?.aborted) {

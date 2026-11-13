@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { routesSchema } from "./routes.js";
 
 /**
  * Zod schema per loop type, mirrored field-for-field from the daemon's
@@ -23,6 +24,8 @@ const minCredits = z.number().optional();
  * that support it. See `src/combat/combat-recovery.ts`.
  */
 const combatRecovery = z.enum(["auto", "external", "none"]).optional();
+/** Caller-supplied routes by destination system — see `routesSchema`. */
+const routes = routesSchema.optional();
 /** Accepts an object of item_id -> price, or a JSON string of the same (parsed by the handler). */
 const listPrices = z.union([z.record(z.string(), z.number()), z.string()]).optional();
 
@@ -45,6 +48,7 @@ export const loopSchemas = {
 		retryOnDepleted: z.boolean().optional(),
 		maxIterations,
 		combatRecovery,
+		routes,
 	}),
 
 	"enhanced-mining": z.object({
@@ -67,6 +71,7 @@ export const loopSchemas = {
 		retryOnDepleted: z.boolean().optional(),
 		maxIterations,
 		combatRecovery,
+		routes,
 	}),
 
 	salvage: z.object({
@@ -83,6 +88,7 @@ export const loopSchemas = {
 		cashSource,
 		minCredits,
 		maxIterations,
+		routes,
 	}),
 
 	"roaming-salvage": z.object({
@@ -98,6 +104,7 @@ export const loopSchemas = {
 		minCredits,
 		maxLootAttempts: z.number().optional(),
 		maxIterations,
+		routes,
 	}),
 
 	"tow-salvage": z.object({
@@ -110,6 +117,7 @@ export const loopSchemas = {
 		disposition: z.enum(["scrap", "sell"]).optional(),
 		storageTarget: z.enum(["personal", "faction"]).optional(),
 		maxIterations,
+		routes,
 	}),
 
 	trading: z.object({
@@ -135,6 +143,7 @@ export const loopSchemas = {
 			.min(1),
 		refuel: z.boolean().optional(),
 		maxIterations,
+		routes,
 	}),
 
 	hauling: z.object({
@@ -176,6 +185,7 @@ export const loopSchemas = {
 		refuel: z.boolean().optional(),
 		maxIterations,
 		combatRecovery,
+		routes,
 	}),
 
 	"storage-transfer": z.object({
@@ -185,6 +195,7 @@ export const loopSchemas = {
 		refuel: z.boolean().optional(),
 		excludeCredits: z.boolean().optional(),
 		maxIterations,
+		routes,
 	}),
 
 	exploration: z.object({
@@ -197,6 +208,7 @@ export const loopSchemas = {
 		survey: z.boolean().optional(),
 		minSubmittedAtTick: z.number().optional(),
 		maxIterations,
+		routes,
 	}),
 
 	guard: z.object({
@@ -210,6 +222,7 @@ export const loopSchemas = {
 		minCredits,
 		repairThreshold: z.number().optional(),
 		maxIterations,
+		routes,
 	}),
 } as const satisfies Record<string, z.ZodType>;
 

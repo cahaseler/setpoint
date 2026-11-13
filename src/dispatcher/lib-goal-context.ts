@@ -1,3 +1,4 @@
+import type { RouteHop } from "@setpoint/protocol";
 import type { Commands, GameState, MarketBook, ObservationView } from "@spacemolt/lib";
 import type { GoalResult } from "./goals.js";
 import { isStateStale } from "./state-freshness.js";
@@ -56,6 +57,18 @@ export interface LibGoalContext {
 	refreshState(opts?: { force?: boolean }): Promise<Readonly<GameState>>;
 	/** Signal for external cancellation. Goals should check this before starting work. */
 	signal?: AbortSignal;
+	/**
+	 * A caller-supplied route to `targetSystemId`, if there is one. Consulted by
+	 * `navigate-to-system` at the start of each leg — so every goal and loop
+	 * that travels honours it without knowing it exists — and flown instead of
+	 * the game's `find_route`. See `routesSchema`.
+	 */
+	routeFor?: (targetSystemId: string) => RouteHop[] | undefined;
+}
+
+/** Optional extras for `makeLibGoalContext`. */
+export interface LibGoalContextOptions {
+	routeFor?: ((targetSystemId: string) => RouteHop[] | undefined) | undefined;
 }
 
 /** A lib-backed primitive goal — same contract as `Goal`, over `LibGoalContext`. */
@@ -79,14 +92,20 @@ export interface LibGoal {
  * `ctx.account`/`ctx.state`/`refreshState` all re-resolve on every access, so
  * work that spans a reconnect picks up the fresh instance automatically.
  */
-export function makeLibGoalContext(account: LibGoalAccount, signal?: AbortSignal): LibGoalContext;
+export function makeLibGoalContext(
+	account: LibGoalAccount,
+	signal?: AbortSignal,
+	options?: LibGoalContextOptions,
+): LibGoalContext;
 export function makeLibGoalContext(
 	resolveAccount: () => LibGoalAccount,
 	signal?: AbortSignal,
+	options?: LibGoalContextOptions,
 ): LibGoalContext;
 export function makeLibGoalContext(
 	accountOrResolver: LibGoalAccount | (() => LibGoalAccount),
 	signal?: AbortSignal,
+	options: LibGoalContextOptions = {},
 ): LibGoalContext {
 	const resolveAccount =
 		typeof accountOrResolver === "function"
@@ -107,5 +126,6 @@ export function makeLibGoalContext(
 			return Promise.resolve(account.state);
 		},
 		...(signal ? { signal } : {}),
+		...(options.routeFor ? { routeFor: options.routeFor } : {}),
 	};
 }

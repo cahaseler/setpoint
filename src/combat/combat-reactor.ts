@@ -17,6 +17,7 @@
  * reasons that have nothing to do with our own flee attempt.
  */
 
+import type { Routes } from "@setpoint/protocol";
 import type { CombatEnvelope } from "@setpoint/protocol";
 import type { LibAccountManager } from "../accounts/lib-manager.js";
 import type { LibManagedAccount } from "../accounts/lib-types.js";
@@ -273,7 +274,12 @@ export class CombatReactor {
 		});
 
 		try {
-			const ctx = makeLibGoalContext(() => this.mustResolveAccount(playerId));
+			// Fly the interrupted loop's own routes home, if it had any — recovery is
+			// exactly when a ship is somewhere its usual route does not start.
+			const routes = interrupted.loopOptions?.["routes"] as Routes | undefined;
+			const ctx = makeLibGoalContext(() => this.mustResolveAccount(playerId), undefined, {
+				routeFor: (targetSystemId) => routes?.[targetSystemId],
+			});
 			const result = await runCombatRecovery(ctx, target);
 			this.deps.combatEventsStore.record(playerId, {
 				receivedAt: new Date().toISOString(),

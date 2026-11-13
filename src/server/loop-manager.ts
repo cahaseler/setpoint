@@ -1,5 +1,6 @@
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import type { RouteHop, Routes } from "@setpoint/protocol";
 import type { LoopOptionsMap } from "@setpoint/protocol";
 import type { LibManagedAccount } from "../accounts/lib-types.js";
 import type { LoopResult, ProgressRef } from "../dispatcher/goals.js";
@@ -143,6 +144,8 @@ export interface MiningLoopApiOptions {
 	maxIterations?: number;
 	/** What to do once combat resolves — see `combatRecovery` in `@setpoint/protocol`'s `loops.ts`. Defaults to "auto". */
 	combatRecovery?: "auto" | "external" | "none";
+	/** Caller-supplied routes by destination system — see `routesSchema`. */
+	routes?: Routes;
 }
 
 /**
@@ -172,6 +175,8 @@ export interface EnhancedMiningLoopApiOptions {
 	maxIterations?: number;
 	/** What to do once combat resolves — see `combatRecovery` in `@setpoint/protocol`'s `loops.ts`. Defaults to "auto". */
 	combatRecovery?: "auto" | "external" | "none";
+	/** Caller-supplied routes by destination system — see `routesSchema`. */
+	routes?: Routes;
 }
 
 /**
@@ -206,6 +211,8 @@ export interface TradingLoopApiOptions {
 	}>;
 	refuel?: boolean;
 	maxIterations?: number;
+	/** Caller-supplied routes by destination system — see `routesSchema`. */
+	routes?: Routes;
 }
 
 /**
@@ -243,6 +250,8 @@ export interface HaulingLoopApiOptions {
 	maxIterations?: number;
 	/** What to do once combat resolves — see `combatRecovery` in `@setpoint/protocol`'s `loops.ts`. Defaults to "auto". */
 	combatRecovery?: "auto" | "external" | "none";
+	/** Caller-supplied routes by destination system — see `routesSchema`. */
+	routes?: Routes;
 }
 
 /**
@@ -414,7 +423,9 @@ export class LoopManager {
 		this.loops.delete(playerId);
 
 		const controller = new AbortController();
-		const ctx = makeLibGoalContext(resolveAccount);
+		const ctx = makeLibGoalContext(resolveAccount, undefined, {
+			routeFor: this.routeLookup(playerId),
+		});
 
 		const stepRef: StepRef = {
 			last: undefined,
@@ -489,7 +500,9 @@ export class LoopManager {
 		this.loops.delete(playerId);
 
 		const controller = new AbortController();
-		const ctx = makeLibGoalContext(resolveAccount);
+		const ctx = makeLibGoalContext(resolveAccount, undefined, {
+			routeFor: this.routeLookup(playerId),
+		});
 
 		const stepRef: StepRef = {
 			last: undefined,
@@ -568,7 +581,9 @@ export class LoopManager {
 		this.loops.delete(playerId);
 
 		const controller = new AbortController();
-		const ctx = makeLibGoalContext(resolveAccount);
+		const ctx = makeLibGoalContext(resolveAccount, undefined, {
+			routeFor: this.routeLookup(playerId),
+		});
 
 		const stepRef: StepRef = {
 			last: undefined,
@@ -638,7 +653,9 @@ export class LoopManager {
 		this.loops.delete(playerId);
 
 		const controller = new AbortController();
-		const ctx = makeLibGoalContext(resolveAccount);
+		const ctx = makeLibGoalContext(resolveAccount, undefined, {
+			routeFor: this.routeLookup(playerId),
+		});
 
 		const stepRef: StepRef = {
 			last: undefined,
@@ -700,7 +717,9 @@ export class LoopManager {
 		this.loops.delete(playerId);
 
 		const controller = new AbortController();
-		const ctx = makeLibGoalContext(resolveAccount);
+		const ctx = makeLibGoalContext(resolveAccount, undefined, {
+			routeFor: this.routeLookup(playerId),
+		});
 
 		const stepRef: StepRef = {
 			last: undefined,
@@ -761,7 +780,9 @@ export class LoopManager {
 		this.loops.delete(playerId);
 
 		const controller = new AbortController();
-		const ctx = makeLibGoalContext(resolveAccount);
+		const ctx = makeLibGoalContext(resolveAccount, undefined, {
+			routeFor: this.routeLookup(playerId),
+		});
 
 		const stepRef: StepRef = {
 			last: undefined,
@@ -823,7 +844,9 @@ export class LoopManager {
 		this.loops.delete(playerId);
 
 		const controller = new AbortController();
-		const ctx = makeLibGoalContext(resolveAccount);
+		const ctx = makeLibGoalContext(resolveAccount, undefined, {
+			routeFor: this.routeLookup(playerId),
+		});
 
 		const stepRef: StepRef = {
 			last: undefined,
@@ -892,7 +915,9 @@ export class LoopManager {
 		this.loops.delete(playerId);
 
 		const controller = new AbortController();
-		const ctx = makeLibGoalContext(resolveAccount);
+		const ctx = makeLibGoalContext(resolveAccount, undefined, {
+			routeFor: this.routeLookup(playerId),
+		});
 
 		const stepRef: StepRef = {
 			last: undefined,
@@ -960,7 +985,9 @@ export class LoopManager {
 		this.loops.delete(playerId);
 
 		const controller = new AbortController();
-		const ctx = makeLibGoalContext(resolveAccount);
+		const ctx = makeLibGoalContext(resolveAccount, undefined, {
+			routeFor: this.routeLookup(playerId),
+		});
 
 		const stepRef: StepRef = {
 			last: undefined,
@@ -1028,7 +1055,9 @@ export class LoopManager {
 		this.loops.delete(playerId);
 
 		const controller = new AbortController();
-		const ctx = makeLibGoalContext(resolveAccount);
+		const ctx = makeLibGoalContext(resolveAccount, undefined, {
+			routeFor: this.routeLookup(playerId),
+		});
 		const stepRef: StepRef = {
 			last: undefined,
 			lastAt: undefined,
@@ -1070,8 +1099,32 @@ export class LoopManager {
 		return { type: "tow-salvage", startedAt: activeLoop.startedAt, running: true };
 	}
 
+	/**
+	 * The caller-supplied route lookup for an account's loop. Reads the loop's
+	 * live options at the moment a leg starts, so a `routes` patch applies from
+	 * the next leg without restarting the loop.
+	 */
+	private routeLookup(playerId: string): (targetSystemId: string) => RouteHop[] | undefined {
+		return (targetSystemId) => this.routeFor(playerId, targetSystemId);
+	}
+
+	/** The route the account's loop would fly to `targetSystemId` right now, if one is set. */
+	routeFor(playerId: string, targetSystemId: string): RouteHop[] | undefined {
+		const routes = this.loops.get(playerId)?.liveOptions["routes"] as Routes | undefined;
+		return routes?.[targetSystemId];
+	}
+
 	/** Track completion of an active loop and store the result. */
 	private trackLoop(playerId: string, activeLoop: ActiveLoop, label: string): void {
+		// Each loop builds its engine options field by field and does not copy
+		// `routes`; carry it across so the route lookup and later patches share
+		// one live value.
+		if (
+			activeLoop.options["routes"] !== undefined &&
+			activeLoop.liveOptions["routes"] === undefined
+		) {
+			activeLoop.liveOptions["routes"] = activeLoop.options["routes"];
+		}
 		// Initialize progress ref from the loop's type and options
 		activeLoop.progress = this.createProgress(activeLoop.type, activeLoop.options);
 		const cleanup = (): void => {

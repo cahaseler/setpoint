@@ -69,6 +69,49 @@ describe("LoopManager start*Loop methods", () => {
 		expect(manager.isRunning("p1")).toBe(true);
 	});
 
+	test("a loop started with routes flies them, and a patch replaces them for the next leg", () => {
+		const options: MiningLoopApiOptions = {
+			miningSystemId: "sol",
+			beltPoiId: "belt-1",
+			sellSystemId: "lhs_1140",
+			sellStationPoiId: "lhs-station",
+			sellBaseId: "lhs-base",
+			maxIterations: 0,
+			routes: { lhs_1140: ["sol", "ross_128", "lhs_1140"] },
+		};
+		manager.startMiningLoop("p1", options, () => account);
+
+		expect(manager.routeFor("p1", "lhs_1140")).toEqual(["sol", "ross_128", "lhs_1140"]);
+		expect(manager.routeFor("p1", "sol")).toBeUndefined();
+
+		manager.patchLoopOptions("p1", {
+			routes: { lhs_1140: ["sol", { systemId: "fang", viaWormhole: "wh_1" }, "lhs_1140"] },
+		});
+
+		expect(manager.routeFor("p1", "lhs_1140")).toEqual([
+			"sol",
+			{ systemId: "fang", viaWormhole: "wh_1" },
+			"lhs_1140",
+		]);
+	});
+
+	test("routes can be added to a loop started without any", () => {
+		const options: MiningLoopApiOptions = {
+			miningSystemId: "sol",
+			beltPoiId: "belt-1",
+			sellSystemId: "sol",
+			sellStationPoiId: "sol-station",
+			sellBaseId: "sol-base",
+			maxIterations: 0,
+		};
+		manager.startMiningLoop("p1", options, () => account);
+		expect(manager.routeFor("p1", "vega")).toBeUndefined();
+
+		manager.patchLoopOptions("p1", { routes: { vega: ["vega"] } });
+
+		expect(manager.routeFor("p1", "vega")).toEqual(["vega"]);
+	});
+
 	test("a freshly started loop reports zero consecutive failures and no lastFailure", () => {
 		// The "hasn't finished its first cycle yet" state, which must stay
 		// distinguishable from a loop that is actually failing.
