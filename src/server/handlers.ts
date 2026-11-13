@@ -29,6 +29,7 @@ import type { FleetAccessDeps } from "../fleet/server-access.js";
 import { makeFleetAccess } from "../fleet/server-access.js";
 
 import type { GameCallGate } from "../accounts/game-call-gate.js";
+import { withAccountLogging } from "../accounts/log-subject.js";
 import type { CraftingEventsStore } from "../state/crafting-events-store.js";
 import type { EventBuffer } from "../state/event-buffer.js";
 import type { MarketSubscriptionKeeper } from "../state/market-subscription.js";
@@ -513,7 +514,7 @@ export async function handleExecuteGoal(
 	// account), so a one-off goal's precondition check doesn't silently no-op
 	// against externally-drifted state.
 	await goalCtx.refreshState();
-	const goalPromise = goal.execute(goalCtx);
+	const goalPromise = withAccountLogging(resolveLive, () => goal.execute(goalCtx));
 
 	ctx.executingGoals.set(actualId, {
 		goalType,
@@ -730,8 +731,7 @@ export async function handleExecuteGoalAsync(
 		// account), so a one-off goal's precondition check doesn't silently no-op
 		// against externally-drifted state.
 		await goalCtx.refreshState();
-		const jobPromise = goal
-			.execute(goalCtx)
+		const jobPromise = withAccountLogging(resolveLive, () => goal.execute(goalCtx))
 			.then(async (result) => {
 				// Refresh state after completion: many mutation responses (deposit, sell, etc.)
 				// don't include V2GameState, leaving the state store stale.
@@ -912,8 +912,12 @@ export async function handleRawAction(
 		// caller's own logs. A "No response to …" timeout is ambiguous — the
 		// request may have run — while a closed-socket error means it was never
 		// sent, so the message is kept verbatim.
-		log.warn(
-			`[${playerIdOf(account)}] Raw ${resolvedToolGroup}/${action} failed: ${errorMessage(err)}${apiErr}`,
+		withAccountLogging(
+			() => account,
+			() =>
+				log.warn(
+					`[${playerIdOf(account)}] Raw ${resolvedToolGroup}/${action} failed: ${errorMessage(err)}${apiErr}`,
+				),
 		);
 		return errorResponse(`API call failed: ${errorMessage(err)}${apiErr}`, 500);
 	}
@@ -2458,11 +2462,14 @@ export async function runBatchGoal(
 		try {
 			const goalOptions = (options ?? {}) as Record<string, unknown>;
 			const goal = createGoal(type, goalOptions);
+			const resolveMember = resolveLiveAccount(ctx, playerId);
 			const result = await runCancellable(ctx, playerId, type, goalOptions, (perAccount) =>
-				goal.execute(
-					makeLibGoalContext(
-						resolveLiveAccount(ctx, playerId),
-						signal === undefined ? perAccount : anySignal([signal, perAccount]),
+				withAccountLogging(resolveMember, () =>
+					goal.execute(
+						makeLibGoalContext(
+							resolveMember,
+							signal === undefined ? perAccount : anySignal([signal, perAccount]),
+						),
 					),
 				),
 			);

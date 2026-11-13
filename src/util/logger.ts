@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import {
 	appendFileSync,
 	existsSync,
@@ -42,9 +43,41 @@ export function redactToken(token: string): string {
 	return token.length <= 8 ? "…" : `${token.slice(0, 8)}…`;
 }
 
+/**
+ * Who the code currently running is acting for, carried through async calls.
+ *
+ * Goals, sequences and loops log through module loggers that know nothing of
+ * the account they run on, so their lines used to name no account at all — a
+ * warning from `[goal:ensure-fueled]` could have come from any of 280 ships.
+ * Work started for an account runs inside `withLogSubject`, and every line
+ * logged beneath it, at any depth, carries the subject.
+ *
+ * Read lazily at log time rather than captured at entry, so a ship swapped
+ * mid-loop is named correctly.
+ */
+const logSubject = new AsyncLocalStorage<() => string | undefined>();
+
+/** Run `fn` with every log line beneath it tagged with `describe()`'s result. */
+export function withLogSubject<T>(describe: () => string | undefined, fn: () => T): T {
+	return logSubject.run(describe, fn);
+}
+
+/** The current subject's label, if any. A describer that throws yields none rather than losing the line. */
+function currentSubject(): string | undefined {
+	const describe = logSubject.getStore();
+	if (!describe) return undefined;
+	try {
+		return describe();
+	} catch {
+		return undefined;
+	}
+}
+
 function formatMessage(level: LogLevel, context: string, message: string): string {
 	const timestamp = new Date().toISOString();
-	return `${timestamp} [${level.toUpperCase()}] [${context}] ${message}`;
+	const subject = currentSubject();
+	const subjectTag = subject ? ` [${subject}]` : "";
+	return `${timestamp} [${level.toUpperCase()}] [${context}]${subjectTag} ${message}`;
 }
 
 // --- File logging ---
