@@ -46,7 +46,9 @@ old_pid="$(curl -s -m 2 "localhost:$PORT/health" | python3 -c 'import json,sys
 try: print(json.load(sys.stdin).get("lifecycle",{}).get("pid",""))
 except Exception: print("")' || true)"
 [ -z "$old_pid" ] && old_pid="$(pgrep -f '^bun run src/index.ts$' | head -1 || true)"
-(cd "$dir" && SETPOINT_HOME="$HOME_DIR" SM_PORT="$PORT" nohup bun run src/index.ts >/dev/null 2>&1 &)
+# Detached: the daemon must outlive this script, and the script must not wait on it.
+(cd "$dir" || exit 1; SETPOINT_HOME="$HOME_DIR" SM_PORT="$PORT" exec nohup bun run src/index.ts </dev/null >/dev/null 2>&1) &
+disown
 echo "release $sha started; connecting every account in standby (watch: curl -s localhost:$((PORT + 1))/health)"
 
 # Wait for the new release to be the one serving. A fleet connect takes
