@@ -15,6 +15,7 @@ import {
 	STATE_SECTIONS,
 	type StateSection,
 } from "@spacemolt/lib";
+import { recordHoldUpdate } from "../dispatcher/hold-state.js";
 import { markStateFresh } from "../dispatcher/state-freshness.js";
 import { errorMessage } from "../util/errors.js";
 import { createLogger } from "../util/logger.js";
@@ -228,6 +229,30 @@ export class LibAccountManager {
 			const repeats = suppressed > 0 ? ` (+${suppressed} more dose(s) since the last line)` : "";
 			log.warn(
 				`[${label}] Hazard ${w.hazard.type} (severity ${w.hazard.severity}): hull ${w.hull}/${w.max_hull}, ${w.dose_pct}% per dose${repeats} — ${w.message}`,
+			);
+		});
+		// Warp-scrambler holds: a customs inspection (up to 3 ticks), a cargo
+		// scan or a toll. While held, jump and travel wait and dock is refused,
+		// so the start of every hold on one of our ships is logged at warn, its
+		// end at info, and both are recorded for the goals that wait one out (see
+		// `hold-state.ts`). A hold this account places on someone else is logged
+		// at info.
+		account.on("hold_update", (hold) => {
+			if (hold.target_id === playerId) {
+				recordHoldUpdate(account, hold);
+				if (hold.event === "started") {
+					log.warn(
+						`[${label}] Held by ${hold.holder_name} (${hold.source}) since tick ${hold.start_tick} — ${hold.message}`,
+					);
+				} else {
+					log.info(
+						`[${label}] Hold by ${hold.holder_name} (${hold.source}) ended: ${hold.reason ?? "no reason given"}`,
+					);
+				}
+				return;
+			}
+			log.info(
+				`[${label}] Hold on ${hold.target_name} (${hold.source}) ${hold.event}${hold.reason ? `: ${hold.reason}` : ""}`,
 			);
 		});
 		// A Pathfinder drift crossing storm weather. A deflection matters — the
