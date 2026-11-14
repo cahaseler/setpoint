@@ -2,6 +2,7 @@
 
 import type { FleetOperationResult, JobRecord, LoopStatus, V2GameState } from "@setpoint/protocol";
 import { AccountApi, AccountsApi } from "./account.js";
+import type { AccountConnectionStatus } from "./account.js";
 import { ConnectionError, DeprecatedGoalError, SetpointHttpError, TimeoutError } from "./errors.js";
 import { JobApi, type WaitForJobOptions, waitForJob } from "./jobs.js";
 
@@ -32,6 +33,7 @@ export interface HealthStatus {
 export interface DashboardAccountEntry {
 	player_id: string;
 	username: string;
+	status: AccountConnectionStatus;
 	state: V2GameState | null;
 	loop: LoopStatus | null;
 	hasRunningJob: boolean;

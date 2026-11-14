@@ -261,6 +261,18 @@ describe("handleHealth", () => {
 // ── List Accounts ────────────────────────────────────────────────────
 
 describe("handleListAccounts", () => {
+	test("reports an account whose socket is down as reconnecting", async () => {
+		const up = makeAccount("p1", "Player1");
+		const down = makeAccount("p2", "Player2");
+		Object.defineProperty(down, "authenticated", { value: false });
+		const ctx = makeContext({ accounts: [up, down] });
+
+		const res = await handleListAccounts(new Request("http://localhost/accounts"), {}, ctx);
+		const body = (await res.json()) as { accounts: Array<{ player_id: string; status: string }> };
+		const status = Object.fromEntries(body.accounts.map((a) => [a.player_id, a.status]));
+		expect(status).toEqual({ p1: "connected", p2: "reconnecting" });
+	});
+
 	test("returns array of accounts with state and loop status", async () => {
 		const account = makeAccount("p1", "Player1");
 		const state = makeState({
@@ -386,6 +398,23 @@ describe("handleListAccounts", () => {
 // ── Get Account ──────────────────────────────────────────────────────
 
 describe("handleGetAccount", () => {
+	test("reports the live connection state, reconnecting while the socket is down", async () => {
+		const account = makeAccount("p1");
+		const ctx = makeContext({ accounts: [account] });
+		const get = async (): Promise<unknown> =>
+			(
+				(await handleGetAccount(
+					new Request("http://localhost/accounts/p1"),
+					{ playerId: "p1" },
+					ctx,
+				).json()) as Record<string, unknown>
+			)["status"];
+
+		expect(await get()).toBe("connected");
+		Object.defineProperty(account, "authenticated", { value: false });
+		expect(await get()).toBe("reconnecting");
+	});
+
 	test("returns account details with state summary", async () => {
 		const account = makeAccount("p1");
 		const state = makeState({
@@ -3109,6 +3138,18 @@ describe("handleRawAction", () => {
 // ── Dashboard ────────────────────────────────────────────────────────
 
 describe("handleDashboardData", () => {
+	test("carries each account's live connection state", async () => {
+		const up = makeAccount("p1", "Player1");
+		const down = makeAccount("p2", "Player2");
+		Object.defineProperty(down, "authenticated", { value: false });
+		const ctx = makeContext({ accounts: [up, down] });
+
+		const res = handleDashboardData(new Request("http://localhost/dashboard/data"), {}, ctx);
+		const body = (await res.json()) as { accounts: Array<{ player_id: string; status: string }> };
+		const status = Object.fromEntries(body.accounts.map((a) => [a.player_id, a.status]));
+		expect(status).toEqual({ p1: "connected", p2: "reconnecting" });
+	});
+
 	test("returns 200 JSON with accounts array", async () => {
 		const account = makeAccount("p1", "Player1");
 		const state = makeState({
