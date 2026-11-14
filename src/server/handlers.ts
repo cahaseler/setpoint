@@ -189,6 +189,15 @@ export function handleHandoverRequest(
 
 // ── Accounts ────────────────────────────────────────────────────────
 
+/**
+ * Live connection state of an account setpoint manages. "connected" only
+ * while its socket is up: an account the lib is reconnecting after a drop is
+ * still indexed, but every game call on it waits or fails until it is back.
+ */
+function connectionStatus(account: LibManagedAccount): "connected" | "reconnecting" {
+	return account.authenticated === false ? "reconnecting" : "connected";
+}
+
 export async function handleListAccounts(
 	_req: Request,
 	_params: RouteParams,
@@ -200,7 +209,7 @@ export async function handleListAccounts(
 		return {
 			player_id: id,
 			username: a.id ?? null,
-			status: "connected" as const,
+			status: connectionStatus(a),
 			credits: state?.player?.credits ?? null,
 			ship: state?.ship
 				? {
@@ -279,7 +288,7 @@ export function handleGetAccount(
 	return jsonResponse({
 		player_id: actualId,
 		username: account.id ?? null,
-		status: "connected",
+		status: connectionStatus(account),
 		state: state
 			? {
 					credits: state.player?.credits,
@@ -915,7 +924,7 @@ export async function handleRawAction(
 	// its own timeout: a call it gave up on that then executes after the
 	// reconnect is how a mutation runs twice. Failing fast and retryable is
 	// what lets it decide.
-	if ((account as { authenticated?: boolean }).authenticated === false) {
+	if (connectionStatus(account) === "reconnecting") {
 		return new Response(
 			JSON.stringify({
 				error: "This account is reconnecting to the game; retry in a few seconds",
@@ -1636,6 +1645,7 @@ export function handleDashboardData(
 		return {
 			player_id: id,
 			username: account.id,
+			status: connectionStatus(account),
 			state: ctx.store.getState(id),
 			loop: ctx.loopManager.getStatus(id) ?? null,
 			hasRunningJob: ctx.jobManager.isRunning(id),

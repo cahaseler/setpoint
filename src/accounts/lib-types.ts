@@ -34,6 +34,11 @@ export interface LibManagedAccount {
 	readonly player?: GameState["player"];
 	/** Store key / username this account is managed under (Account.id). */
 	readonly id?: string | undefined;
+	/**
+	 * Whether the socket is up and logged in right now. False while the lib is
+	 * reconnecting after a drop. Absent on test doubles that never disconnect.
+	 */
+	readonly authenticated?: boolean;
 	/** Live push-fed state cache. Treat as read-only. */
 	readonly state: Readonly<GameState>;
 	/** Force a live `get_status` re-seed of the cache. Returns the refreshed state. */
