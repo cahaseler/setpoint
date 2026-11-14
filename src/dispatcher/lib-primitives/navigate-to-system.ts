@@ -1,3 +1,4 @@
+import type { GameState } from "@spacemolt/lib";
 import { ConnectionClosedError, SpacemoltError } from "@spacemolt/lib";
 import { createLogger } from "../../util/logger.js";
 import type { GoalResult } from "../goals.js";
@@ -178,12 +179,23 @@ export class LibNavigateToSystem implements LibGoal {
 					log.warn(
 						`Jump to ${hopSystemId} failed (${err instanceof Error ? err.message : String(err)}), re-planning from actual position`,
 					);
+					// `action_pending` means another connection on this account (a peer
+					// daemon at handover, or a caller's raw command) has a mutation queued
+					// for the next tick. The ship has not moved, so re-planning at once
+					// re-fires the jump into the same rejection, spending the whole reroute
+					// budget in milliseconds and earning a rate limit. Wait for the queue
+					// to drain as well as for the position to settle.
+					const isActionPending = isApiError && err.code === "action_pending";
+					const isSettled = (s: Readonly<GameState>): boolean =>
+						s.location?.system_id !== undefined &&
+						!s.location.in_transit &&
+						!(isActionPending && s.queue?.has_pending === true);
 					// Force a live read: jumps carry no reliable position in the cache, so
 					// re-planning from the stale origin is exactly what this guards against.
 					let freshState = await ctx.refreshState({ force: true });
 					let actualSystemId = freshState.location?.system_id;
 
-					if (!actualSystemId || freshState.location?.in_transit) {
+					if (!isSettled(freshState)) {
 						// The jump error is very often the server itself saying "you're
 						// mid-transit, wait ~60s and resubmit" — wait that out here
 						// instead of failing the goal, which would just make the caller
@@ -192,13 +204,9 @@ export class LibNavigateToSystem implements LibGoal {
 						// ship that still reports its stale pre-jump system while the
 						// transit is in progress.
 						log.info(
-							"Position unknown or mid-transit after jump failure — waiting for it to resolve",
+							"Position unknown, mid-transit or another action queued after jump failure — waiting for it to resolve",
 						);
-						freshState = await waitForLocation(
-							ctx,
-							(s) => s.location?.system_id !== undefined && !s.location.in_transit,
-							this.waitOpts,
-						);
+						freshState = await waitForLocation(ctx, isSettled, this.waitOpts);
 						actualSystemId = freshState.location?.system_id;
 					}
 
