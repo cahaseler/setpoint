@@ -8,6 +8,7 @@ import {
 import { GameCallGate } from "../../src/accounts/game-call-gate.js";
 import { LibAccountManager } from "../../src/accounts/lib-manager.js";
 import type { AccountClientLike, LibManagedAccount } from "../../src/accounts/lib-types.js";
+import { activeHold } from "../../src/dispatcher/hold-state.js";
 import { STATE_FRESHNESS_TTL_MS, isStateStale } from "../../src/dispatcher/state-freshness.js";
 import { setLogLevel } from "../../src/util/logger.js";
 import { partial } from "../helpers/deep-partial.js";
@@ -792,6 +793,59 @@ describe("LibAccountManager", () => {
 			warnSpy.mockRestore();
 
 			expect(warnLines).toContain("[Alpha] Connection lost (code=?): socket error");
+		});
+	});
+
+	describe("warp-scrambler holds", () => {
+		const hold = (event: "started" | "ended", targetId: string) => ({
+			event,
+			holder_id: "npc-customs",
+			holder_name: "Pact Border I",
+			message: "Customs inspection under way.",
+			source: "customs",
+			start_tick: 100,
+			target_id: targetId,
+			target_name: targetId === "pid-a" ? "Alpha" : "Stranger",
+			...(event === "ended" ? { reason: "scan_over" } : {}),
+		});
+
+		test("logs a hold on our ship at warn and its end at info, and records it while it lasts", async () => {
+			const { client, accounts } = setup([player("Alpha", "pid-a")]);
+			const mgr = new LibAccountManager(client, { clerkApiKey: "k" });
+			await mgr.connect();
+			const alpha = accounts.get("Alpha");
+			if (!alpha) throw new Error("no Alpha");
+
+			const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+			const infoSpy = spyOn(console, "info").mockImplementation(() => {});
+			alpha.emitNotification("hold_update", hold("started", "pid-a"));
+			const recorded = activeHold(alpha);
+			alpha.emitNotification("hold_update", hold("ended", "pid-a"));
+			const warnLines = warnSpy.mock.calls.map((c) => String(c[0])).join("\n");
+			const infoLines = infoSpy.mock.calls.map((c) => String(c[0])).join("\n");
+			warnSpy.mockRestore();
+			infoSpy.mockRestore();
+
+			expect(recorded).toEqual({ source: "customs", holderName: "Pact Border I", startTick: 100 });
+			expect(activeHold(alpha)).toBeUndefined();
+			expect(warnLines).toContain("[Alpha] Held by Pact Border I (customs) since tick 100");
+			expect(infoLines).toContain("[Alpha] Hold by Pact Border I (customs) ended: scan_over");
+		});
+
+		test("a hold this account places on another pilot is logged but not recorded as ours", async () => {
+			const { client, accounts } = setup([player("Alpha", "pid-a")]);
+			const mgr = new LibAccountManager(client, { clerkApiKey: "k" });
+			await mgr.connect();
+			const alpha = accounts.get("Alpha");
+			if (!alpha) throw new Error("no Alpha");
+
+			const infoSpy = spyOn(console, "info").mockImplementation(() => {});
+			alpha.emitNotification("hold_update", hold("started", "pid-x"));
+			const infoLines = infoSpy.mock.calls.map((c) => String(c[0])).join("\n");
+			infoSpy.mockRestore();
+
+			expect(activeHold(alpha)).toBeUndefined();
+			expect(infoLines).toContain("[Alpha] Hold on Stranger (customs) started");
 		});
 	});
 

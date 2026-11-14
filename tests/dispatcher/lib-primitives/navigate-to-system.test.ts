@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import type { FindRouteResponse } from "@spacemolt/lib";
 import { SpacemoltError } from "@spacemolt/lib";
+import { recordHoldUpdate } from "../../../src/dispatcher/hold-state.js";
 import { makeLibGoalContext } from "../../../src/dispatcher/lib-goal-context.js";
 import { LibNavigateToSystem } from "../../../src/dispatcher/lib-primitives/navigate-to-system.js";
 import { runLibSequence } from "../../../src/dispatcher/lib-sequence.js";
+import { customsRefusal, holdUpdate } from "../hold-fixtures.js";
 import { FakeLibGoalAccount, fakeMutationResult } from "../lib-fakes.js";
 
 /** Build a minimal FindRouteResponse QueryResult with the fields the goal reads. */
@@ -414,5 +416,41 @@ describe("LibNavigateToSystem — caller-supplied routes", () => {
 		await runLibSequence([new LibNavigateToSystem("lhs_1140")], ctx);
 
 		expect(jumps(account)).toEqual(["ross_128", "lhs_1140"]);
+	});
+});
+
+describe("LibNavigateToSystem — customs holds", () => {
+	test("a jump refused during a customs inspection is waited out, not rerouted", async () => {
+		let jumps = 0;
+		let routes = 0;
+		const account = new FakeLibGoalAccount(
+			{ location: { system_id: "sol", poi_id: "p" } },
+			{
+				find_route: () => {
+					routes++;
+					return route({
+						estimated_fuel: 10,
+						fuel_available: 100,
+						total_jumps: 2,
+						route: [
+							{ system_id: "mid", jumps: 1, name: "Mid" },
+							{ system_id: "alpha", jumps: 2, name: "Alpha" },
+						],
+					});
+				},
+				jump: () => {
+					jumps++;
+					if (jumps === 2) {
+						setTimeout(() => recordHoldUpdate(account, holdUpdate("ended")), 5);
+						throw customsRefusal("jump");
+					}
+					return fakeMutationResult("jump");
+				},
+			},
+		);
+		const result = await new LibNavigateToSystem("alpha").execute(makeLibGoalContext(account));
+		expect(result.success).toBe(true);
+		expect(jumps).toBe(3);
+		expect(routes).toBe(1);
 	});
 });

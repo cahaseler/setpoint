@@ -1,5 +1,6 @@
 import { SpacemoltError } from "@spacemolt/lib";
 import { createLogger } from "../../util/logger.js";
+import { sendThroughCustoms } from "../customs-hold.js";
 import type { GoalResult } from "../goals.js";
 import { alreadySatisfied, failed, succeeded } from "../goals.js";
 import type { LibGoal, LibGoalContext } from "../lib-goal-context.js";
@@ -13,6 +14,9 @@ const log = createLogger("goal:dock-at");
  *
  * Already satisfied if the player is already docked at the target.
  * Prerequisites: must be at the POI (same poi_id as target).
+ *
+ * A customs inspection delays the dock rather than failing it (see
+ * `sendThroughCustoms`).
  */
 export class LibDockAt implements LibGoal {
 	readonly name = "dock-at";
@@ -63,7 +67,9 @@ export class LibDockAt implements LibGoal {
 
 		log.info(`Docking at ${this.targetBaseId}`);
 		try {
-			await ctx.account.commands.spacemolt.dock();
+			await sendThroughCustoms(ctx, `docking at ${this.targetBaseId}`, () =>
+				ctx.account.commands.spacemolt.dock(),
+			);
 		} catch (err) {
 			if (err instanceof SpacemoltError && err.code === "already_docked") {
 				return alreadySatisfied("Already docked");

@@ -562,6 +562,12 @@ smctl hazard-mode <playerId> retreat         # Back to the default
 
 A loop start is refused (409) while anything other than a loop owns the ship — a goal, a hazard retreat, an async job or a fleet claim. It used to check only for another loop, which let a loop start under a running goal and put two drivers on one ship.
 
+#### Warp-scrambler holds (customs inspections)
+
+Game v0.711 lets an empire customs checkpoint hold a ship for up to 3 ticks for a cargo inspection, on the same `hold_update` push as a player's scan or toll hold. A hold is not part of the game state, so `src/dispatcher/hold-state.ts` records it from the push, keyed by account object like `state-freshness.ts`. Every hold on one of our ships is logged at `warn` when it starts and at `info` when it ends.
+
+Every jump, travel and dock a goal sends goes through `sendThroughCustoms` (`src/dispatcher/customs-hold.ts`), so a customs inspection delays the move instead of failing it. If a hold is recorded, it waits for the hold to end before sending. If the game refuses the move because of a hold not yet recorded (the refusal can arrive before the start push), it waits and sends again. The refusal has no documented error code and is recognised by the wording "customs inspection". The wait is capped at `CUSTOMS_HOLD_MAX_WAIT_MS` (45s) and three attempts; a recorded hold whose end push never came is dropped after the cap. A new primitive that moves a ship must send through it too. Scan and toll holds are only logged, never waited out: a toll is the operator's decision to pay or fight. The raw passthrough is untouched, so a raw caller sees the refusal itself.
+
 ### Fleet operations (multi-account)
 
 Fleet work is the one thing in setpoint that spans accounts: an invite is worthless until the invitee accepts, and that accept runs on the invitee's own connection. Rather than widen `LibGoalContext`, fleet operations reach other accounts through the narrow `FleetAccess` port in `src/fleet/`, supplied by the server layer.

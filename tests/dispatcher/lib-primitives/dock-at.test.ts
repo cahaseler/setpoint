@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { SpacemoltError } from "@spacemolt/lib";
+import { recordHoldUpdate } from "../../../src/dispatcher/hold-state.js";
 import { makeLibGoalContext } from "../../../src/dispatcher/lib-goal-context.js";
 import { LibDockAt } from "../../../src/dispatcher/lib-primitives/dock-at.js";
+import { customsRefusal, holdUpdate } from "../hold-fixtures.js";
 import { FakeLibGoalAccount, fakeMutationResult } from "../lib-fakes.js";
 
 describe("LibDockAt", () => {
@@ -129,5 +131,27 @@ describe("LibDockAt", () => {
 		await expect(new LibDockAt("station-1").execute(makeLibGoalContext(account))).rejects.toThrow(
 			"No action_result",
 		);
+	});
+});
+
+describe("LibDockAt — customs holds", () => {
+	test("a dock refused during a customs inspection is waited out, then docks", async () => {
+		let docks = 0;
+		const account = new FakeLibGoalAccount(
+			{ location: { poi_id: "poi-1" } },
+			{
+				dock: () => {
+					docks++;
+					if (docks === 1) {
+						setTimeout(() => recordHoldUpdate(account, holdUpdate("ended")), 5);
+						throw customsRefusal("dock");
+					}
+					return fakeMutationResult("dock");
+				},
+			},
+		);
+		const result = await new LibDockAt("station-1").execute(makeLibGoalContext(account));
+		expect(result.success).toBe(true);
+		expect(docks).toBe(2);
 	});
 });

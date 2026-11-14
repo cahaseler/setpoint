@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import type { FindRouteResponse } from "@spacemolt/lib";
 import { ConnectionClosedError, SpacemoltError } from "@spacemolt/lib";
+import { recordHoldUpdate } from "../../../src/dispatcher/hold-state.js";
 import { makeLibGoalContext } from "../../../src/dispatcher/lib-goal-context.js";
 import { LibNavigateViaRoute } from "../../../src/dispatcher/lib-primitives/navigate-via-route.js";
+import { customsRefusal, holdUpdate } from "../hold-fixtures.js";
 import { FakeLibGoalAccount, fakeMutationResult } from "../lib-fakes.js";
 
 /** Build a minimal FindRouteResponse QueryResult with the fields the goal reads. */
@@ -245,5 +247,31 @@ describe("LibNavigateViaRoute — wormholes and resuming", () => {
 		]).execute(makeLibGoalContext(account));
 
 		expect(result.alreadySatisfied).toBe(true);
+	});
+});
+
+describe("LibNavigateViaRoute — customs holds", () => {
+	test("a hop refused during a customs inspection is waited out, then flown", async () => {
+		let jumps = 0;
+		const account = new FakeLibGoalAccount(
+			{ location: { system_id: "sol" } },
+			{
+				find_route: () => route({ fuel_per_jump: 10, fuel_available: 100 }),
+				jump: () => {
+					jumps++;
+					if (jumps === 1) {
+						setTimeout(() => recordHoldUpdate(account, holdUpdate("ended")), 5);
+						throw customsRefusal("jump");
+					}
+					return fakeMutationResult("jump");
+				},
+			},
+		);
+		account.refreshReturns = { location: { system_id: "alpha" } };
+		const result = await new LibNavigateViaRoute(["sol", "mid", "alpha"]).execute(
+			makeLibGoalContext(account),
+		);
+		expect(result.success).toBe(true);
+		expect(jumps).toBe(3);
 	});
 });
