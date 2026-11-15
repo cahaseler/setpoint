@@ -221,6 +221,11 @@ async function main(): Promise<void> {
 		reactorRef.current?.handle(playerId, type, payload);
 	};
 
+	// Holds game calls while the game has said to stop: an account
+	// rate-limited, or the whole IP blocked. It holds every frame the lib
+	// sends, through scheduleSend. See accounts/game-call-gate.ts.
+	const gameCallGate = new GameCallGate();
+
 	// Create the lib client and account manager.
 	//
 	// connectRetry: a routine, recurring game-server restart or transient
@@ -239,10 +244,8 @@ async function main(): Promise<void> {
 	const client = new SpacemoltClient({
 		clerkApiKey: libConfig.clerkApiKey,
 		connectRetry: { maxRetries: 200, baseDelayMs: 2000, maxDelayMs: 60_000 },
+		scheduleSend: gameCallGate.scheduleSend,
 	});
-	// Holds game calls while the game has said to stop: an account
-	// rate-limited, or the whole IP blocked. See accounts/game-call-gate.ts.
-	const gameCallGate = new GameCallGate();
 	const manager = new LibAccountManager(client, libConfig, {
 		onStateChange,
 		onDrift,
