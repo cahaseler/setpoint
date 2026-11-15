@@ -934,11 +934,17 @@ export interface AccountLocationSummary {
 	docked: string | null;
 }
 
-/** One entry in `GET /accounts` (`handleListAccounts`) for a connected account. */
+/**
+ * Live connection state of an account the daemon manages: "reconnecting"
+ * while its socket is down and the lib is bringing it back.
+ */
+export type AccountConnectionStatus = "connected" | "reconnecting";
+
+/** One entry in `GET /accounts` (`handleListAccounts`) for an account the daemon manages. */
 export interface ConnectedAccountSummary {
 	player_id: string;
 	username: string;
-	status: "connected";
+	status: AccountConnectionStatus;
 	credits: number | null;
 	ship: AccountShipSummary | null;
 	location: AccountLocationSummary | null;
@@ -980,7 +986,7 @@ export interface AccountDetailState {
 export interface ConnectedAccountDetail {
 	player_id: string;
 	username: string;
-	status: "connected";
+	status: AccountConnectionStatus;
 	state: AccountDetailState | null;
 	loop: LoopStatus | null;
 	hasRunningJob: boolean;

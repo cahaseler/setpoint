@@ -11,6 +11,7 @@ export {
 } from "./account.js";
 export type {
 	AbortOptions,
+	AccountConnectionStatus,
 	AccountDetailState,
 	AccountLocationSummary,
 	AccountShipSummary,
