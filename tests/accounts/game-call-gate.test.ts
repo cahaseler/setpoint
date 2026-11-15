@@ -267,4 +267,121 @@ describe("GameCallGate", () => {
 		await expect(sent).rejects.toThrow("socket closed");
 		expect(a.calls).toEqual([]);
 	});
+
+	describe("an action the previous setpoint left queued", () => {
+		/** An account whose live re-read reports a queued action for the first `pendingReads` reads. */
+		function drainable(
+			gate: GameCallGate,
+			pendingReads: number,
+		): ReturnType<typeof fakeAccount> & {
+			refresh: () => Promise<{ queue: { has_pending: boolean } }>;
+			reads: number;
+		} {
+			const base = fakeAccount(gate, "Alpha");
+			const account = {
+				...base,
+				reads: 0,
+				refresh: () => {
+					account.reads++;
+					return Promise.resolve({ queue: { has_pending: account.reads <= pendingReads } });
+				},
+			};
+			return account;
+		}
+
+		test("holds the account's mutations until a re-read shows the queue empty", async () => {
+			const clock = fakeClock();
+			const gate = new GameCallGate(clock);
+			const account = drainable(gate, 2);
+			gate.install("p1", account);
+
+			const info = spyOn(console, "info").mockImplementation(() => {});
+			gate.holdForInheritedAction("p1", account);
+			expect(gate.hasInheritedAction("p1")).toBe(true);
+			await account.mutate();
+			info.mockRestore();
+
+			expect(account.reads).toBe(3);
+			expect(account.calls).toEqual(["mutate"]);
+			expect(gate.hasInheritedAction("p1")).toBe(false);
+		});
+
+		test("does not hold queries", async () => {
+			const gate = new GameCallGate({
+				now: () => 0,
+				// Never wakes, so the drain never finishes.
+				sleep: () => new Promise<void>(() => {}),
+			});
+			const account = drainable(gate, 1);
+			gate.install("p1", account);
+
+			const info = spyOn(console, "info").mockImplementation(() => {});
+			gate.holdForInheritedAction("p1", account);
+			info.mockRestore();
+			await account.query();
+
+			expect(account.calls).toEqual(["query"]);
+			expect(gate.hasInheritedAction("p1")).toBe(true);
+		});
+
+		test("releases the account after the cap even if the action never clears", async () => {
+			const clock = fakeClock();
+			const gate = new GameCallGate({ ...clock, inheritedActionMaxWaitMs: 6_000 });
+			const account = drainable(gate, Number.POSITIVE_INFINITY);
+			gate.install("p1", account);
+
+			const info = spyOn(console, "info").mockImplementation(() => {});
+			const warn = spyOn(console, "warn").mockImplementation(() => {});
+			gate.holdForInheritedAction("p1", account);
+			await account.mutate();
+			const warnings = warn.mock.calls.map((c) => String(c[0])).join("\n");
+			info.mockRestore();
+			warn.mockRestore();
+
+			expect(account.calls).toEqual(["mutate"]);
+			expect(warnings).toContain("still pending after 6s");
+		});
+
+		test("a failed re-read is logged and the drain keeps polling", async () => {
+			const clock = fakeClock();
+			const gate = new GameCallGate(clock);
+			let reads = 0;
+			const account = {
+				...fakeAccount(gate, "Alpha"),
+				refresh: () => {
+					reads++;
+					return reads === 1
+						? Promise.reject(new Error("query timed out"))
+						: Promise.resolve({ queue: { has_pending: false } });
+				},
+			};
+			gate.install("p1", account);
+
+			const info = spyOn(console, "info").mockImplementation(() => {});
+			const warn = spyOn(console, "warn").mockImplementation(() => {});
+			gate.holdForInheritedAction("p1", account);
+			await account.mutate();
+			const warnings = warn.mock.calls.map((c) => String(c[0])).join("\n");
+			info.mockRestore();
+			warn.mockRestore();
+
+			expect(reads).toBe(2);
+			expect(warnings).toContain("query timed out");
+		});
+
+		test("holding an account already held does not start a second drain", async () => {
+			const clock = fakeClock();
+			const gate = new GameCallGate(clock);
+			const account = drainable(gate, 1);
+			gate.install("p1", account);
+
+			const info = spyOn(console, "info").mockImplementation(() => {});
+			gate.holdForInheritedAction("p1", account);
+			gate.holdForInheritedAction("p1", account);
+			await account.mutate();
+			info.mockRestore();
+
+			expect(account.reads).toBe(2);
+		});
+	});
 });

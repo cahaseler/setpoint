@@ -2776,6 +2776,52 @@ describe("handleRawAction", () => {
 		expect(sent).toBe(0);
 	});
 
+	test("refuses a raw mutation with 503 while the previous setpoint's queued action is pending, but serves queries", async () => {
+		let jumps = 0;
+		let statuses = 0;
+		const account = new FakeLibManagedAccount({
+			playerId: "p1",
+			username: "TestPlayer",
+			handlers: {
+				jump: () => {
+					jumps++;
+					return { result: {} };
+				},
+				get_status: () => {
+					statuses++;
+					return { result: {} };
+				},
+			},
+		});
+		const ctx = makeContext({ accounts: [account] });
+		const info = spyOn(console, "info").mockImplementation(() => {});
+		// The drain re-reads until the queue is empty; this one never is.
+		ctx.gameCallGate.holdForInheritedAction("p1", {
+			refresh: () => new Promise(() => {}),
+		});
+		info.mockRestore();
+		const raw = (action: string, params?: Record<string, unknown>): Promise<Response> =>
+			handleRawAction(
+				new Request("http://localhost/accounts/p1/raw", {
+					method: "POST",
+					body: JSON.stringify({ toolGroup: "spacemolt", action, params }),
+					headers: { "Content-Type": "application/json" },
+				}),
+				{ playerId: "p1" },
+				ctx,
+			);
+
+		const refused = await raw("jump", { id: "sol" });
+		expect(refused.status).toBe(503);
+		expect(refused.headers.get("Retry-After")).toBe("5");
+		expect(((await refused.json()) as { code: string }).code).toBe("action_pending");
+		expect(jumps).toBe(0);
+
+		const served = await raw("get_status");
+		expect(served.status).toBe(200);
+		expect(statuses).toBe(1);
+	});
+
 	test("refuses at once with 503 and Retry-After while the game has the IP blocked", async () => {
 		let sent = 0;
 		const account = new FakeLibManagedAccount({

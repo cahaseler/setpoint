@@ -71,10 +71,25 @@ export interface GatedAccount {
 const RECONNECT_HOLD_MS = 5 * 60_000;
 const RECONNECT_POLL_MS = 500;
 
+/**
+ * How often, and for how long, to re-read an account whose queued action the
+ * previous setpoint left behind at a handover. The game runs a queued action
+ * on the next 10s tick; a jump can stay queued for its whole transit, so the
+ * cap allows several ticks before letting commands go out regardless.
+ */
+const INHERITED_ACTION_POLL_MS = 2_000;
+const INHERITED_ACTION_MAX_WAIT_MS = 30_000;
+
+/** What the gate needs to watch an account's action queue drain. */
+export interface DrainableAccount {
+	refresh(): Promise<Readonly<{ queue?: { has_pending: boolean } | undefined }>>;
+}
+
 export interface GameCallGateOptions {
 	now?: () => number;
 	sleep?: (ms: number) => Promise<void>;
 	reconnectHoldMs?: number;
+	inheritedActionMaxWaitMs?: number;
 }
 
 export class GameCallGate {
@@ -85,15 +100,70 @@ export class GameCallGate {
 	private readonly now: () => number;
 	private readonly sleep: (ms: number) => Promise<void>;
 	private readonly reconnectHoldMs: number;
+	private readonly inheritedActionMaxWaitMs: number;
+	/** Accounts still running an action the previous setpoint queued, and the wait for it. */
+	private readonly inheritedActions = new Map<string, Promise<void>>();
 
 	constructor({
 		now = Date.now,
 		sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
 		reconnectHoldMs = RECONNECT_HOLD_MS,
+		inheritedActionMaxWaitMs = INHERITED_ACTION_MAX_WAIT_MS,
 	}: GameCallGateOptions = {}) {
 		this.now = now;
 		this.sleep = sleep;
 		this.reconnectHoldMs = reconnectHoldMs;
+		this.inheritedActionMaxWaitMs = inheritedActionMaxWaitMs;
+	}
+
+	/**
+	 * Hold this account's mutations until the action the previous setpoint left
+	 * queued has run.
+	 *
+	 * At a handover the outgoing daemon may have queued a command for the next
+	 * tick just before it stopped. The lib only serializes mutations within one
+	 * connection, so the new daemon's next mutation on that account, from a
+	 * resumed loop or job or from a caller, is refused with `action_pending`.
+	 * The account is re-read every couple of seconds until its queue is empty.
+	 * Queries are not held.
+	 */
+	holdForInheritedAction(playerId: string, account: DrainableAccount): void {
+		if (this.inheritedActions.has(playerId)) return;
+		log.info(
+			`[${playerId}] The previous setpoint left an action queued; holding this account's commands until it has run`,
+		);
+		const drained = this.drainInheritedAction(playerId, account).finally(() =>
+			this.inheritedActions.delete(playerId),
+		);
+		this.inheritedActions.set(playerId, drained);
+	}
+
+	/** True while this account's mutations are held for an inherited queued action. */
+	hasInheritedAction(playerId: string): boolean {
+		return this.inheritedActions.has(playerId);
+	}
+
+	private async drainInheritedAction(playerId: string, account: DrainableAccount): Promise<void> {
+		const deadline = this.now() + this.inheritedActionMaxWaitMs;
+		while (this.now() < deadline) {
+			await this.sleep(INHERITED_ACTION_POLL_MS);
+			try {
+				const state = await account.refresh();
+				if (state.queue?.has_pending !== true) {
+					log.info(
+						`[${playerId}] Inherited queued action has run; releasing this account's commands`,
+					);
+					return;
+				}
+			} catch (err) {
+				log.warn(
+					`[${playerId}] Re-reading an account with an inherited queued action failed: ${err instanceof Error ? err.message : String(err)}`,
+				);
+			}
+		}
+		log.warn(
+			`[${playerId}] Inherited queued action still pending after ${this.inheritedActionMaxWaitMs / 1000}s; releasing this account's commands anyway`,
+		);
 	}
 
 	/** Milliseconds until the current IP block lifts; 0 when there is none. */
@@ -206,6 +276,7 @@ export class GameCallGate {
 			const original = account[method].bind(account) as (...args: unknown[]) => Promise<unknown>;
 			const gated = async (...args: unknown[]): Promise<unknown> => {
 				await this.waitForConnection(playerId, account);
+				if (method === "mutate") await this.inheritedActions.get(playerId);
 				try {
 					return await original(...args);
 				} catch (err) {

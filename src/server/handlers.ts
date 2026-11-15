@@ -7,6 +7,7 @@ import type {
 } from "@setpoint/protocol";
 import { type LoopType, loopPatchSchemas, loopSchemas } from "@setpoint/protocol";
 import {
+	ACTIONS,
 	type MarketBook,
 	type ObservationView,
 	type SpacemoltClient,
@@ -951,6 +952,25 @@ export async function handleRawAction(
 				status: 503,
 				headers: { "Content-Type": "application/json", "Retry-After": String(retryAfterSeconds) },
 			},
+		);
+	}
+
+	// After a handover, until the action the previous setpoint left queued on
+	// this account has run, the game refuses any other mutation on it. Refuse
+	// raw mutations at once rather than holding them: like a reconnect, a call
+	// the caller gave up on that then executed later would run twice.
+	if (
+		ctx.gameCallGate.hasInheritedAction(playerIdOf(account)) &&
+		ACTIONS[`${resolvedToolGroup}/${action}`]?.kind === "mutation"
+	) {
+		return new Response(
+			JSON.stringify({
+				error:
+					"An action the previous setpoint queued on this account has not run yet; retry in a few seconds",
+				code: "action_pending",
+				retry_after: 5,
+			}),
+			{ status: 503, headers: { "Content-Type": "application/json", "Retry-After": "5" } },
 		);
 	}
 

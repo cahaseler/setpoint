@@ -418,6 +418,14 @@ async function main(): Promise<void> {
 	// the incumbent sent, so a ship the incumbent moved can still be cached
 	// where it was. Re-read every account before anything acts on that state.
 	await driftSweep?.runOnce();
+	// The incumbent may have queued a command for the next tick just before it
+	// stopped. Until that has run, the game refuses any other mutation on the
+	// account, whoever sends it, so hold this daemon's mutations there.
+	for (const account of manager.getAll()) {
+		if (account.state.queue?.has_pending === true) {
+			gameCallGate.holdForInheritedAction(playerIdOf(account), account);
+		}
+	}
 	await resumeConnectedAccounts(manager, store, started, CONFIG_DIR);
 	projectAll(manager, projectOnChange);
 	lifecycle.enterActive(manager.size);

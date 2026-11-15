@@ -294,7 +294,12 @@ task of the agent session — see below. It:
    (`POST /lifecycle/handover`). That one refuses new mutating requests with
    503 `code: "handover"` and `Retry-After: 5`, shuts down, and the new one
    binds the port, resumes every persisted loop and job, and logs `READY`.
-   The gap callers see is well under a second.
+   The gap callers see is well under a second. Before resuming, it re-reads
+   every account. On an account where the old daemon left a command queued,
+   `GameCallGate.holdForInheritedAction` holds mutations until that command
+   has run (at most 30s), since the game refuses any other mutation
+   meanwhile. Raw mutations on such an account get 503
+   `code: "action_pending"` with `Retry-After: 5` instead of waiting.
 5. Points the `~/projects/setpoint-release` symlink at the new release and
    retires the previous release's worktree.
 
