@@ -15,15 +15,20 @@
  *   went in during one 120-second block. Every account's new calls now wait
  *   until it lifts, plus a margin.
  *
- * Installed by wrapping `query` and `mutate` on each account instance (see
- * `install`). Every game call funnels through those two — `commands`, `send`,
- * `refresh` and the subscribe calls included — and wrapping the instance's own
- * methods keeps its identity, which `state-freshness.ts` keys on.
+ * Both holds are applied to every frame the lib sends, through its
+ * `scheduleSend` hook (see `scheduleSend`): calls, the lib's own automatic
+ * retry of a throttled call, and the authentication of a reconnect. Each of
+ * those is a request the game counts, so a hold that let any of them through
+ * would still be adding to the IP's violation count during a block.
  *
- * The lib's own retry of an already-throttled call happens inside `query` and
- * `mutate`, past this gate. That is deliberate: it waits the server's own
- * interval, which is exactly the window this gate holds new calls for.
+ * Two things stay on the account's `query` and `mutate`, wrapped in place (see
+ * `install`) so the instance keeps its identity, which `state-freshness.ts`
+ * keys on: recognising an IP block from a failed call, and waiting out a
+ * reconnect. The lib refuses to send at all while an account is reconnecting,
+ * so that wait has to happen before the call reaches it.
  */
+
+import type { SendAdmissionRequest } from "@spacemolt/lib";
 
 import { createLogger } from "../util/logger.js";
 
@@ -50,6 +55,8 @@ export function ipBlockDurationMs(err: unknown): number | undefined {
 
 /** The two methods every game call passes through, and whether the socket is up. */
 export interface GatedAccount {
+	/** The id the lib manages the account under; send requests carry it as `accountId`. */
+	readonly id?: string | undefined;
 	query: (...args: never[]) => Promise<unknown>;
 	mutate: (...args: never[]) => Promise<unknown>;
 	/** False while the account is reconnecting. Absent on test doubles that never disconnect. */
@@ -73,6 +80,8 @@ export interface GameCallGateOptions {
 export class GameCallGate {
 	private ipBlockedUntil = 0;
 	private readonly accountHoldUntil = new Map<string, number>();
+	/** Lib account id → player id, for the send requests, which carry only the former. */
+	private readonly playerIdByAccountId = new Map<string, string>();
 	private readonly now: () => number;
 	private readonly sleep: (ms: number) => Promise<void>;
 	private readonly reconnectHoldMs: number;
@@ -139,30 +148,64 @@ export class GameCallGate {
 		}
 	}
 
-	/** Resolve once neither an IP block nor this account's rate-limit hold is in force. */
-	async waitUntilClear(playerId: string): Promise<void> {
+	/**
+	 * Resolve once neither an IP block nor this account's rate-limit hold is in
+	 * force. With no `playerId` (an account not yet installed, still
+	 * authenticating) only the IP block applies. Rejects if `signal` aborts.
+	 */
+	async waitUntilClear(playerId: string | undefined, signal?: AbortSignal): Promise<void> {
 		for (;;) {
-			const accountHold = this.accountHoldUntil.get(playerId) ?? 0;
+			signal?.throwIfAborted();
+			const accountHold = playerId === undefined ? 0 : (this.accountHoldUntil.get(playerId) ?? 0);
 			const waitMs = Math.max(this.ipBlockedUntil, accountHold) - this.now();
 			if (waitMs <= 0) {
-				if (accountHold !== 0) this.accountHoldUntil.delete(playerId);
+				if (playerId !== undefined && accountHold !== 0) this.accountHoldUntil.delete(playerId);
 				return;
 			}
-			await this.sleep(waitMs);
+			await this.sleepUnlessAborted(waitMs, signal);
 		}
 	}
 
+	private sleepUnlessAborted(ms: number, signal: AbortSignal | undefined): Promise<void> {
+		if (signal === undefined) return this.sleep(ms);
+		return new Promise<void>((resolve, reject) => {
+			const onAbort = (): void => reject(signal.reason);
+			signal.addEventListener("abort", onAbort, { once: true });
+			// The sleep is a timer and never rejects.
+			void this.sleep(ms).then(() => {
+				signal.removeEventListener("abort", onAbort);
+				resolve();
+			});
+		});
+	}
+
+	/**
+	 * The lib's `scheduleSend` hook: hold each frame until it is clear to go.
+	 * The lib aborts `signal` when the frame's socket is closed or replaced,
+	 * which ends the hold.
+	 */
+	readonly scheduleSend = async (
+		request: SendAdmissionRequest,
+		send: () => void,
+	): Promise<void> => {
+		const playerId =
+			request.accountId === undefined ? undefined : this.playerIdByAccountId.get(request.accountId);
+		await this.waitUntilClear(playerId, request.signal);
+		send();
+	};
+
 	/**
 	 * Route an account's game calls through this gate: each `query` and
-	 * `mutate` first waits until clear, and a failure is inspected for an IP
-	 * block. Patches the instance in place, so the object stays the same one.
+	 * `mutate` first waits out a reconnect, and a failure is inspected for an
+	 * IP block. Patches the instance in place, so the object stays the same
+	 * one. The holds themselves apply at `scheduleSend`.
 	 */
 	install(playerId: string, account: GatedAccount): void {
+		if (account.id !== undefined) this.playerIdByAccountId.set(account.id, playerId);
 		for (const method of ["query", "mutate"] as const) {
 			const original = account[method].bind(account) as (...args: unknown[]) => Promise<unknown>;
 			const gated = async (...args: unknown[]): Promise<unknown> => {
 				await this.waitForConnection(playerId, account);
-				await this.waitUntilClear(playerId);
 				try {
 					return await original(...args);
 				} catch (err) {

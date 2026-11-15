@@ -23,25 +23,41 @@ function fakeClock(start = 1_000_000): {
 	};
 }
 
-/** An account double whose query/mutate record calls and can be told to fail. */
-function fakeAccount(): {
+/**
+ * An account double that sends each call's frame through the gate's
+ * `scheduleSend`, as the lib does, and records the frames that went out.
+ * `calls` lists the frames sent; a call can be told to fail.
+ */
+function fakeAccount(
+	gate: GameCallGate,
+	id: string,
+): {
+	readonly id: string;
 	query: (...args: never[]) => Promise<unknown>;
 	mutate: (...args: never[]) => Promise<unknown>;
+	sendFrame: (tool: string, action: string, signal?: AbortSignal) => Promise<void>;
 	calls: string[];
 	failNextWith: Error | null;
 } {
 	const account = {
+		id,
 		calls: [] as string[],
 		failNextWith: null as Error | null,
-		query(..._args: never[]): Promise<unknown> {
-			account.calls.push("query");
+		sendFrame(tool: string, action: string, signal = new AbortController().signal): Promise<void> {
+			return gate.scheduleSend(
+				{ accountId: id, sessionId: "s1", signal, tool, action, requestId: "r1" },
+				() => account.calls.push(action),
+			);
+		},
+		async query(..._args: never[]): Promise<unknown> {
+			await account.sendFrame("spacemolt", "query");
 			const err = account.failNextWith;
 			account.failNextWith = null;
-			return err ? Promise.reject(err) : Promise.resolve("ok");
+			return err ? Promise.reject(err) : "ok";
 		},
-		mutate(..._args: never[]): Promise<unknown> {
-			account.calls.push("mutate");
-			return Promise.resolve("ok");
+		async mutate(..._args: never[]): Promise<unknown> {
+			await account.sendFrame("spacemolt", "mutate");
+			return "ok";
 		},
 	};
 	return account;
@@ -68,7 +84,7 @@ describe("GameCallGate", () => {
 	test("passes calls straight through when nothing is in force", async () => {
 		const clock = fakeClock();
 		const gate = new GameCallGate(clock);
-		const account = fakeAccount();
+		const account = fakeAccount(gate, "Alpha");
 		gate.install("p1", account);
 
 		await account.query();
@@ -81,8 +97,8 @@ describe("GameCallGate", () => {
 	test("an IP block holds every account's next call until it lifts, plus a margin", async () => {
 		const clock = fakeClock();
 		const gate = new GameCallGate(clock);
-		const a = fakeAccount();
-		const b = fakeAccount();
+		const a = fakeAccount(gate, "Alpha");
+		const b = fakeAccount(gate, "Bravo");
 		gate.install("p1", a);
 		gate.install("p2", b);
 
@@ -116,8 +132,8 @@ describe("GameCallGate", () => {
 	test("a rate-limited account holds only that account's new calls", async () => {
 		const clock = fakeClock();
 		const gate = new GameCallGate(clock);
-		const a = fakeAccount();
-		const b = fakeAccount();
+		const a = fakeAccount(gate, "Alpha");
+		const b = fakeAccount(gate, "Bravo");
 		gate.install("p1", a);
 		gate.install("p2", b);
 
@@ -132,7 +148,7 @@ describe("GameCallGate", () => {
 	test("the longer of two rate-limit windows wins", async () => {
 		const clock = fakeClock();
 		const gate = new GameCallGate(clock);
-		const a = fakeAccount();
+		const a = fakeAccount(gate, "Alpha");
 		gate.install("p1", a);
 
 		gate.noteRateLimited("p1", 50_000);
@@ -145,7 +161,7 @@ describe("GameCallGate", () => {
 	test("an ordinary failure passes through and leaves no hold", async () => {
 		const clock = fakeClock();
 		const gate = new GameCallGate(clock);
-		const a = fakeAccount();
+		const a = fakeAccount(gate, "Alpha");
 		gate.install("p1", a);
 
 		a.failNextWith = new Error("not_docked: you must be docked");
@@ -159,13 +175,13 @@ describe("GameCallGate", () => {
 	test("holds a call while its account is reconnecting, then lets it through", async () => {
 		const clock = fakeClock();
 		let pollsUntilBack = 3;
+		const gate = new GameCallGate(clock);
 		const account = {
-			...fakeAccount(),
+			...fakeAccount(gate, "Alpha"),
 			get authenticated(): boolean {
 				return pollsUntilBack-- <= 0;
 			},
 		};
-		const gate = new GameCallGate(clock);
 		gate.install("p1", account);
 
 		const info = spyOn(console, "info").mockImplementation(() => {});
@@ -178,8 +194,8 @@ describe("GameCallGate", () => {
 
 	test("gives up holding after the reconnect window and sends the call anyway", async () => {
 		const clock = fakeClock();
-		const account = { ...fakeAccount(), authenticated: false };
 		const gate = new GameCallGate({ ...clock, reconnectHoldMs: 2_000 });
+		const account = { ...fakeAccount(gate, "Alpha"), authenticated: false };
 		gate.install("p1", account);
 
 		const info = spyOn(console, "info").mockImplementation(() => {});
@@ -193,7 +209,7 @@ describe("GameCallGate", () => {
 
 	test("installing patches the account in place, keeping its identity", () => {
 		const gate = new GameCallGate(fakeClock());
-		const account = fakeAccount();
+		const account = fakeAccount(gate, "Alpha");
 		const before = account;
 		const originalQuery = account.query;
 
@@ -201,5 +217,54 @@ describe("GameCallGate", () => {
 
 		expect(account).toBe(before);
 		expect(account.query).not.toBe(originalQuery);
+	});
+
+	test("an IP block holds the lib's own frames too, such as a retry of a throttled call", async () => {
+		const clock = fakeClock();
+		const gate = new GameCallGate(clock);
+		const a = fakeAccount(gate, "Alpha");
+		gate.install("p1", a);
+
+		const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+		gate.noteFailure(new Error(BLOCK_MESSAGE));
+		warnSpy.mockRestore();
+		// A frame the lib sends by itself, past query/mutate.
+		await a.sendFrame("spacemolt", "retry");
+
+		expect(clock.slept).toEqual([125_000]);
+		expect(a.calls).toEqual(["retry"]);
+	});
+
+	test("an account still authenticating, not yet installed, is held by an IP block only", async () => {
+		const clock = fakeClock();
+		const gate = new GameCallGate(clock);
+		const fresh = fakeAccount(gate, "Newcomer");
+
+		await fresh.sendFrame("spacemolt_auth", "login");
+		expect(clock.slept).toEqual([]);
+
+		const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+		gate.noteFailure(new Error(BLOCK_MESSAGE));
+		warnSpy.mockRestore();
+		await fresh.sendFrame("spacemolt_auth", "login");
+		expect(clock.slept).toEqual([125_000]);
+	});
+
+	test("a held frame is dropped, not sent, when the lib aborts its socket", async () => {
+		const gate = new GameCallGate({
+			now: () => 0,
+			// Never wakes: only the abort can end the hold.
+			sleep: () => new Promise<void>(() => {}),
+		});
+		const a = fakeAccount(gate, "Alpha");
+		gate.install("p1", a);
+		gate.noteRateLimited("p1", 40_000);
+
+		const controller = new AbortController();
+		const sent = a.sendFrame("spacemolt", "mutate", controller.signal);
+		controller.abort(new Error("socket closed"));
+
+		await expect(sent).rejects.toThrow("socket closed");
+		expect(a.calls).toEqual([]);
 	});
 });
