@@ -2776,7 +2776,7 @@ describe("handleRawAction", () => {
 		expect(sent).toBe(0);
 	});
 
-	test("refuses a raw mutation with 503 while the previous setpoint's queued action is pending, but serves queries", async () => {
+	test("refuses a raw mutation with 503 while the account is held after a handover, but serves queries", async () => {
 		let jumps = 0;
 		let statuses = 0;
 		const account = new FakeLibManagedAccount({
@@ -2794,12 +2794,8 @@ describe("handleRawAction", () => {
 			},
 		});
 		const ctx = makeContext({ accounts: [account] });
-		const info = spyOn(console, "info").mockImplementation(() => {});
-		// The drain re-reads until the queue is empty; this one never is.
-		ctx.gameCallGate.holdForInheritedAction("p1", {
-			refresh: () => new Promise(() => {}),
-		});
-		info.mockRestore();
+		// The handover re-read of this account has not come in yet.
+		ctx.gameCallGate.holdAfterHandover("p1", account, new Promise<void>(() => {}));
 		const raw = (action: string, params?: Record<string, unknown>): Promise<Response> =>
 			handleRawAction(
 				new Request("http://localhost/accounts/p1/raw", {
@@ -2814,7 +2810,7 @@ describe("handleRawAction", () => {
 		const refused = await raw("jump", { id: "sol" });
 		expect(refused.status).toBe(503);
 		expect(refused.headers.get("Retry-After")).toBe("5");
-		expect(((await refused.json()) as { code: string }).code).toBe("action_pending");
+		expect(((await refused.json()) as { code: string }).code).toBe("handover");
 		expect(jumps).toBe(0);
 
 		const served = await raw("get_status");

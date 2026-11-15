@@ -955,19 +955,21 @@ export async function handleRawAction(
 		);
 	}
 
-	// After a handover, until the action the previous setpoint left queued on
-	// this account has run, the game refuses any other mutation on it. Refuse
-	// raw mutations at once rather than holding them: like a reconnect, a call
-	// the caller gave up on that then executed later would run twice.
+	// Just after a handover, until this account has been re-read and any
+	// action the previous setpoint left queued on it has run, the game may
+	// refuse another mutation on it. Refuse raw mutations at once rather than
+	// holding them: like a reconnect, a call the caller gave up on that then
+	// executed later would run twice. Same code and Retry-After as the
+	// outgoing daemon's own refusal during the cutover.
 	if (
-		ctx.gameCallGate.hasInheritedAction(playerIdOf(account)) &&
+		ctx.gameCallGate.isHeldAfterHandover(playerIdOf(account)) &&
 		ACTIONS[`${resolvedToolGroup}/${action}`]?.kind === "mutation"
 	) {
 		return new Response(
 			JSON.stringify({
 				error:
-					"An action the previous setpoint queued on this account has not run yet; retry in a few seconds",
-				code: "action_pending",
+					"setpoint has just taken over and is still checking this account for a command the previous setpoint left queued; retry in a few seconds",
+				code: "handover",
 				retry_after: 5,
 			}),
 			{ status: 503, headers: { "Content-Type": "application/json", "Retry-After": "5" } },

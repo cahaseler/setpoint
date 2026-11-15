@@ -80,9 +80,15 @@ const RECONNECT_POLL_MS = 500;
 const INHERITED_ACTION_POLL_MS = 2_000;
 const INHERITED_ACTION_MAX_WAIT_MS = 30_000;
 
+interface QueueView {
+	queue?: { has_pending: boolean } | undefined;
+}
+
 /** What the gate needs to watch an account's action queue drain. */
 export interface DrainableAccount {
-	refresh(): Promise<Readonly<{ queue?: { has_pending: boolean } | undefined }>>;
+	/** The cached state; read once the handover re-read has refreshed it. */
+	readonly state: Readonly<QueueView>;
+	refresh(): Promise<Readonly<QueueView>>;
 }
 
 export interface GameCallGateOptions {
@@ -101,8 +107,8 @@ export class GameCallGate {
 	private readonly sleep: (ms: number) => Promise<void>;
 	private readonly reconnectHoldMs: number;
 	private readonly inheritedActionMaxWaitMs: number;
-	/** Accounts still running an action the previous setpoint queued, and the wait for it. */
-	private readonly inheritedActions = new Map<string, Promise<void>>();
+	/** Accounts whose mutations are held after a handover, and what releases each. */
+	private readonly handoverHolds = new Map<string, Promise<void>>();
 
 	constructor({
 		now = Date.now,
@@ -117,30 +123,35 @@ export class GameCallGate {
 	}
 
 	/**
-	 * Hold this account's mutations until the action the previous setpoint left
-	 * queued has run.
+	 * After a handover, hold this account's mutations until it is known to have
+	 * no action the previous setpoint left queued.
 	 *
-	 * At a handover the outgoing daemon may have queued a command for the next
-	 * tick just before it stopped. The lib only serializes mutations within one
+	 * The outgoing daemon may have queued a command for the next tick just
+	 * before it stopped. The lib only serializes mutations within one
 	 * connection, so the new daemon's next mutation on that account, from a
-	 * resumed loop or job or from a caller, is refused with `action_pending`.
-	 * The account is re-read every couple of seconds until its queue is empty.
-	 * Queries are not held.
+	 * resumed loop or job or from a caller, would be refused with
+	 * `action_pending`. The hold is armed when the new daemon starts serving,
+	 * and lasts until `reread` resolves (the handover re-read of this account).
+	 * If the re-read shows an action queued, it then lasts until a later re-read
+	 * shows the queue empty. Queries are not held.
 	 */
-	holdForInheritedAction(playerId: string, account: DrainableAccount): void {
-		if (this.inheritedActions.has(playerId)) return;
-		log.info(
-			`[${playerId}] The previous setpoint left an action queued; holding this account's commands until it has run`,
-		);
-		const drained = this.drainInheritedAction(playerId, account).finally(() =>
-			this.inheritedActions.delete(playerId),
-		);
-		this.inheritedActions.set(playerId, drained);
+	holdAfterHandover(playerId: string, account: DrainableAccount, reread: Promise<void>): void {
+		if (this.handoverHolds.has(playerId)) return;
+		const released = reread
+			.then(() => {
+				if (account.state.queue?.has_pending !== true) return;
+				log.info(
+					`[${playerId}] The previous setpoint left an action queued; holding this account's commands until it has run`,
+				);
+				return this.drainInheritedAction(playerId, account);
+			})
+			.finally(() => this.handoverHolds.delete(playerId));
+		this.handoverHolds.set(playerId, released);
 	}
 
-	/** True while this account's mutations are held for an inherited queued action. */
-	hasInheritedAction(playerId: string): boolean {
-		return this.inheritedActions.has(playerId);
+	/** True while this account's mutations are held after a handover. */
+	isHeldAfterHandover(playerId: string): boolean {
+		return this.handoverHolds.has(playerId);
 	}
 
 	private async drainInheritedAction(playerId: string, account: DrainableAccount): Promise<void> {
@@ -276,7 +287,7 @@ export class GameCallGate {
 			const original = account[method].bind(account) as (...args: unknown[]) => Promise<unknown>;
 			const gated = async (...args: unknown[]): Promise<unknown> => {
 				await this.waitForConnection(playerId, account);
-				if (method === "mutate") await this.inheritedActions.get(playerId);
+				if (method === "mutate") await this.handoverHolds.get(playerId);
 				try {
 					return await original(...args);
 				} catch (err) {

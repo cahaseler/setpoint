@@ -268,60 +268,78 @@ describe("GameCallGate", () => {
 		expect(a.calls).toEqual([]);
 	});
 
-	describe("an action the previous setpoint left queued", () => {
-		/** An account whose live re-read reports a queued action for the first `pendingReads` reads. */
+	describe("holding mutations after a handover", () => {
+		/** An account whose state and live re-reads report a queued action for the first `pendingReads` reads. */
 		function drainable(
 			gate: GameCallGate,
 			pendingReads: number,
 		): ReturnType<typeof fakeAccount> & {
+			state: { queue: { has_pending: boolean } };
 			refresh: () => Promise<{ queue: { has_pending: boolean } }>;
 			reads: number;
 		} {
-			const base = fakeAccount(gate, "Alpha");
 			const account = {
-				...base,
+				...fakeAccount(gate, "Alpha"),
 				reads: 0,
+				state: { queue: { has_pending: pendingReads > 0 } },
 				refresh: () => {
 					account.reads++;
-					return Promise.resolve({ queue: { has_pending: account.reads <= pendingReads } });
+					account.state = { queue: { has_pending: account.reads < pendingReads } };
+					return Promise.resolve(account.state);
 				},
 			};
 			return account;
 		}
 
-		test("holds the account's mutations until a re-read shows the queue empty", async () => {
-			const clock = fakeClock();
-			const gate = new GameCallGate(clock);
-			const account = drainable(gate, 2);
+		test("holds mutations until the handover re-read, then releases a clear account", async () => {
+			const gate = new GameCallGate(fakeClock());
+			const account = drainable(gate, 0);
+			gate.install("p1", account);
+			let reread = (): void => {};
+			gate.holdAfterHandover(
+				"p1",
+				account,
+				new Promise<void>((resolve) => {
+					reread = resolve;
+				}),
+			);
+
+			const sent = account.mutate();
+			await Promise.resolve();
+			expect(account.calls).toEqual([]);
+			expect(gate.isHeldAfterHandover("p1")).toBe(true);
+
+			reread();
+			await sent;
+			expect(account.calls).toEqual(["mutate"]);
+			expect(account.reads).toBe(0);
+			expect(gate.isHeldAfterHandover("p1")).toBe(false);
+		});
+
+		test("an account the re-read finds with a queued action stays held until a re-read shows it clear", async () => {
+			const gate = new GameCallGate(fakeClock());
+			const account = drainable(gate, 3);
 			gate.install("p1", account);
 
 			const info = spyOn(console, "info").mockImplementation(() => {});
-			gate.holdForInheritedAction("p1", account);
-			expect(gate.hasInheritedAction("p1")).toBe(true);
+			gate.holdAfterHandover("p1", account, Promise.resolve());
 			await account.mutate();
 			info.mockRestore();
 
 			expect(account.reads).toBe(3);
 			expect(account.calls).toEqual(["mutate"]);
-			expect(gate.hasInheritedAction("p1")).toBe(false);
 		});
 
 		test("does not hold queries", async () => {
-			const gate = new GameCallGate({
-				now: () => 0,
-				// Never wakes, so the drain never finishes.
-				sleep: () => new Promise<void>(() => {}),
-			});
-			const account = drainable(gate, 1);
+			const gate = new GameCallGate(fakeClock());
+			const account = drainable(gate, 0);
 			gate.install("p1", account);
+			gate.holdAfterHandover("p1", account, new Promise<void>(() => {}));
 
-			const info = spyOn(console, "info").mockImplementation(() => {});
-			gate.holdForInheritedAction("p1", account);
-			info.mockRestore();
 			await account.query();
 
 			expect(account.calls).toEqual(["query"]);
-			expect(gate.hasInheritedAction("p1")).toBe(true);
+			expect(gate.isHeldAfterHandover("p1")).toBe(true);
 		});
 
 		test("releases the account after the cap even if the action never clears", async () => {
@@ -332,7 +350,7 @@ describe("GameCallGate", () => {
 
 			const info = spyOn(console, "info").mockImplementation(() => {});
 			const warn = spyOn(console, "warn").mockImplementation(() => {});
-			gate.holdForInheritedAction("p1", account);
+			gate.holdAfterHandover("p1", account, Promise.resolve());
 			await account.mutate();
 			const warnings = warn.mock.calls.map((c) => String(c[0])).join("\n");
 			info.mockRestore();
@@ -342,12 +360,12 @@ describe("GameCallGate", () => {
 			expect(warnings).toContain("still pending after 6s");
 		});
 
-		test("a failed re-read is logged and the drain keeps polling", async () => {
-			const clock = fakeClock();
-			const gate = new GameCallGate(clock);
+		test("a failed re-read while draining is logged and polling continues", async () => {
+			const gate = new GameCallGate(fakeClock());
 			let reads = 0;
 			const account = {
 				...fakeAccount(gate, "Alpha"),
+				state: { queue: { has_pending: true } },
 				refresh: () => {
 					reads++;
 					return reads === 1
@@ -359,7 +377,7 @@ describe("GameCallGate", () => {
 
 			const info = spyOn(console, "info").mockImplementation(() => {});
 			const warn = spyOn(console, "warn").mockImplementation(() => {});
-			gate.holdForInheritedAction("p1", account);
+			gate.holdAfterHandover("p1", account, Promise.resolve());
 			await account.mutate();
 			const warnings = warn.mock.calls.map((c) => String(c[0])).join("\n");
 			info.mockRestore();
@@ -369,19 +387,25 @@ describe("GameCallGate", () => {
 			expect(warnings).toContain("query timed out");
 		});
 
-		test("holding an account already held does not start a second drain", async () => {
-			const clock = fakeClock();
-			const gate = new GameCallGate(clock);
-			const account = drainable(gate, 1);
+		test("holding an account already held keeps the first hold", async () => {
+			const gate = new GameCallGate(fakeClock());
+			const account = drainable(gate, 0);
 			gate.install("p1", account);
+			let reread = (): void => {};
+			gate.holdAfterHandover(
+				"p1",
+				account,
+				new Promise<void>((resolve) => {
+					reread = resolve;
+				}),
+			);
+			gate.holdAfterHandover("p1", account, Promise.resolve());
 
-			const info = spyOn(console, "info").mockImplementation(() => {});
-			gate.holdForInheritedAction("p1", account);
-			gate.holdForInheritedAction("p1", account);
+			await Promise.resolve();
+			expect(gate.isHeldAfterHandover("p1")).toBe(true);
+			reread();
 			await account.mutate();
-			info.mockRestore();
-
-			expect(account.reads).toBe(2);
+			expect(gate.isHeldAfterHandover("p1")).toBe(false);
 		});
 	});
 });
