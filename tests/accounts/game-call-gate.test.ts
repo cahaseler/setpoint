@@ -1,4 +1,5 @@
 import { describe, expect, spyOn, test } from "bun:test";
+import { ConnectionClosedError } from "@spacemolt/lib";
 import { GameCallGate, ipBlockDurationMs } from "../../src/accounts/game-call-gate.js";
 
 const BLOCK_MESSAGE =
@@ -266,5 +267,107 @@ describe("GameCallGate", () => {
 
 		await expect(sent).rejects.toThrow("socket closed");
 		expect(a.calls).toEqual([]);
+	});
+
+	describe("connection refusals", () => {
+		const refusal = (seconds: number): ConnectionClosedError =>
+			new ConnectionClosedError(
+				"WebSocket connection closed",
+				4003,
+				`rate_limited retry_after=${seconds}`,
+			);
+		const openRequest = (signal = new AbortController().signal) => ({
+			accountId: "Alpha",
+			sessionId: "s1",
+			signal,
+		});
+
+		test("opens go straight through when nothing is in force", async () => {
+			const clock = fakeClock();
+			const gate = new GameCallGate(clock);
+			let opened = 0;
+			await gate.scheduleOpen(openRequest(), async () => {
+				opened++;
+			});
+			expect(opened).toBe(1);
+			expect(clock.slept).toEqual([]);
+		});
+
+		test("a 4003 refusal holds every account's next open for its retry_after", async () => {
+			const clock = fakeClock();
+			const gate = new GameCallGate(clock);
+			const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+			gate.noteConnectionClosed(refusal(30));
+			warnSpy.mockRestore();
+
+			const start = clock.now();
+			let openedAt = 0;
+			await gate.scheduleOpen({ ...openRequest(), accountId: "Bravo" }, async () => {
+				openedAt = clock.now();
+			});
+			expect(openedAt - start).toBe(30_000);
+		});
+
+		test("a refusal does not hold sends on open connections", async () => {
+			const clock = fakeClock();
+			const gate = new GameCallGate(clock);
+			const a = fakeAccount(gate, "Alpha");
+			gate.install("p1", a);
+			const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+			gate.noteConnectionClosed(refusal(30));
+			warnSpy.mockRestore();
+			await a.query();
+			expect(clock.slept).toEqual([]);
+		});
+
+		test("a later, shorter refusal does not shorten the hold, and only the first is logged", async () => {
+			const clock = fakeClock();
+			const gate = new GameCallGate(clock);
+			const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+			gate.noteConnectionClosed(refusal(30));
+			gate.noteConnectionClosed(refusal(5));
+			const warnings = warnSpy.mock.calls.length;
+			warnSpy.mockRestore();
+			expect(warnings).toBe(1);
+
+			const start = clock.now();
+			await gate.scheduleOpen(openRequest(), async () => {});
+			expect(clock.now() - start).toBe(30_000);
+		});
+
+		test("other closes leave no hold", async () => {
+			const clock = fakeClock();
+			const gate = new GameCallGate(clock);
+			gate.noteConnectionClosed(new ConnectionClosedError("gone", 1006, "Connection ended"));
+			gate.noteConnectionClosed(new Error("not a close"));
+			await gate.scheduleOpen(openRequest(), async () => {});
+			expect(clock.slept).toEqual([]);
+		});
+
+		test("an IP block holds socket opens too", async () => {
+			const clock = fakeClock();
+			const gate = new GameCallGate(clock);
+			const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+			gate.noteFailure(new Error(BLOCK_MESSAGE));
+			warnSpy.mockRestore();
+			const start = clock.now();
+			await gate.scheduleOpen(openRequest(), async () => {});
+			expect(clock.now() - start).toBe(125_000);
+		});
+
+		test("a held open is abandoned, not attempted, when the lib aborts it", async () => {
+			const gate = new GameCallGate({ now: () => 0, sleep: () => new Promise<void>(() => {}) });
+			const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+			gate.noteConnectionClosed(refusal(30));
+			warnSpy.mockRestore();
+			const controller = new AbortController();
+			let opened = false;
+			const pending = gate.scheduleOpen(openRequest(controller.signal), async () => {
+				opened = true;
+			});
+			controller.abort(new Error("attempt abandoned"));
+			await expect(pending).rejects.toThrow("attempt abandoned");
+			expect(opened).toBe(false);
+		});
 	});
 });
