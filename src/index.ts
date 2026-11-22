@@ -413,11 +413,37 @@ async function main(): Promise<void> {
 	standbyControl.stop(true);
 	standbyControl = undefined;
 
+	// The incumbent may have queued a command for the next tick just before it
+	// stopped, and until that has run the game refuses any other mutation on
+	// the account, whoever sends it. Hold every account's mutations from the
+	// moment this daemon starts serving until its re-read below says it is
+	// clear (see GameCallGate.holdAfterHandover).
+	const releaseReread = new Map<string, () => void>();
+	for (const account of manager.getAll()) {
+		const playerId = playerIdOf(account);
+		const reread = new Promise<void>((resolve) => releaseReread.set(playerId, resolve));
+		gameCallGate.holdAfterHandover(playerId, account, reread);
+	}
+
 	const started = await activate();
 	// Standby's caches took the server's pushes but not the results of commands
 	// the incumbent sent, so a ship the incumbent moved can still be cached
 	// where it was. Re-read every account before anything acts on that state.
-	await driftSweep?.runOnce();
+	// Sequential, like the drift sweep, to avoid a fleet-wide burst; each
+	// account's hold lifts as soon as its own re-read is in.
+	log.info(`Re-reading ${releaseReread.size} account(s) after the handover`);
+	for (const account of manager.getAll()) {
+		const playerId = playerIdOf(account);
+		try {
+			await account.refresh();
+		} catch (err) {
+			log.warn(`[${playerId}] Handover re-read failed: ${errorMessage(err)}`);
+		} finally {
+			releaseReread.get(playerId)?.();
+		}
+	}
+	for (const release of releaseReread.values()) release();
+	log.info("Handover re-read complete");
 	await resumeConnectedAccounts(manager, store, started, CONFIG_DIR);
 	projectAll(manager, projectOnChange);
 	lifecycle.enterActive(manager.size);
