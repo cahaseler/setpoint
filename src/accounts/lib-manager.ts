@@ -201,6 +201,7 @@ export class LibAccountManager {
 		// or why — which hid a days-long single-account drop cycle.
 		const label = account.id ?? playerId;
 		account.onDisconnected((err) => {
+			this.opts.gate?.noteConnectionClosed(err);
 			log.warn(
 				`[${label}] Connection lost (code=${err.code ?? "?"}${err.reason ? `, reason=${err.reason}` : ""}): ${err.message}`,
 			);

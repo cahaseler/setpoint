@@ -782,6 +782,28 @@ describe("LibAccountManager", () => {
 			expect(held).toEqual([{ playerId: "pid-a", delayMs: 41_000 }]);
 		});
 
+		test("feeds each closed connection to the game-call gate", async () => {
+			const { client, accounts } = setup([player("Alpha", "pid-a")]);
+			const gate = new GameCallGate();
+			const seen: unknown[] = [];
+			gate.noteConnectionClosed = (err) => {
+				seen.push(err);
+			};
+			const mgr = new LibAccountManager(client, { clerkApiKey: "k" }, { gate });
+			await mgr.connect();
+
+			const refusal = new ConnectionClosedError(
+				"WebSocket connection closed",
+				4003,
+				"rate_limited retry_after=30",
+			);
+			const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+			accounts.get("Alpha")?.emitDisconnected(refusal);
+			warnSpy.mockRestore();
+
+			expect(seen).toEqual([refusal]);
+		});
+
 		test("still logs a close that carries no code", async () => {
 			const { client, accounts } = setup([player("Alpha", "pid-a")]);
 			const mgr = new LibAccountManager(client, { clerkApiKey: "k" });

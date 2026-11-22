@@ -15,7 +15,15 @@
  *   went in during one 120-second block. Every account's new calls now wait
  *   until it lifts, plus a margin.
  *
- * Both holds are applied to every frame the lib sends, through its
+ * A third signal holds socket opens only: **the game refused a connection**
+ * with a 4003 `rate_limited` close, which says how long until it will accept
+ * one. The lib makes only the refused account wait that long, so on
+ * 2026-11-22 the rest of the fleet kept opening a socket every 0.6s, each one
+ * refused and counted as a violation, about 50 in 30s, until the game blocked
+ * the IP. Every account's socket opens now wait out the refusal, and an IP
+ * block holds them too (see `scheduleOpen`).
+ *
+ * The send holds are applied to every frame the lib sends, through its
  * `scheduleSend` hook (see `scheduleSend`): calls, the lib's own automatic
  * retry of a throttled call, and the authentication of a reconnect. Each of
  * those is a request the game counts, so a hold that let any of them through
@@ -28,7 +36,8 @@
  * so that wait has to happen before the call reaches it.
  */
 
-import type { SendAdmissionRequest } from "@spacemolt/lib";
+import type { SendAdmissionRequest, TransportAdmissionRequest } from "@spacemolt/lib";
+import { retryAfterMsFromClose } from "@spacemolt/lib";
 
 import { createLogger } from "../util/logger.js";
 
@@ -100,6 +109,7 @@ export interface GameCallGateOptions {
 
 export class GameCallGate {
 	private ipBlockedUntil = 0;
+	private opensHeldUntil = 0;
 	private readonly accountHoldUntil = new Map<string, number>();
 	/** Lib account id → player id, for the send requests, which carry only the former. */
 	private readonly playerIdByAccountId = new Map<string, string>();
@@ -209,6 +219,24 @@ export class GameCallGate {
 	}
 
 	/**
+	 * Inspect a closed connection; a 4003 `rate_limited` refusal holds every
+	 * account's socket opens for the `retry_after` it carries.
+	 */
+	noteConnectionClosed(err: unknown): void {
+		const retryMs = retryAfterMsFromClose(err);
+		if (retryMs === undefined) return;
+		const until = this.now() + retryMs;
+		if (until <= this.opensHeldUntil) return;
+		const fresh = this.opensHeldUntil <= this.now();
+		this.opensHeldUntil = until;
+		if (fresh) {
+			log.warn(
+				`Game refused a connection as rate-limited; holding every account's connection attempts for ${Math.round(retryMs / 1000)}s, until ${new Date(until).toISOString()}`,
+			);
+		}
+	}
+
+	/**
 	 * Hold a call while its account is reconnecting, instead of letting it fail
 	 * at once on a closed socket.
 	 *
@@ -273,6 +301,25 @@ export class GameCallGate {
 			request.accountId === undefined ? undefined : this.playerIdByAccountId.get(request.accountId);
 		await this.waitUntilClear(playerId, request.signal);
 		send();
+	};
+
+	/**
+	 * The lib's `scheduleOpen` hook: hold each socket open while the game is
+	 * refusing connections or has blocked the IP. A refused or blocked open
+	 * still counts against the IP, so it must not be attempted at all. The lib
+	 * aborts `signal` when the attempt is abandoned, which ends the hold.
+	 */
+	readonly scheduleOpen = async (
+		request: TransportAdmissionRequest,
+		open: () => Promise<void>,
+	): Promise<void> => {
+		for (;;) {
+			request.signal.throwIfAborted();
+			const waitMs = Math.max(this.opensHeldUntil, this.ipBlockedUntil) - this.now();
+			if (waitMs <= 0) break;
+			await this.sleepUnlessAborted(waitMs, request.signal);
+		}
+		await open();
 	};
 
 	/**

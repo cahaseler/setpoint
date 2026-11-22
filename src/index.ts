@@ -245,6 +245,12 @@ async function main(): Promise<void> {
 		clerkApiKey: libConfig.clerkApiKey,
 		connectRetry: { maxRetries: 200, baseDelayMs: 2000, maxDelayMs: 60_000 },
 		scheduleSend: gameCallGate.scheduleSend,
+		scheduleOpen: gameCallGate.scheduleOpen,
+		// An initial connect refused as rate-limited fails here rather than as a
+		// disconnect, so it is reported to the gate from this hook.
+		onConnectionStage: (_account, _stage, error) => {
+			if (error !== undefined) gameCallGate.noteConnectionClosed(error);
+		},
 	});
 	const manager = new LibAccountManager(client, libConfig, {
 		onStateChange,
