@@ -80,10 +80,31 @@ export interface GatedAccount {
 const RECONNECT_HOLD_MS = 5 * 60_000;
 const RECONNECT_POLL_MS = 500;
 
+/**
+ * How often, and for how long, to re-read an account whose queued action the
+ * previous setpoint left behind at a handover. The game runs a queued action
+ * on the next 10s tick; a jump can stay queued for its whole transit, so the
+ * cap allows several ticks before letting commands go out regardless.
+ */
+const INHERITED_ACTION_POLL_MS = 2_000;
+const INHERITED_ACTION_MAX_WAIT_MS = 30_000;
+
+interface QueueView {
+	queue?: { has_pending: boolean } | undefined;
+}
+
+/** What the gate needs to watch an account's action queue drain. */
+export interface DrainableAccount {
+	/** The cached state; read once the handover re-read has refreshed it. */
+	readonly state: Readonly<QueueView>;
+	refresh(): Promise<Readonly<QueueView>>;
+}
+
 export interface GameCallGateOptions {
 	now?: () => number;
 	sleep?: (ms: number) => Promise<void>;
 	reconnectHoldMs?: number;
+	inheritedActionMaxWaitMs?: number;
 }
 
 export class GameCallGate {
@@ -95,15 +116,75 @@ export class GameCallGate {
 	private readonly now: () => number;
 	private readonly sleep: (ms: number) => Promise<void>;
 	private readonly reconnectHoldMs: number;
+	private readonly inheritedActionMaxWaitMs: number;
+	/** Accounts whose mutations are held after a handover, and what releases each. */
+	private readonly handoverHolds = new Map<string, Promise<void>>();
 
 	constructor({
 		now = Date.now,
 		sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
 		reconnectHoldMs = RECONNECT_HOLD_MS,
+		inheritedActionMaxWaitMs = INHERITED_ACTION_MAX_WAIT_MS,
 	}: GameCallGateOptions = {}) {
 		this.now = now;
 		this.sleep = sleep;
 		this.reconnectHoldMs = reconnectHoldMs;
+		this.inheritedActionMaxWaitMs = inheritedActionMaxWaitMs;
+	}
+
+	/**
+	 * After a handover, hold this account's mutations until it is known to have
+	 * no action the previous setpoint left queued.
+	 *
+	 * The outgoing daemon may have queued a command for the next tick just
+	 * before it stopped. The lib only serializes mutations within one
+	 * connection, so the new daemon's next mutation on that account, from a
+	 * resumed loop or job or from a caller, would be refused with
+	 * `action_pending`. The hold is armed when the new daemon starts serving,
+	 * and lasts until `reread` resolves (the handover re-read of this account).
+	 * If the re-read shows an action queued, it then lasts until a later re-read
+	 * shows the queue empty. Queries are not held.
+	 */
+	holdAfterHandover(playerId: string, account: DrainableAccount, reread: Promise<void>): void {
+		if (this.handoverHolds.has(playerId)) return;
+		const released = reread
+			.then(() => {
+				if (account.state.queue?.has_pending !== true) return;
+				log.info(
+					`[${playerId}] The previous setpoint left an action queued; holding this account's commands until it has run`,
+				);
+				return this.drainInheritedAction(playerId, account);
+			})
+			.finally(() => this.handoverHolds.delete(playerId));
+		this.handoverHolds.set(playerId, released);
+	}
+
+	/** True while this account's mutations are held after a handover. */
+	isHeldAfterHandover(playerId: string): boolean {
+		return this.handoverHolds.has(playerId);
+	}
+
+	private async drainInheritedAction(playerId: string, account: DrainableAccount): Promise<void> {
+		const deadline = this.now() + this.inheritedActionMaxWaitMs;
+		while (this.now() < deadline) {
+			await this.sleep(INHERITED_ACTION_POLL_MS);
+			try {
+				const state = await account.refresh();
+				if (state.queue?.has_pending !== true) {
+					log.info(
+						`[${playerId}] Inherited queued action has run; releasing this account's commands`,
+					);
+					return;
+				}
+			} catch (err) {
+				log.warn(
+					`[${playerId}] Re-reading an account with an inherited queued action failed: ${err instanceof Error ? err.message : String(err)}`,
+				);
+			}
+		}
+		log.warn(
+			`[${playerId}] Inherited queued action still pending after ${this.inheritedActionMaxWaitMs / 1000}s; releasing this account's commands anyway`,
+		);
 	}
 
 	/** Milliseconds until the current IP block lifts; 0 when there is none. */
@@ -253,6 +334,7 @@ export class GameCallGate {
 			const original = account[method].bind(account) as (...args: unknown[]) => Promise<unknown>;
 			const gated = async (...args: unknown[]): Promise<unknown> => {
 				await this.waitForConnection(playerId, account);
+				if (method === "mutate") await this.handoverHolds.get(playerId);
 				try {
 					return await original(...args);
 				} catch (err) {

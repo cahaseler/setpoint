@@ -2776,6 +2776,48 @@ describe("handleRawAction", () => {
 		expect(sent).toBe(0);
 	});
 
+	test("refuses a raw mutation with 503 while the account is held after a handover, but serves queries", async () => {
+		let jumps = 0;
+		let statuses = 0;
+		const account = new FakeLibManagedAccount({
+			playerId: "p1",
+			username: "TestPlayer",
+			handlers: {
+				jump: () => {
+					jumps++;
+					return { result: {} };
+				},
+				get_status: () => {
+					statuses++;
+					return { result: {} };
+				},
+			},
+		});
+		const ctx = makeContext({ accounts: [account] });
+		// The handover re-read of this account has not come in yet.
+		ctx.gameCallGate.holdAfterHandover("p1", account, new Promise<void>(() => {}));
+		const raw = (action: string, params?: Record<string, unknown>): Promise<Response> =>
+			handleRawAction(
+				new Request("http://localhost/accounts/p1/raw", {
+					method: "POST",
+					body: JSON.stringify({ toolGroup: "spacemolt", action, params }),
+					headers: { "Content-Type": "application/json" },
+				}),
+				{ playerId: "p1" },
+				ctx,
+			);
+
+		const refused = await raw("jump", { id: "sol" });
+		expect(refused.status).toBe(503);
+		expect(refused.headers.get("Retry-After")).toBe("5");
+		expect(((await refused.json()) as { code: string }).code).toBe("handover");
+		expect(jumps).toBe(0);
+
+		const served = await raw("get_status");
+		expect(served.status).toBe(200);
+		expect(statuses).toBe(1);
+	});
+
 	test("refuses at once with 503 and Retry-After while the game has the IP blocked", async () => {
 		let sent = 0;
 		const account = new FakeLibManagedAccount({
