@@ -105,11 +105,19 @@ export interface GameCallGateOptions {
 	sleep?: (ms: number) => Promise<void>;
 	reconnectHoldMs?: number;
 	inheritedActionMaxWaitMs?: number;
+	/** Gap between the opens a hold releases; match the lib's connect stagger. */
+	heldOpenSpacingMs?: number;
 }
+
+/** The lib's default connect stagger: 60s over its default batch of 100. */
+const HELD_OPEN_SPACING_MS = 600;
 
 export class GameCallGate {
 	private ipBlockedUntil = 0;
 	private opensHeldUntil = 0;
+	/** When the next open a hold released may go; spaces them out instead of all at once. */
+	private nextReleasedOpenAt = 0;
+	private readonly heldOpenSpacingMs: number;
 	private readonly accountHoldUntil = new Map<string, number>();
 	/** Lib account id → player id, for the send requests, which carry only the former. */
 	private readonly playerIdByAccountId = new Map<string, string>();
@@ -125,7 +133,9 @@ export class GameCallGate {
 		sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
 		reconnectHoldMs = RECONNECT_HOLD_MS,
 		inheritedActionMaxWaitMs = INHERITED_ACTION_MAX_WAIT_MS,
+		heldOpenSpacingMs = HELD_OPEN_SPACING_MS,
 	}: GameCallGateOptions = {}) {
+		this.heldOpenSpacingMs = heldOpenSpacingMs;
 		this.now = now;
 		this.sleep = sleep;
 		this.reconnectHoldMs = reconnectHoldMs;
@@ -308,16 +318,32 @@ export class GameCallGate {
 	 * refusing connections or has blocked the IP. A refused or blocked open
 	 * still counts against the IP, so it must not be attempted at all. The lib
 	 * aborts `signal` when the attempt is abandoned, which ends the hold.
+	 *
+	 * The lib's own start pacing has already let each held open through, so
+	 * when a hold lifts every open it held would go at once: on 2026-11-23 a
+	 * 28s hold released about 50 together and 27 of them timed out
+	 * authenticating. Opens are therefore released one per
+	 * `heldOpenSpacingMs`, and an open that arrives while that release is
+	 * still draining takes its turn behind them.
 	 */
 	readonly scheduleOpen = async (
 		request: TransportAdmissionRequest,
 		open: () => Promise<void>,
 	): Promise<void> => {
+		let wasHeld = false;
 		for (;;) {
 			request.signal.throwIfAborted();
 			const waitMs = Math.max(this.opensHeldUntil, this.ipBlockedUntil) - this.now();
 			if (waitMs <= 0) break;
+			wasHeld = true;
 			await this.sleepUnlessAborted(waitMs, request.signal);
+		}
+		const now = this.now();
+		if (wasHeld || this.nextReleasedOpenAt > now) {
+			const turn = Math.max(this.nextReleasedOpenAt, now);
+			this.nextReleasedOpenAt = turn + this.heldOpenSpacingMs;
+			if (turn > now) await this.sleepUnlessAborted(turn - now, request.signal);
+			request.signal.throwIfAborted();
 		}
 		await open();
 	};
