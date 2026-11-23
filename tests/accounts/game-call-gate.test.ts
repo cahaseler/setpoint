@@ -355,6 +355,30 @@ describe("GameCallGate", () => {
 			expect(clock.now() - start).toBe(125_000);
 		});
 
+		test("opens a hold released go one per spacing, not all at once", async () => {
+			const clock = fakeClock();
+			const gate = new GameCallGate({ ...clock, heldOpenSpacingMs: 600 });
+			const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+			gate.noteConnectionClosed(refusal(1));
+			warnSpy.mockRestore();
+
+			// Held, then released first.
+			await gate.scheduleOpen(openRequest(), async () => {});
+			// Arrives while the release is still draining: waits one spacing.
+			await gate.scheduleOpen(openRequest(), async () => {});
+			// And the next one waits another.
+			await gate.scheduleOpen(openRequest(), async () => {});
+			expect(clock.slept).toEqual([1_000, 600, 600]);
+		});
+
+		test("with no hold, opens are not spaced by the gate", async () => {
+			const clock = fakeClock();
+			const gate = new GameCallGate({ ...clock, heldOpenSpacingMs: 600 });
+			await gate.scheduleOpen(openRequest(), async () => {});
+			await gate.scheduleOpen(openRequest(), async () => {});
+			expect(clock.slept).toEqual([]);
+		});
+
 		test("a held open is abandoned, not attempted, when the lib aborts it", async () => {
 			const gate = new GameCallGate({ now: () => 0, sleep: () => new Promise<void>(() => {}) });
 			const warnSpy = spyOn(console, "warn").mockImplementation(() => {});

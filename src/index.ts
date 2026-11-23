@@ -224,7 +224,16 @@ async function main(): Promise<void> {
 	// Holds game calls while the game has said to stop: an account
 	// rate-limited, or the whole IP blocked. It holds every frame the lib
 	// sends, through scheduleSend. See accounts/game-call-gate.ts.
-	const gameCallGate = new GameCallGate();
+	//
+	// CONNECT_BATCH_SIZE: the game caps WebSocket connections at 100 a minute
+	// per IP, and the lib's default batch of 100 per 65s sits right at it. After
+	// a game restart, opens the server refused while it was coming back appear
+	// to count too, and on 2026-11-23 the 100th reconnect in a minute was
+	// refused. 90 leaves a margin; the gate releases held opens at the same
+	// spacing the lib derives from it.
+	const CONNECT_BATCH_SIZE = 90;
+	const connectSpacingMs = Math.ceil(60_000 / CONNECT_BATCH_SIZE);
+	const gameCallGate = new GameCallGate({ heldOpenSpacingMs: connectSpacingMs });
 
 	// Create the lib client and account manager.
 	//
@@ -244,6 +253,7 @@ async function main(): Promise<void> {
 	const client = new SpacemoltClient({
 		clerkApiKey: libConfig.clerkApiKey,
 		connectRetry: { maxRetries: 200, baseDelayMs: 2000, maxDelayMs: 60_000 },
+		connectBatchSize: CONNECT_BATCH_SIZE,
 		scheduleSend: gameCallGate.scheduleSend,
 		scheduleOpen: gameCallGate.scheduleOpen,
 		// An initial connect refused as rate-limited fails here rather than as a
