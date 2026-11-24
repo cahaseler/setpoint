@@ -687,4 +687,6 @@ Request body fields:
 - `action` (string, required) — the action within the tool group (e.g., `get_state`, `travel`, `buy`)
 - `params` (object, optional) — action parameters (e.g., `{"id":"...", "quantity":5}`)
 
-The response contains `{ result, structuredContent }` (mutation responses also include `tick` and `command`). There is no `notifications` field — live push events (chat, combat, etc.) arrive on the account's event stream, not on command responses, so `raw` cannot relay them.
+The response contains `{ result, structuredContent }` (mutation responses also include `tick` and `command`).
+
+**Repeated storage views are answered once per tick.** The game refuses a `spacemolt_storage/view` repeated by one pilot within a tick (`read_repeat_limited`), and several processes can drive one account through this passthrough. `src/server/storage-view-sharing.ts` answers an identical view (the same params exactly) from the one in flight or the one finished earlier in the same observed tick, for at most 10s, and marks that response `shared: true`. Any change to the account's state cache, and any raw mutation on it, drops its views. There is deliberately no storage mirror: the game sends no push when storage changes, and faction storage also changes from other pilots, market fills and facility output, so a mirror could only be kept fresh by polling. There is no `notifications` field — live push events (chat, combat, etc.) arrive on the account's event stream, not on command responses, so `raw` cannot relay them.
