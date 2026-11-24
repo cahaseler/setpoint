@@ -395,6 +395,128 @@ describe("GameCallGate", () => {
 		});
 	});
 
+	describe("opens awaiting the game's answer", () => {
+		const request = (signal = new AbortController().signal) => ({
+			accountId: "Alpha",
+			sessionId: "s1",
+			signal,
+		});
+		/** An open the test answers by hand. */
+		const pendingOpen = (): {
+			open: () => Promise<void>;
+			answer: () => void;
+			started: () => boolean;
+		} => {
+			let answer: () => void = () => {};
+			let started = false;
+			return {
+				open: () => {
+					started = true;
+					return new Promise<void>((resolve) => {
+						answer = resolve;
+					});
+				},
+				answer: () => answer(),
+				started: () => started,
+			};
+		};
+		/** Timers the test fires by hand. */
+		const manualTimers = (): {
+			setTimer: (ms: number, fire: () => void) => () => void;
+			fireAll: () => void;
+			live: () => number;
+		} => {
+			const timers = new Set<() => void>();
+			return {
+				setTimer: (_ms, fire) => {
+					timers.add(fire);
+					return () => timers.delete(fire);
+				},
+				fireAll: () => {
+					for (const fire of [...timers]) {
+						timers.delete(fire);
+						fire();
+					}
+				},
+				live: () => timers.size,
+			};
+		};
+		const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
+		test("further opens wait until one of two unanswered opens is answered, then go spaced", async () => {
+			const clock = fakeClock();
+			const timers = manualTimers();
+			const gate = new GameCallGate({ ...clock, setTimer: timers.setTimer });
+			const opens = [pendingOpen(), pendingOpen(), pendingOpen(), pendingOpen()];
+			const [a, b, c, d] = opens as [
+				ReturnType<typeof pendingOpen>,
+				ReturnType<typeof pendingOpen>,
+				ReturnType<typeof pendingOpen>,
+				ReturnType<typeof pendingOpen>,
+			];
+
+			const done = opens.map((o) => gate.scheduleOpen(request(), o.open));
+			await settle();
+			expect(opens.map((o) => o.started())).toEqual([true, true, false, false]);
+
+			a.answer();
+			b.answer();
+			await settle();
+			expect([c.started(), d.started()]).toEqual([true, true]);
+			// The first released goes at once, the next one connect spacing later.
+			expect(clock.slept).toEqual([600]);
+
+			c.answer();
+			d.answer();
+			await Promise.all(done);
+			expect(timers.live()).toBe(0);
+		});
+
+		test("an open left unanswered gives up its place after the stall time, logged once", async () => {
+			const clock = fakeClock();
+			const timers = manualTimers();
+			const gate = new GameCallGate({ ...clock, setTimer: timers.setTimer });
+			const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+			const [a, b, c] = [pendingOpen(), pendingOpen(), pendingOpen()];
+
+			void gate.scheduleOpen(request(), a.open);
+			void gate.scheduleOpen(request(), b.open);
+			void gate.scheduleOpen(request(), c.open);
+			await settle();
+			expect(c.started()).toBe(false);
+
+			timers.fireAll();
+			await settle();
+			const warnings = warnSpy.mock.calls.length;
+			warnSpy.mockRestore();
+			expect(c.started()).toBe(true);
+			expect(warnings).toBe(1);
+		});
+
+		test("an open aborted while waiting for a place rejects and takes none", async () => {
+			const gate = new GameCallGate({ ...fakeClock(), setTimer: manualTimers().setTimer });
+			const [a, b] = [pendingOpen(), pendingOpen()];
+			void gate.scheduleOpen(request(), a.open);
+			void gate.scheduleOpen(request(), b.open);
+			await settle();
+
+			const controller = new AbortController();
+			let opened = false;
+			const waiting = gate.scheduleOpen(request(controller.signal), async () => {
+				opened = true;
+			});
+			controller.abort(new Error("abandoned"));
+			await expect(waiting).rejects.toThrow("abandoned");
+
+			a.answer();
+			const next = pendingOpen();
+			void gate.scheduleOpen(request(), next.open);
+			await settle();
+			expect(opened).toBe(false);
+			expect(next.started()).toBe(true);
+		});
+	});
+
 	describe("holding mutations after a handover", () => {
 		/** An account whose state and live re-reads report a queued action for the first `pendingReads` reads. */
 		function drainable(

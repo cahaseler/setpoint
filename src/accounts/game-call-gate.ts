@@ -107,10 +107,29 @@ export interface GameCallGateOptions {
 	inheritedActionMaxWaitMs?: number;
 	/** Gap between the opens a hold releases; match the lib's connect stagger. */
 	heldOpenSpacingMs?: number;
+	/** How many opens may be waiting on the game's answer at once. */
+	maxOpensAwaitingAnswer?: number;
+	/** How long an unanswered open keeps its place before the next may go. */
+	openStallMs?: number;
+	/** Start a timer, returning its cancel. Separate from `sleep`, which tests fast-forward. */
+	setTimer?: (ms: number, fire: () => void) => () => void;
 }
 
 /** The lib's default connect stagger: 60s over its default batch of 100. */
 const HELD_OPEN_SPACING_MS = 600;
+/**
+ * A healthy game answers an open in well under a second, so two waiting at
+ * once never slows a normal reconnect. While the game is restarting it can
+ * leave opens unanswered for tens of seconds and then answer them all
+ * together, and the game counts them when they arrive.
+ */
+const MAX_OPENS_AWAITING_ANSWER = 2;
+const OPEN_STALL_MS = 10_000;
+
+function startTimer(ms: number, fire: () => void): () => void {
+	const timer = setTimeout(fire, ms);
+	return () => clearTimeout(timer);
+}
 
 export class GameCallGate {
 	private ipBlockedUntil = 0;
@@ -118,6 +137,14 @@ export class GameCallGate {
 	/** When the next open a hold released may go; spaces them out instead of all at once. */
 	private nextReleasedOpenAt = 0;
 	private readonly heldOpenSpacingMs: number;
+	private readonly maxOpensAwaitingAnswer: number;
+	private readonly openStallMs: number;
+	private readonly setTimer: (ms: number, fire: () => void) => () => void;
+	/** Opens holding a place: sent, or about to be, and not yet answered or stalled. */
+	private opensAwaitingAnswer = 0;
+	private readonly answerWaiters = new Set<() => void>();
+	/** Whether a stall has been logged since the game last answered an open. */
+	private stallLogged = false;
 	private readonly accountHoldUntil = new Map<string, number>();
 	/** Lib account id → player id, for the send requests, which carry only the former. */
 	private readonly playerIdByAccountId = new Map<string, string>();
@@ -134,8 +161,14 @@ export class GameCallGate {
 		reconnectHoldMs = RECONNECT_HOLD_MS,
 		inheritedActionMaxWaitMs = INHERITED_ACTION_MAX_WAIT_MS,
 		heldOpenSpacingMs = HELD_OPEN_SPACING_MS,
+		maxOpensAwaitingAnswer = MAX_OPENS_AWAITING_ANSWER,
+		openStallMs = OPEN_STALL_MS,
+		setTimer = startTimer,
 	}: GameCallGateOptions = {}) {
 		this.heldOpenSpacingMs = heldOpenSpacingMs;
+		this.maxOpensAwaitingAnswer = maxOpensAwaitingAnswer;
+		this.openStallMs = openStallMs;
+		this.setTimer = setTimer;
 		this.now = now;
 		this.sleep = sleep;
 		this.reconnectHoldMs = reconnectHoldMs;
@@ -325,6 +358,16 @@ export class GameCallGate {
 	 * authenticating. Opens are therefore released one per
 	 * `heldOpenSpacingMs`, and an open that arrives while that release is
 	 * still draining takes its turn behind them.
+	 *
+	 * The lib paces when opens start, but the game counts them when they reach
+	 * it. While the game is restarting it can leave opens unanswered and then
+	 * take them all at once: on 2026-11-24 about 60 that had started over half
+	 * a minute arrived within 5s of the game coming back, and with the paced
+	 * opens after them that passed the 100-a-minute cap. So at most
+	 * `maxOpensAwaitingAnswer` opens wait on the game at once. One unanswered
+	 * after `openStallMs` gives up its place, so a hung open cannot stop the
+	 * fleet reconnecting. Opens that waited for a place are released spaced
+	 * out, like those a hold caught.
 	 */
 	readonly scheduleOpen = async (
 		request: TransportAdmissionRequest,
@@ -334,19 +377,78 @@ export class GameCallGate {
 		for (;;) {
 			request.signal.throwIfAborted();
 			const waitMs = Math.max(this.opensHeldUntil, this.ipBlockedUntil) - this.now();
-			if (waitMs <= 0) break;
-			wasHeld = true;
-			await this.sleepUnlessAborted(waitMs, request.signal);
+			if (waitMs > 0) {
+				wasHeld = true;
+				await this.sleepUnlessAborted(waitMs, request.signal);
+				continue;
+			}
+			if (this.opensAwaitingAnswer >= this.maxOpensAwaitingAnswer) {
+				wasHeld = true;
+				await this.waitForAnswerPlace(request.signal);
+				continue;
+			}
+			break;
 		}
-		const now = this.now();
-		if (wasHeld || this.nextReleasedOpenAt > now) {
-			const turn = Math.max(this.nextReleasedOpenAt, now);
-			this.nextReleasedOpenAt = turn + this.heldOpenSpacingMs;
-			if (turn > now) await this.sleepUnlessAborted(turn - now, request.signal);
-			request.signal.throwIfAborted();
+		const releasePlace = this.takeAnswerPlace();
+		try {
+			const now = this.now();
+			if (wasHeld || this.nextReleasedOpenAt > now) {
+				const turn = Math.max(this.nextReleasedOpenAt, now);
+				this.nextReleasedOpenAt = turn + this.heldOpenSpacingMs;
+				if (turn > now) await this.sleepUnlessAborted(turn - now, request.signal);
+				request.signal.throwIfAborted();
+			}
+			const cancelStall = this.setTimer(this.openStallMs, () => {
+				this.noteStalledOpen();
+				releasePlace();
+			});
+			try {
+				await open();
+				this.stallLogged = false;
+			} finally {
+				cancelStall();
+			}
+		} finally {
+			releasePlace();
 		}
-		await open();
 	};
+
+	/** Hold a place among the opens waiting on the game; returns its release, safe to call twice. */
+	private takeAnswerPlace(): () => void {
+		this.opensAwaitingAnswer++;
+		let released = false;
+		return () => {
+			if (released) return;
+			released = true;
+			this.opensAwaitingAnswer--;
+			for (const wake of [...this.answerWaiters]) wake();
+		};
+	}
+
+	/** Resolve when a place frees; rejects if `signal` aborts. */
+	private waitForAnswerPlace(signal: AbortSignal): Promise<void> {
+		return new Promise<void>((resolve, reject) => {
+			const wake = (): void => {
+				this.answerWaiters.delete(wake);
+				signal.removeEventListener("abort", onAbort);
+				resolve();
+			};
+			const onAbort = (): void => {
+				this.answerWaiters.delete(wake);
+				reject(signal.reason);
+			};
+			this.answerWaiters.add(wake);
+			signal.addEventListener("abort", onAbort, { once: true });
+		});
+	}
+
+	private noteStalledOpen(): void {
+		if (this.stallLogged) return;
+		this.stallLogged = true;
+		log.warn(
+			`The game has not answered a connection attempt in ${Math.round(this.openStallMs / 1000)}s; letting connection attempts through ${this.maxOpensAwaitingAnswer} at a time until it answers`,
+		);
+	}
 
 	/**
 	 * Route an account's game calls through this gate: each `query` and
