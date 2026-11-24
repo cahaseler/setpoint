@@ -61,6 +61,7 @@ import type {
 	MiningLoopApiOptions,
 	TradingLoopApiOptions,
 } from "./loop-manager.js";
+import { forgetStorageViews, shareStorageView } from "./storage-view-sharing.js";
 
 const log = createLogger("handlers");
 
@@ -1004,12 +1005,34 @@ export async function handleRawAction(
 			return jsonResponse({ result: null, structuredContent: undefined });
 		}
 
+		// The game refuses a storage view repeated within a tick, and several
+		// processes can share one account through this passthrough; a repeat is
+		// answered from the earlier view. See storage-view-sharing.ts.
+		if (resolvedToolGroup === "spacemolt_storage" && action === "view") {
+			const { result: view, shared } = await shareStorageView(account, actionParams, () =>
+				account.query(resolvedToolGroup, action, actionParams),
+			);
+			return jsonResponse({
+				result: view.result,
+				structuredContent: view.structuredContent,
+				...(shared ? { shared: true } : {}),
+			});
+		}
+		// A raw mutation may move storage in ways the state cache does not show,
+		// such as a transfer between storage compartments. Views are dropped when
+		// it is sent and again when it has run, so none taken while it was queued
+		// outlives it.
+		const isMutation = ACTIONS[`${resolvedToolGroup}/${action}`]?.kind === "mutation";
+		if (isMutation) forgetStorageViews(account);
+
 		// account.send() dispatches to query/mutate by the spec's mutation flag.
 		// Mutations resolve with { command, tick, delta, autoDocked?, autoUndocked? };
 		// queries resolve with { result, structuredContent? }. Normalize both to a
 		// stable envelope. Push events (notifications) arrive on the event stream,
 		// not on command results, so there is nothing to relay here.
-		const response = await account.send(resolvedToolGroup, action, actionParams);
+		const response = await account.send(resolvedToolGroup, action, actionParams).finally(() => {
+			if (isMutation) forgetStorageViews(account);
+		});
 		return jsonResponse(
 			"delta" in response
 				? {

@@ -39,6 +39,12 @@ export interface LibManagedAccount {
 	 * reconnecting after a drop. Absent on test doubles that never disconnect.
 	 */
 	readonly authenticated?: boolean;
+	/**
+	 * Highest game tick observed on this connection, from the welcome and every
+	 * tick-bearing frame since. There is no per-tick push, so it can lag the
+	 * game's own tick. Absent on test doubles that do not model ticks.
+	 */
+	readonly currentTick?: number;
 	/** Live push-fed state cache. Treat as read-only. */
 	readonly state: Readonly<GameState>;
 	/** Force a live `get_status` re-seed of the cache. Returns the refreshed state. */

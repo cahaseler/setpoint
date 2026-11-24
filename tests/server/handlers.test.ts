@@ -2776,6 +2776,43 @@ describe("handleRawAction", () => {
 		expect(sent).toBe(0);
 	});
 
+	test("answers a storage view repeated in one tick from the first, and reads again after a raw mutation", async () => {
+		let views = 0;
+		const account = new FakeLibManagedAccount({
+			playerId: "p1",
+			username: "TestPlayer",
+			handlers: {
+				view: () => {
+					views++;
+					return { result: { items: views }, structuredContent: { items: views } };
+				},
+			},
+		});
+		const ctx = makeContext({ accounts: [account] });
+		const raw = (action: string, params: Record<string, unknown>): Promise<Response> =>
+			handleRawAction(
+				new Request("http://localhost/accounts/p1/raw", {
+					method: "POST",
+					body: JSON.stringify({ toolGroup: "spacemolt_storage", action, params }),
+					headers: { "Content-Type": "application/json" },
+				}),
+				{ playerId: "p1" },
+				ctx,
+			);
+		const faction = { target: "faction", station_id: "sol_station" };
+
+		const first = (await (await raw("view", faction)).json()) as Record<string, unknown>;
+		const repeat = (await (await raw("view", faction)).json()) as Record<string, unknown>;
+		expect(views).toBe(1);
+		expect(first["shared"]).toBeUndefined();
+		expect(repeat).toEqual({ ...first, shared: true });
+
+		await raw("deposit", { target: "faction", item_id: "iron_ore", quantity: 1 });
+		const after = (await (await raw("view", faction)).json()) as Record<string, unknown>;
+		expect(views).toBe(2);
+		expect(after["shared"]).toBeUndefined();
+	});
+
 	test("refuses a raw mutation with 503 while the account is held after a handover, but serves queries", async () => {
 		let jumps = 0;
 		let statuses = 0;
